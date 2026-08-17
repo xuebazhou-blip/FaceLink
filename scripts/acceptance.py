@@ -395,8 +395,9 @@ def main() -> int:
                 "callback are tested."
             ),
             (
-                "Large production rigs, transform-aware pose baking and root-motion conversion, "
-                "multi-level or dynamic-obstacle navigation and multi-shot editing."
+                "Large production/control rigs, IK/FK discovery, constraint/driver baking, "
+                "object-level root motion, multi-level or dynamic-obstacle navigation and "
+                "multi-shot editing."
             ),
             "Linux and macOS Blender builds; this run covers Windows x64 only.",
         ],

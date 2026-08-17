@@ -112,6 +112,20 @@ def retarget_spec(**updates):
     return ActionRetargetSpec.model_validate(payload)
 
 
+def bake_spec(**updates):
+    payload = {
+        "adapter": "bake_pose",
+        "bone_map": {
+            "mixamorig:Hips": "pelvis",
+            "mixamorig:Spine": "spine",
+        },
+        "strict": True,
+        "source_rig": "source-rig",
+    }
+    payload.update(updates)
+    return ActionRetargetSpec.model_validate(payload)
+
+
 def test_retarget_analysis_resolves_explicit_and_identity_mappings():
     snapshot = rig_action_snapshot()
     action = snapshot.actions[0]
@@ -207,6 +221,38 @@ def test_retarget_models_reject_invalid_hierarchies_maps_and_fingerprints():
         )
     with pytest.raises(ValidationError, match="target bones must be unique"):
         ActionRetargetSpec(bone_map={"a": "same", "b": "same"})
+    with pytest.raises(ValidationError, match="explicit source_rig"):
+        ActionRetargetSpec(adapter="bake_pose", bone_map={"a": "b"})
+    with pytest.raises(ValidationError, match="only supported by bake_pose"):
+        ActionRetargetSpec(
+            adapter="rename_only",
+            bone_map={"a": "b"},
+            sample_step=2,
+        )
+    with pytest.raises(ValidationError):
+        ActionRetargetSpec(
+            adapter="bake_pose",
+            source_rig="source",
+            bone_map={"a": "b"},
+            sample_step=0,
+        )
+    with pytest.raises(ValidationError, match="strict=true"):
+        ActionRetargetSpec(
+            adapter="bake_pose",
+            source_rig="source",
+            bone_map={"a": "b"},
+            strict=False,
+        )
+    baked = ActionRetargetSpec(
+        adapter="bake_pose",
+        source_rig="source",
+        bone_map={"a": "b"},
+        sample_step=2,
+        root_motion="drop",
+    )
+    assert baked.adapter == "bake_pose"
+    assert baked.sample_step == 2
+    assert baked.root_motion == "drop"
     with pytest.raises(ValidationError):
         ActionInventory.model_validate(
             {
@@ -508,6 +554,93 @@ def test_compiler_blocks_unscaled_pose_translation_on_uniformly_scaled_rig():
     assert report.valid is False
     assert "rename_only_translation_scale_mismatch" in {
         issue.code for issue in report.issues
+    }
+
+
+def test_compiler_accepts_bake_pose_for_rest_axis_and_scale_differences():
+    snapshot = rig_action_snapshot()
+    snapshot.actions[0].data_paths.append(
+        'pose.bones["mixamorig:Hips"].location'
+    )
+    snapshot.rigs[1].bones[0].tail.z = 2
+    snapshot.rigs[1].bones[1].head.z = 2
+    snapshot.rigs[1].bones[1].tail.z = 4
+    snapshot.rigs[1].bones[1].rest_rotation.w = math.cos(math.radians(10.0))
+    snapshot.rigs[1].bones[1].rest_rotation.x = math.sin(math.radians(10.0))
+    shot = ShotSpec.model_validate(
+        {
+            "duration": 1,
+            "beats": [
+                {
+                    "type": "play_clip",
+                    "actor": "target-rig",
+                    "clip": "Source Walk",
+                    "duration": 1,
+                    "retarget": bake_spec(
+                        sample_step=2,
+                        root_motion="scale",
+                    ).model_dump(mode="json", exclude_none=True),
+                }
+            ],
+        }
+    )
+    report = validate_shot(shot, snapshot)
+    assert report.valid is True
+    assert {issue.code for issue in report.issues} == {
+        "bake_pose_ignores_non_pose_channels",
+        "bake_pose_output_review",
+    }
+    patch = compile_shot(shot, snapshot)
+    retarget = patch.operations[1].payload["retarget"]
+    assert retarget == {
+        "adapter": "bake_pose",
+        "bone_map": {
+            "mixamorig:Hips": "pelvis",
+            "mixamorig:Spine": "spine",
+        },
+        "strict": True,
+        "source_rig": "source-rig",
+        "sample_step": 2,
+        "root_motion": "scale",
+    }
+    assert patch.rig_fingerprints == {
+        "source-rig": "rig-111111111111111111111111",
+        "target-rig": "rig-222222222222222222222222",
+    }
+
+
+def test_compiler_bake_pose_rejects_hierarchy_mismatch_and_old_inventory():
+    snapshot = rig_action_snapshot()
+    snapshot.rigs[1].bones[1].parent = None
+    shot = ShotSpec.model_validate(
+        {
+            "duration": 1,
+            "beats": [
+                {
+                    "type": "play_clip",
+                    "actor": "target-rig",
+                    "clip": "Source Walk",
+                    "duration": 1,
+                    "retarget": bake_spec().model_dump(mode="json", exclude_none=True),
+                }
+            ],
+        }
+    )
+    mismatch = validate_shot(shot, snapshot)
+    assert mismatch.valid is False
+    assert "bake_pose_hierarchy_unsupported" in {
+        issue.code for issue in mismatch.issues
+    }
+
+    old_payload = rig_action_snapshot().model_dump(mode="json")
+    old_payload["schema_version"] = "1.3"
+    for rig in old_payload["rigs"]:
+        rig.pop("fingerprint", None)
+    old_snapshot = SceneSnapshot.model_validate(old_payload)
+    old_report = validate_shot(shot, old_snapshot)
+    assert old_report.valid is False
+    assert "bake_pose_requires_rig_geometry" in {
+        issue.code for issue in old_report.issues
     }
 
 

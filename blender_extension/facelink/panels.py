@@ -93,10 +93,24 @@ class FACELINK_PT_main(Panel):
                     icon="CAMERA_DATA" if warning_count == 0 else "ERROR",
                 )
             if summary.get("retargeted_action_count"):
+                adapter_labels = {
+                    "rename_only": "rename-only",
+                    "bake_pose": "pose bake",
+                }
+                adapters = ", ".join(
+                    sorted(
+                        {
+                            adapter_labels.get(
+                                item.get("adapter"), item.get("adapter", "unknown")
+                            )
+                            for item in summary.get("retargets", [])
+                        }
+                    )
+                )
                 review.label(
                     text=(
                         f"Retarget: {summary['retargeted_action_count']} action(s), "
-                        "rename-only"
+                        f"{adapters}"
                     ),
                     icon="ARMATURE_DATA",
                 )

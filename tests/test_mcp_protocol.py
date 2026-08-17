@@ -107,6 +107,19 @@ async def test_stdio_server_validates_and_previews_without_blender():
                     }
                 },
             )
+            bake_profile = await session.call_tool(
+                "validate_retarget_profile",
+                {
+                    "profile": {
+                        "name": "MCP bake profile",
+                        "adapter": "bake_pose",
+                        "source_rig": "source-rig",
+                        "bone_map": {"source": "target"},
+                        "sample_step": 2,
+                        "root_motion": "drop",
+                    }
+                },
+            )
     assert not validation.is_error
     assert validation.structured_content["valid"] is True
     assert not preview.is_error
@@ -119,6 +132,10 @@ async def test_stdio_server_validates_and_previews_without_blender():
     assert not profile.is_error
     assert profile.structured_content["adapter"] == "rename_only"
     assert profile.structured_content["strict"] is True
+    assert not bake_profile.is_error
+    assert bake_profile.structured_content["adapter"] == "bake_pose"
+    assert bake_profile.structured_content["sample_step"] == 2
+    assert bake_profile.structured_content["root_motion"] == "drop"
 
 
 @pytest.mark.asyncio

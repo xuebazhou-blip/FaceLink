@@ -63,7 +63,7 @@
 - Explainable missing-source, missing-target and target-collision failures
 - Idempotent repeated apply plus transaction and revision rollback cleanup
 
-## v0.3.3 — current rig-compatibility diagnostics release
+## v0.3.3 — completed rig-compatibility diagnostics release
 
 - Scene Snapshot 1.4 local rest rotations and deterministic Rig fingerprints
 - Review-only exact, normalized and controlled-alias bone-map suggestions
@@ -73,10 +73,19 @@
 - Stale rest-pose guards checked at both stage and apply
 - CLI and MCP profile suggestion/analysis tools
 
+## v0.3.4 — current sampled-pose-bake release
+
+- Reviewed `bake_pose` profiles with explicit source rig, sample step and root-motion policy
+- Per-frame local pose-basis transfer across different rest axes and bone scale
+- Ordinary editable linear target FCurves and NLA strips with quaternion/Euler continuity
+- Deterministic identity over source Action, bake settings and both Rig fingerprints
+- Fail-closed hierarchy, constraint, old-schema, zero-length and workload boundaries
+- Blender 4.2/4.5/5.2 tests for axis correction, scale, root policies and rollback
+
 ## v0.3.x — remaining useful intelligence
 
 - Optional render/vision-based artistic composition evaluator
-- Rest-pose/axis/proportion-aware retarget adapter with root-motion policy
+- Control-rig constraint baking, IK/FK discovery and hierarchy mediation
 - Reusable shot templates and multi-shot sequencing
 
 The technical moat should live in deterministic scene understanding, validation, repair and

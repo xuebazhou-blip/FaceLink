@@ -53,12 +53,22 @@ def _fingerprint_payload(bones):
     ]
 
 
+def _rig_fingerprint_payload(obj, bones):
+    return {
+        "bones": _fingerprint_payload(bones),
+        "pose_rotation_modes": [
+            [bone.name, obj.pose.bones[bone.name].rotation_mode]
+            for bone in sorted(obj.data.bones, key=lambda item: item.name)
+        ],
+    }
+
+
 def rig_fingerprint(obj):
     bones = [_bone_payload(bone) for bone in sorted(obj.data.bones, key=lambda item: item.name)]
     if len(bones) > MAX_RIG_BONES:
         raise ValueError(f"Rig '{obj.name}' exceeds {MAX_RIG_BONES} bones")
     encoded = json.dumps(
-        _fingerprint_payload(bones), sort_keys=True, separators=(",", ":")
+        _rig_fingerprint_payload(obj, bones), sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
     return "rig-" + hashlib.sha256(encoded).hexdigest()[:24]
 
@@ -68,7 +78,7 @@ def rig_inventory(obj, entity_id):
     if len(bones) > MAX_RIG_BONES:
         raise ValueError(f"Rig '{obj.name}' exceeds {MAX_RIG_BONES} bones")
     encoded = json.dumps(
-        _fingerprint_payload(bones), sort_keys=True, separators=(",", ":")
+        _rig_fingerprint_payload(obj, bones), sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
     return {
         "entity_id": entity_id,

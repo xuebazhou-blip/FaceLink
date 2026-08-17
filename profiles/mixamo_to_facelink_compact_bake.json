@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0",
+  "name": "Mixamo to FaceLink compact sampled bake example",
+  "adapter": "bake_pose",
+  "bone_map": {
+    "mixamorig:Hips": "pelvis",
+    "mixamorig:Spine": "spine"
+  },
+  "strict": true,
+  "source_rig": "replace-with-source-armature-id",
+  "sample_step": 1,
+  "root_motion": "scale"
+}

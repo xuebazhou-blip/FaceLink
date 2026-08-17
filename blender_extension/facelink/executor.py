@@ -9,11 +9,13 @@ from mathutils import Euler, Matrix, Vector
 from .action_inventory import (
     action_fingerprint,
     action_pose_bones,
+    bone_name_from_data_path,
     iter_action_fcurves,
     retarget_action_name,
     rewrite_bone_data_path,
 )
 from .composition import analyze_patch_composition
+from .pose_baking import bake_pose_action, sample_frames
 from .rig_inventory import rig_fingerprint
 from .snapshot import (
     ensure_entity_id,
@@ -123,15 +125,40 @@ def _validate_composition(value):
 def _resolved_retarget_map(obj, action, value):
     if not isinstance(value, dict):
         raise ValueError("play_clip retarget must be an object")
-    allowed = {"adapter", "bone_map", "strict", "source_rig"}
+    allowed = {
+        "adapter",
+        "bone_map",
+        "strict",
+        "source_rig",
+        "sample_step",
+        "root_motion",
+    }
     unknown = set(value) - allowed
     if unknown:
         raise ValueError(f"play_clip retarget contains unsupported fields: {sorted(unknown)}")
-    if value.get("adapter", "rename_only") != "rename_only":
-        raise ValueError("Only the rename_only retarget adapter is supported")
+    adapter = value.get("adapter", "rename_only")
+    if not isinstance(adapter, str) or adapter not in {"rename_only", "bake_pose"}:
+        raise ValueError("Retarget adapter must be rename_only or bake_pose")
+    sample_step = value.get("sample_step")
+    root_motion = value.get("root_motion")
+    if adapter == "rename_only" and (sample_step is not None or root_motion is not None):
+        raise ValueError("sample_step and root_motion are only supported by bake_pose")
+    if sample_step is not None and (
+        isinstance(sample_step, bool)
+        or not isinstance(sample_step, int)
+        or not 1 <= sample_step <= 16
+    ):
+        raise ValueError("bake_pose sample_step must be an integer from 1 to 16")
+    if root_motion is not None and (
+        not isinstance(root_motion, str)
+        or root_motion not in {"scale", "preserve", "drop"}
+    ):
+        raise ValueError("bake_pose root_motion must be scale, preserve or drop")
     strict = value.get("strict", True)
     if not isinstance(strict, bool):
         raise ValueError("play_clip retarget strict must be a boolean")
+    if adapter == "bake_pose" and not strict:
+        raise ValueError("bake_pose v1 requires strict=true")
     bone_map = value.get("bone_map")
     if not isinstance(bone_map, dict) or not 1 <= len(bone_map) <= 512:
         raise ValueError("play_clip retarget bone_map must contain 1 to 512 mappings")
@@ -148,7 +175,35 @@ def _resolved_retarget_map(obj, action, value):
     if obj.type != "ARMATURE":
         raise ValueError("play_clip retarget requires an armature target")
     action_bones = action_pose_bones(action)
+    if adapter == "bake_pose" and not action_bones:
+        raise ValueError("bake_pose requires at least one pose-bone Action channel")
+    if adapter == "bake_pose" and len(getattr(action, "slots", [])) > 1:
+        raise ValueError("bake_pose v1 requires a source Action with at most one slot")
+    if adapter == "bake_pose":
+        supported_suffixes = (
+            "].location",
+            "].rotation_euler",
+            "].rotation_quaternion",
+            "].rotation_axis_angle",
+            "].scale",
+        )
+        unsupported_pose_paths = sorted(
+            {
+                curve.data_path
+                for _, curve in iter_action_fcurves(action)
+                if bone_name_from_data_path(curve.data_path) is not None
+                and not curve.data_path.endswith(supported_suffixes)
+            }
+        )
+        if unsupported_pose_paths:
+            raise ValueError(
+                "bake_pose v1 only supports pose-bone transform channels; unsupported: "
+                + ", ".join(unsupported_pose_paths)
+            )
     source_rig_id = value.get("source_rig")
+    if adapter == "bake_pose" and source_rig_id is None:
+        raise ValueError("bake_pose requires an explicit source_rig")
+    source_rig = None
     if source_rig_id is not None:
         if not isinstance(source_rig_id, str) or not source_rig_id:
             raise ValueError("play_clip retarget source_rig must be a non-empty entity ID")
@@ -162,6 +217,83 @@ def _resolved_retarget_map(obj, action, value):
                 f"Source armature '{source_rig.name}' is missing action bone(s): "
                 + ", ".join(missing_source_channels)
             )
+        if adapter == "bake_pose":
+            if source_rig.mode == "EDIT" or obj.mode == "EDIT":
+                raise ValueError("Exit Armature Edit Mode before staging bake_pose")
+            source_bones = {bone.name: bone for bone in source_rig.data.bones}
+            target_bones_by_name = {bone.name: bone for bone in obj.data.bones}
+            missing_map_sources = sorted(set(bone_map) - set(source_bones))
+            missing_map_targets = sorted(set(bone_map.values()) - set(target_bones_by_name))
+            if missing_map_sources:
+                raise ValueError(
+                    f"Source armature '{source_rig.name}' is missing mapped bone(s): "
+                    + ", ".join(missing_map_sources)
+                )
+            if missing_map_targets:
+                raise ValueError(
+                    f"Target armature '{obj.name}' is missing mapped bone(s): "
+                    + ", ".join(missing_map_targets)
+                )
+            source_drivers = {
+                bone_name
+                for curve in (
+                    source_rig.animation_data.drivers
+                    if source_rig.animation_data is not None
+                    else []
+                )
+                if (bone_name := bone_name_from_data_path(curve.data_path)) is not None
+            }
+            target_drivers = {
+                bone_name
+                for curve in (
+                    obj.animation_data.drivers if obj.animation_data is not None else []
+                )
+                if (bone_name := bone_name_from_data_path(curve.data_path)) is not None
+            }
+            if source_drivers & set(bone_map):
+                raise ValueError(
+                    "bake_pose v1 does not evaluate driven source bones; bake drivers to "
+                    "the source Action first"
+                )
+            if target_drivers & set(bone_map.values()):
+                raise ValueError(
+                    "bake_pose v1 does not write through driven target bones; use an "
+                    "undriven deform skeleton"
+                )
+            for source_name, target_name in bone_map.items():
+                source_bone = source_bones[source_name]
+                target_bone = target_bones_by_name[target_name]
+                if source_bone.parent and source_bone.parent.name not in bone_map:
+                    raise ValueError(
+                        "bake_pose v1 requires every mapped bone parent to be mapped; "
+                        f"'{source_name}' has unmapped parent '{source_bone.parent.name}'"
+                    )
+                expected_parent = (
+                    bone_map.get(source_bone.parent.name) if source_bone.parent else None
+                )
+                actual_parent = target_bone.parent.name if target_bone.parent else None
+                if expected_parent != actual_parent:
+                    raise ValueError(
+                        "bake_pose v1 requires matching mapped parent hierarchies; "
+                        f"'{source_name}' resolves to parent '{expected_parent}', but "
+                        f"'{target_name}' has parent '{actual_parent}'"
+                    )
+                if source_rig.pose.bones[source_name].constraints:
+                    raise ValueError(
+                        "bake_pose v1 does not evaluate constrained source bones; bake "
+                        f"constraints to the source Action first ('{source_name}')"
+                    )
+                if obj.pose.bones[target_name].constraints:
+                    raise ValueError(
+                        "bake_pose v1 does not write through constrained target bones; use "
+                        f"an unconstrained deform skeleton ('{target_name}')"
+                    )
+            frames = sample_frames(action, sample_step or 1)
+            if len(frames) * len(action_bones) * 10 > 200_000:
+                raise ValueError(
+                    "bake_pose would exceed the 200000 keyframe safety limit; increase "
+                    "sample_step or reduce the mapping"
+                )
     missing_sources = sorted(action_bones - set(bone_map)) if strict else []
     if missing_sources:
         raise ValueError(
@@ -187,6 +319,31 @@ def _resolved_retarget_map(obj, action, value):
             "Multiple source bones resolve to target bone(s): " + ", ".join(collisions)
         )
     return resolved
+
+
+def _retarget_identity(obj, action, value, resolved):
+    if value.get("adapter", "rename_only") == "rename_only":
+        return resolved
+    source_rig = object_by_id(value["source_rig"])
+    return {
+        "adapter": "bake_pose",
+        "animated_bone_map": resolved,
+        "bone_map": dict(sorted(value["bone_map"].items())),
+        "root_motion": value.get("root_motion", "scale"),
+        "sample_step": value.get("sample_step", 1),
+        "source_rig": value["source_rig"],
+        "source_rig_fingerprint": rig_fingerprint(source_rig),
+        "target_rig_fingerprint": rig_fingerprint(obj),
+    }
+
+
+def _retarget_output_name(obj, action, value, resolved):
+    return retarget_action_name(
+        action.name,
+        obj.name,
+        _retarget_identity(obj, action, value, resolved),
+        action_fingerprint(action),
+    )
 
 
 def _preflight_operations(operations):
@@ -375,11 +532,8 @@ def _preflight_nla_overlaps(operations):
         if payload.get("retarget") is not None:
             source = bpy.data.actions[payload["clip"]]
             resolved = _resolved_retarget_map(obj, source, payload["retarget"])
-            action_name = retarget_action_name(
-                source.name,
-                obj.name,
-                resolved,
-                action_fingerprint(source),
+            action_name = _retarget_output_name(
+                obj, source, payload["retarget"], resolved
             )
         replacement_name = f"FaceLink {action_name} {payload['frame_start']}"
         for strip in track.strips:
@@ -440,6 +594,19 @@ def validate_patch(patch):
         raise ValueError("Every patch operation must be an object")
     if not all(isinstance(item.get("op"), str) for item in operations):
         raise ValueError("Every patch operation must have a string op")
+    has_bake_pose = False
+    for item in operations:
+        payload = item.get("payload", {})
+        retarget = payload.get("retarget") if isinstance(payload, dict) else None
+        if (
+            item.get("op") == "play_clip"
+            and isinstance(retarget, dict)
+            and retarget.get("adapter") == "bake_pose"
+        ):
+            has_bake_pose = True
+            break
+    if patch.get("schema_version") != "1.4" and has_bake_pose:
+        raise ValueError("bake_pose requires Scene Patch 1.4 rig fingerprint guards")
     for field in ("patch_id", "source_title"):
         if field in patch and not isinstance(patch[field], str):
             raise ValueError(f"Patch {field} must be a string")
@@ -587,14 +754,26 @@ def summarize_patch(patch):
                         "source_action": action.name,
                         "target_rig_id": operation.get("entity_id"),
                         "target_rig_name": obj.name,
-                        "adapter": "rename_only",
+                        "adapter": payload["retarget"].get("adapter", "rename_only"),
                         "strict": payload["retarget"].get("strict", True),
                         "mapped_bone_count": len(resolved),
-                        "output_action": retarget_action_name(
-                            action.name,
-                            obj.name,
-                            resolved,
-                            action_fingerprint(action),
+                        "sample_count": (
+                            len(
+                                sample_frames(
+                                    action,
+                                    payload["retarget"].get("sample_step", 1),
+                                )
+                            )
+                            if payload["retarget"].get("adapter") == "bake_pose"
+                            else None
+                        ),
+                        "root_motion": (
+                            payload["retarget"].get("root_motion", "scale")
+                            if payload["retarget"].get("adapter") == "bake_pose"
+                            else None
+                        ),
+                        "output_action": _retarget_output_name(
+                            obj, action, payload["retarget"], resolved
                         ),
                     }
                 )
@@ -714,11 +893,8 @@ def _capture_revision(patch, operations):
             payload = operation["payload"]
             source = bpy.data.actions[payload["clip"]]
             resolved = _resolved_retarget_map(obj, source, payload["retarget"])
-            action_name = retarget_action_name(
-                source.name,
-                obj.name,
-                resolved,
-                action_fingerprint(source),
+            action_name = _retarget_output_name(
+                obj, source, payload["retarget"], resolved
             )
             if bpy.data.actions.get(action_name) is None:
                 new_action_names.append(action_name)
@@ -1091,35 +1267,52 @@ def _look_at(entity_id, payload):
 def _retarget_action(obj, source, value):
     resolved = _resolved_retarget_map(obj, source, value)
     source_fingerprint = action_fingerprint(source)
-    name = retarget_action_name(
-        source.name,
-        obj.name,
-        resolved,
-        source_fingerprint,
-    )
+    adapter = value.get("adapter", "rename_only")
+    identity = _retarget_identity(obj, source, value, resolved)
+    name = _retarget_output_name(obj, source, value, resolved)
     canonical_map = json.dumps(resolved, sort_keys=True, separators=(",", ":"))
+    canonical_identity = json.dumps(identity, sort_keys=True, separators=(",", ":"))
     existing = bpy.data.actions.get(name)
     if existing is not None:
         if (
             existing.get("facelink_retarget_source") != source.name
             or existing.get("facelink_retarget_map") != canonical_map
             or existing.get("facelink_source_fingerprint") != source_fingerprint
+            or (
+                adapter == "bake_pose"
+                and existing.get("facelink_retarget_spec") != canonical_identity
+            )
         ):
             raise ValueError(f"Retarget action name collision for '{name}'")
         return existing
-    action = source.copy()
-    action.name = name
+    if adapter == "bake_pose":
+        source_rig = object_by_id(value["source_rig"])
+        action = bake_pose_action(
+            obj,
+            source_rig,
+            source,
+            action_name=name,
+            bone_map=resolved,
+            scale_map=value["bone_map"],
+            sample_step=value.get("sample_step", 1),
+            root_motion=value.get("root_motion", "scale"),
+        )
+    else:
+        action = source.copy()
+        action.name = name
+        renamed_groups = set()
+        for _, curve in iter_action_fcurves(action):
+            curve.data_path = rewrite_bone_data_path(curve.data_path, resolved)
+            group = curve.group
+            if group is not None and group.as_pointer() not in renamed_groups:
+                group.name = resolved.get(group.name, group.name)
+                renamed_groups.add(group.as_pointer())
     action.use_fake_user = False
     action["facelink_retarget_source"] = source.name
     action["facelink_retarget_map"] = canonical_map
+    action["facelink_retarget_adapter"] = adapter
+    action["facelink_retarget_spec"] = canonical_identity
     action["facelink_source_fingerprint"] = source_fingerprint
-    renamed_groups = set()
-    for _, curve in iter_action_fcurves(action):
-        curve.data_path = rewrite_bone_data_path(curve.data_path, resolved)
-        group = curve.group
-        if group is not None and group.as_pointer() not in renamed_groups:
-            group.name = resolved.get(group.name, group.name)
-            renamed_groups.add(group.as_pointer())
     return action
 
 

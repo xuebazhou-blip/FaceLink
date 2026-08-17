@@ -256,6 +256,42 @@ def test_cli_validates_and_normalizes_retarget_profile(monkeypatch, tmp_path):
     }
 
 
+def test_cli_validates_pose_bake_profile(monkeypatch, tmp_path):
+    profile_path = tmp_path / "bake-profile.json"
+    output_path = tmp_path / "normalized-bake.json"
+    profile_path.write_text(
+        json.dumps(
+            {
+                "name": "Mixamo baked",
+                "adapter": "bake_pose",
+                "source_rig": "source-rig",
+                "bone_map": {"mixamorig:Hips": "pelvis"},
+                "sample_step": 2,
+                "root_motion": "scale",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "facelink",
+            "validate-profile",
+            "--profile",
+            str(profile_path),
+            "--out",
+            str(output_path),
+        ],
+    )
+    cli.main()
+    normalized = json.loads(output_path.read_text(encoding="utf-8"))
+    assert normalized["adapter"] == "bake_pose"
+    assert normalized["source_rig"] == "source-rig"
+    assert normalized["sample_step"] == 2
+    assert normalized["root_motion"] == "scale"
+
+
 def test_cli_suggests_then_analyzes_retarget_profile(monkeypatch, tmp_path):
     snapshot_path = tmp_path / "rigs.json"
     suggestion_path = tmp_path / "suggestion.json"

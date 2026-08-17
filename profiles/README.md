@@ -34,6 +34,14 @@ and attaches the copy as an editable NLA strip. It does not change rest pose, bo
 proportions, IK/FK controls or root-motion conventions. With `strict: true`, every pose bone
 animated by the source Action must be mapped and every target name must exist.
 
-The included compact profile is a format example for a two-bone test rig, not a universal
-Mixamo preset. Profiles are ordinary version-controlled files so rig maintainers can publish
-and review mappings without adding Python code.
+`bake_pose` uses the same reviewed map but requires an explicit `source_rig`. It samples local
+pose transforms into an ordinary target Action and can correct different rest axes and scale.
+`sample_step` is 1-16; `root_motion` is `scale`, `preserve` or `drop`. Root motion means
+translation on a mapped root pose bone—object-level Action channels are omitted. Version 1
+requires the mapped parent hierarchy to match and mapped source/target bones to be free of pose
+constraints and transform drivers; it also requires `strict: true` and ordinary pose transform
+channels. Use deform skeletons or bake a control rig to a source Action first.
+
+The included compact rename and bake profiles are format examples for a two-bone test rig, not
+universal Mixamo presets. Profiles are ordinary version-controlled files so rig maintainers can
+publish and review mappings without adding Python code.

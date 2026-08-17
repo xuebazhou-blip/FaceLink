@@ -79,7 +79,7 @@ paths and group names through an explicit JSON map, and assigns the copy to an o
 strip. Its deterministic name makes repeat application idempotent. Rollback restores the NLA
 state and removes a FaceLink-created Action when it has no remaining users. This adapter makes
 no claim about different rest poses, axes, proportions, control rigs or root-motion policy;
-those require a future transform-aware adapter with stronger geometric validation.
+the later `bake_pose` adapter handles a bounded subset with stronger geometric validation.
 
 Protocol 1.6 adds Scene Snapshot 1.4 rest-orientation quaternions and deterministic Rig
 fingerprints. A pure-Python analyzer compares each reviewed mapping in parent-local space,
@@ -92,6 +92,24 @@ rest-pose change between scan, stage and apply fails before mutation.
 Uniform rig scale is separated from per-bone proportion drift, but an Action with pose-bone
 location channels is rejected when source and target scale differ because `rename_only` cannot
 rescale those translations without baking.
+
+Protocol 1.7 adds the bounded `bake_pose` adapter. The extension evaluates an explicit source
+Action on a temporary armature copy on Blender's main thread and samples each mapped
+`PoseBone.matrix_basis` over the Action's native range. Because this basis is relative to the
+bone's parent and own rest transform, writing it through the target bone's own basis corrects
+different local rest axes without an LLM attempting 3D matrix reasoning. Root translation uses
+an explicit scale/preserve/drop policy; non-root translation is scaled by mapped bone length.
+The generated Action contains ordinary linear location/rotation/scale FCurves and follows the
+same staging, fingerprint, idempotency, NLA and rollback contract as `rename_only`.
+Rig fingerprints include pose rotation modes in protocol 1.7, so switching a target between
+Euler, quaternion and axis-angle after staging cannot silently produce or reuse wrong channels.
+
+This is intentionally a deform-skeleton adapter, not a universal control-rig solver. Runtime
+preflight rejects missing mapped parents, changed hierarchy, zero-length bones, constraints on
+mapped source/target bones, pose transform drivers, multi-slot Actions, non-transform pose
+channels, Edit Mode, old unguarded patch schemas and workloads above fixed sample/curve/key
+limits. Object-level channels are omitted. Those restrictions keep failure visible while
+leaving IK/FK discovery, constraint baking and hierarchy mediation for later adapters.
 
 Protocol 1.1 adds optimistic scene consistency. The compiler fingerprints scene timing and
 the world-space state of only the objects referenced by a patch. Blender checks that value
@@ -118,9 +136,10 @@ versions are explicit so clients can negotiate future changes.
 - Object and camera locations are planned in world space and converted to editable local
   channels. Rotation or scale under sheared/non-uniform parent chains still needs a future
   full-matrix solver; armature pose bones are not yet part of this object transform path.
-- `play_clip` requires an existing Blender Action. `rename_only` can remap channel names for
-  otherwise compatible armatures, but motion generation and transform-aware character
-  retargeting remain out of scope.
+- `play_clip` requires an existing Blender Action. `rename_only` handles compatible armatures;
+  `bake_pose` handles reviewed deform skeletons with equivalent mapped hierarchy but different
+  local rest axes/scale. Automatic mapping approval, control-rig IK/FK discovery, constrained
+  rigs, object-level root motion and general motion generation remain out of scope.
 - Navigation planning is currently a single-level XY projection over explicitly marked static
   geometry. It does not yet solve stacked floors, moving obstacles, crowds or character gait.
 - Camera composition preflight is geometric and evaluates the current target bounds plus the

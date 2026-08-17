@@ -46,7 +46,7 @@ def scan_scene(instance_id: str | None = None) -> dict[str, Any]:
 
 @mcp.tool()
 def validate_retarget_profile(profile: RetargetProfile) -> dict[str, Any]:
-    """Validate and normalize an open rename-only bone-map profile without changing Blender."""
+    """Validate a rename-only or sampled pose-bake profile without changing Blender."""
     return profile.model_dump(mode="json", exclude_none=True)
 
 

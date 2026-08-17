@@ -6,6 +6,7 @@ import traceback
 from pathlib import Path
 
 import bpy
+from mathutils import Quaternion
 
 PROJECT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT / "blender_extension"))
@@ -103,6 +104,26 @@ def armature(name, bones):
     return obj
 
 
+def geometric_armature(name, bones):
+    data = bpy.data.armatures.new(f"{name} Data")
+    obj = bpy.data.objects.new(name, data)
+    bpy.context.scene.collection.objects.link(obj)
+    bpy.context.view_layer.objects.active = obj
+    obj.select_set(True)
+    bpy.ops.object.mode_set(mode="EDIT")
+    created = {}
+    for bone_name, parent_name, head, tail in bones:
+        bone = data.edit_bones.new(bone_name)
+        bone.head = head
+        bone.tail = tail
+        if parent_name is not None:
+            bone.parent = created[parent_name]
+            bone.use_connect = tuple(head) == tuple(created[parent_name].tail)
+        created[bone_name] = bone
+    bpy.ops.object.mode_set(mode="OBJECT")
+    return obj
+
+
 def pose_action(obj, name, bone_names, *, include_object_location=False):
     obj.animation_data_create()
     action = bpy.data.actions.new(name)
@@ -154,6 +175,14 @@ def action_fcurves(obj):
                 if bag:
                     curves.extend(bag.fcurves)
     return curves
+
+
+def find_action_curve(action, data_path, array_index):
+    return next(
+        curve
+        for _, curve in iter_action_fcurves(action)
+        if curve.data_path == data_path and curve.array_index == array_index
+    )
 
 
 def run_case(name, function):
@@ -880,6 +909,424 @@ def test_retarget_action_guard_rejects_stale_source_and_keeps_staging():
         for action in bpy.data.actions
     )
     bridge.discard_staged_patch()
+
+
+def test_bake_pose_creates_axis_corrected_scaled_editable_action():
+    source_rig = geometric_armature(
+        "Bake Source",
+        [
+            ("root", None, (0, 0, 0), (0, 1, 0)),
+            ("spine", "root", (0, 1, 0), (0, 2, 0)),
+        ],
+    )
+    target_rig = geometric_armature(
+        "Bake Target",
+        [
+            ("pelvis", None, (0, 0, 0), (2, 0, 0)),
+            ("chest", "pelvis", (2, 0, 0), (4, 0, 0)),
+        ],
+    )
+    for rig, names in ((source_rig, ("root", "spine")), (target_rig, ("pelvis", "chest"))):
+        for name in names:
+            rig.pose.bones[name].rotation_mode = "XYZ"
+    source_rig.animation_data_create()
+    source_action = bpy.data.actions.new("Bake Walk")
+    source_rig.animation_data.action = source_action
+    for frame, root_y, root_z, spine_x in (
+        (1, 0.0, 0.0, 0.0),
+        (6, 0.5, 0.25, 0.15),
+        (11, 1.0, 0.5, 0.3),
+    ):
+        root = source_rig.pose.bones["root"]
+        root.location = (0.0, root_y, 0.0)
+        root.rotation_euler = (0.0, 0.0, root_z)
+        root.keyframe_insert(data_path="location", frame=frame, group="root")
+        root.keyframe_insert(data_path="rotation_euler", frame=frame, group="root")
+        spine = source_rig.pose.bones["spine"]
+        spine.rotation_euler = (spine_x, 0.0, 0.0)
+        spine.keyframe_insert(data_path="rotation_euler", frame=frame, group="spine")
+        source_rig.location.x = float(frame - 1) / 10.0
+        source_rig.keyframe_insert(data_path="location", frame=frame)
+    source_rig.animation_data.action = None
+
+    target_rig.animation_data_create()
+    target_idle = bpy.data.actions.new("Bake Target Idle")
+    target_rig.animation_data.action = target_idle
+    target_rig.pose.bones["chest"].rotation_euler.z = 0.1
+    target_rig.pose.bones["chest"].keyframe_insert(
+        data_path="rotation_euler", frame=1, group="chest"
+    )
+
+    source_id = ensure_entity_id(source_rig)
+    target_id = ensure_entity_id(target_rig)
+    source_fingerprint = action_fingerprint(source_action)
+    snapshot = scan_scene()
+    rigs = {item["entity_id"]: item for item in snapshot["rigs"]}
+    patch = {
+        "schema_version": "1.4",
+        "patch_id": "bake-pose-editable",
+        "source_title": "Bake pose editable",
+        "action_fingerprints": {source_action.name: source_fingerprint},
+        "rig_fingerprints": {
+            source_id: rigs[source_id]["fingerprint"],
+            target_id: rigs[target_id]["fingerprint"],
+        },
+        "operations": [
+            {
+                "op": "play_clip",
+                "entity_id": target_id,
+                "payload": {
+                    "clip": source_action.name,
+                    "frame_start": 20,
+                    "frame_end": 40,
+                    "retarget": {
+                        "adapter": "bake_pose",
+                        "source_rig": source_id,
+                        "strict": True,
+                        "sample_step": 1,
+                        "root_motion": "scale",
+                        "bone_map": {"root": "pelvis", "spine": "chest"},
+                    },
+                },
+            }
+        ],
+    }
+    source_paths = {curve.data_path for _, curve in iter_action_fcurves(source_action)}
+    source_rig.animation_data.action = source_action
+    source_rig.hide_viewport = True
+    bpy.context.scene.frame_set(5, subframe=0.25)
+    summary = bridge.stage_patch(patch)["summary"]
+    assert summary["retargets"][0]["adapter"] == "bake_pose"
+    assert summary["retargets"][0]["sample_count"] == 11
+    assert summary["retargets"][0]["root_motion"] == "scale"
+    output_name = summary["retargets"][0]["output_action"]
+    assert bpy.data.actions.get(output_name) is None
+
+    receipt = bridge.apply_staged_patch()["receipt"]
+    derived = bpy.data.actions[output_name]
+    assert target_rig.animation_data.nla_tracks["FaceLink"].strips[0].action == derived
+    assert target_rig.animation_data.action == target_idle
+    assert derived.get("facelink_retarget_adapter") == "bake_pose"
+    assert derived.get("facelink_retarget_source") == source_action.name
+    inventory = action_inventory(derived)
+    assert inventory["pose_bones"] == ["chest", "pelvis"]
+    assert all(path.startswith('pose.bones["') for path in inventory["data_paths"])
+    assert inventory["fcurve_count"] == 18
+    assert inventory["keyframe_count"] == 198
+    assert all(
+        point.interpolation == "LINEAR"
+        for _, curve in iter_action_fcurves(derived)
+        for point in curve.keyframe_points
+    )
+    pelvis_path = 'pose.bones["pelvis"].location'
+    pelvis_y = find_action_curve(derived, pelvis_path, 1).evaluate(11)
+    assert math.isclose(pelvis_y, 2.0), pelvis_y
+    assert math.isclose(
+        find_action_curve(derived, 'pose.bones["pelvis"].rotation_euler', 2).evaluate(11),
+        0.5,
+        abs_tol=1e-5,
+    )
+    assert math.isclose(
+        find_action_curve(derived, 'pose.bones["chest"].rotation_euler', 0).evaluate(11),
+        0.3,
+        abs_tol=1e-5,
+    )
+    source_axis = source_rig.data.bones["root"].vector.normalized()
+    target_axis = target_rig.data.bones["pelvis"].vector.normalized()
+    assert abs(source_axis.dot(target_axis)) < 1e-6
+    assert source_rig.animation_data.action == source_action
+    assert source_rig.hide_viewport is True
+    assert math.isclose(bpy.context.scene.frame_current_final, 5.25)
+    assert {curve.data_path for _, curve in iter_action_fcurves(source_action)} == source_paths
+    assert action_fingerprint(source_action) == source_fingerprint
+    before_edit = action_fingerprint(derived)
+    next(iter(iter_action_fcurves(derived)))[1].keyframe_points[0].co.y += 0.125
+    assert action_fingerprint(derived) != before_edit
+    assert list_revision_history()["entries"][-1]["created_actions"] == [output_name]
+    assert receipt["applied_operations"] == 1
+
+    apply_patch(patch)
+    assert bpy.data.actions[output_name] == derived
+    assert len(target_rig.animation_data.nla_tracks["FaceLink"].strips) == 1
+    assert list_revision_history()["entries"][-1]["created_actions"] == []
+    undo_last_patch()
+    assert bpy.data.actions.get(output_name) == derived
+    assert len(target_rig.animation_data.nla_tracks["FaceLink"].strips) == 1
+
+    undo_last_patch()
+    assert bpy.data.actions.get(output_name) is None
+    assert target_rig.animation_data.action == target_idle
+    assert target_rig.animation_data.nla_tracks.get("FaceLink") is None
+    assert source_rig.animation_data.action == source_action
+
+
+def test_bake_pose_root_motion_policies_are_deterministic():
+    source_rig = geometric_armature(
+        "Root Policy Source", [("root", None, (0, 0, 0), (0, 1, 0))]
+    )
+    source_rig.pose.bones["root"].rotation_mode = "XYZ"
+    source_rig.animation_data_create()
+    source_action = bpy.data.actions.new("Root Policy Action")
+    source_rig.animation_data.action = source_action
+    root = source_rig.pose.bones["root"]
+    for frame, value in ((1, 0.0), (11, 1.0)):
+        root.location = (value, 0.0, 0.0)
+        root.keyframe_insert(data_path="location", frame=frame, group="root")
+    source_rig.animation_data.action = None
+    source_id = ensure_entity_id(source_rig)
+    source_fingerprint = action_fingerprint(source_action)
+
+    expected_values = {"scale": 2.0, "preserve": 1.0, "drop": 0.0}
+    for index, (policy, expected) in enumerate(expected_values.items()):
+        target = geometric_armature(
+            f"Root Policy {policy}", [("pelvis", None, (0, 0, 0), (0, 2, 0))]
+        )
+        target.pose.bones["pelvis"].rotation_mode = "XYZ"
+        target_id = ensure_entity_id(target)
+        snapshot = scan_scene()
+        rigs = {item["entity_id"]: item for item in snapshot["rigs"]}
+        patch = {
+            "schema_version": "1.4",
+            "patch_id": f"root-policy-{policy}",
+            "source_title": f"Root policy {policy}",
+            "action_fingerprints": {source_action.name: source_fingerprint},
+            "rig_fingerprints": {
+                source_id: rigs[source_id]["fingerprint"],
+                target_id: rigs[target_id]["fingerprint"],
+            },
+            "operations": [
+                {
+                    "op": "play_clip",
+                    "entity_id": target_id,
+                    "payload": {
+                        "clip": source_action.name,
+                        "frame_start": 1 + index * 20,
+                        "frame_end": 11 + index * 20,
+                        "retarget": {
+                            "adapter": "bake_pose",
+                            "source_rig": source_id,
+                            "root_motion": policy,
+                            "bone_map": {"root": "pelvis"},
+                        },
+                    },
+                }
+            ],
+        }
+        summary = bridge.stage_patch(patch)["summary"]
+        bridge.apply_staged_patch()
+        derived = bpy.data.actions[summary["retargets"][0]["output_action"]]
+        curve = find_action_curve(derived, 'pose.bones["pelvis"].location', 0)
+        actual = curve.evaluate(11)
+        assert math.isclose(actual, expected, abs_tol=1e-6), (policy, actual, expected)
+
+
+def test_bake_pose_quaternion_continuity_and_fractional_endpoint():
+    source = geometric_armature(
+        "Quaternion Source", [("root", None, (0, 0, 0), (0, 1, 0))]
+    )
+    target = geometric_armature(
+        "Quaternion Target", [("pelvis", None, (0, 0, 0), (0, 1, 0))]
+    )
+    source.pose.bones["root"].rotation_mode = "QUATERNION"
+    target.pose.bones["pelvis"].rotation_mode = "QUATERNION"
+    source.animation_data_create()
+    action = bpy.data.actions.new("Quaternion Crossing")
+    source.animation_data.action = action
+    root = source.pose.bones["root"]
+    for frame, degrees in ((1.0, 170.0), (10.5, 190.0)):
+        root.rotation_quaternion = Quaternion(
+            (0.0, 0.0, 1.0), math.radians(degrees)
+        )
+        root.keyframe_insert(
+            data_path="rotation_quaternion", frame=frame, group="root"
+        )
+    source.animation_data.action = None
+    source_id = ensure_entity_id(source)
+    target_id = ensure_entity_id(target)
+    snapshot = scan_scene()
+    rigs = {item["entity_id"]: item for item in snapshot["rigs"]}
+    patch = {
+        "schema_version": "1.4",
+        "patch_id": "quaternion-continuity",
+        "source_title": "Quaternion continuity",
+        "action_fingerprints": {action.name: action_fingerprint(action)},
+        "rig_fingerprints": {
+            source_id: rigs[source_id]["fingerprint"],
+            target_id: rigs[target_id]["fingerprint"],
+        },
+        "operations": [
+            {
+                "op": "play_clip",
+                "entity_id": target_id,
+                "payload": {
+                    "clip": action.name,
+                    "frame_start": 1,
+                    "frame_end": 20,
+                    "retarget": {
+                        "adapter": "bake_pose",
+                        "source_rig": source_id,
+                        "sample_step": 4,
+                        "bone_map": {"root": "pelvis"},
+                    },
+                },
+            }
+        ],
+    }
+    summary = bridge.stage_patch(patch)["summary"]
+    assert summary["retargets"][0]["sample_count"] == 4
+    bridge.apply_staged_patch()
+    derived = bpy.data.actions[summary["retargets"][0]["output_action"]]
+    rotation_path = 'pose.bones["pelvis"].rotation_quaternion'
+    curves = [find_action_curve(derived, rotation_path, index) for index in range(4)]
+    assert [float(point.co.x) for point in curves[0].keyframe_points] == [
+        1.0,
+        5.0,
+        9.0,
+        10.5,
+    ]
+    previous = None
+    for frame in (1.0, 5.0, 9.0, 10.5):
+        quaternion = Quaternion(tuple(curve.evaluate(frame) for curve in curves))
+        quaternion.normalize()
+        if previous is not None:
+            assert quaternion.dot(previous) >= 0.0
+        previous = quaternion
+
+
+def test_bake_pose_boundaries_fail_closed_without_generated_actions():
+    source = armature("Boundary Source", [("root", None), ("child", "root")])
+    target = armature("Boundary Target", [("pelvis", None), ("chest", "pelvis")])
+    action = pose_action(source, "Boundary Action", ["root", "child"])
+    source_id = ensure_entity_id(source)
+    target_id = ensure_entity_id(target)
+    fingerprint = action_fingerprint(action)
+    snapshot = scan_scene()
+    rigs = {item["entity_id"]: item for item in snapshot["rigs"]}
+    base = {
+        "schema_version": "1.4",
+        "patch_id": "bake-boundaries",
+        "source_title": "Bake boundaries",
+        "action_fingerprints": {action.name: fingerprint},
+        "rig_fingerprints": {
+            source_id: rigs[source_id]["fingerprint"],
+            target_id: rigs[target_id]["fingerprint"],
+        },
+        "operations": [
+            {
+                "op": "play_clip",
+                "entity_id": target_id,
+                "payload": {
+                    "clip": action.name,
+                    "frame_start": 1,
+                    "frame_end": 11,
+                    "retarget": {
+                        "adapter": "bake_pose",
+                        "source_rig": source_id,
+                        "bone_map": {"root": "pelvis", "child": "chest"},
+                    },
+                },
+            }
+        ],
+    }
+    before = set(bpy.data.actions.keys())
+    target.pose.bones["chest"].constraints.new(type="COPY_ROTATION")
+    try:
+        bridge.stage_patch(base)
+    except ValueError as exc:
+        assert "constrained target bones" in str(exc)
+    else:
+        raise AssertionError("bake_pose accepted a constrained target bone")
+    assert set(bpy.data.actions.keys()) == before
+    assert target.animation_data is None
+
+    old_schema = json.loads(json.dumps(base))
+    old_schema["schema_version"] = "1.3"
+    old_schema["rig_fingerprints"] = {}
+    try:
+        bridge.stage_patch(old_schema)
+    except ValueError as exc:
+        assert "Scene Patch 1.4" in str(exc)
+    else:
+        raise AssertionError("bake_pose accepted an unguarded old patch schema")
+    assert set(bpy.data.actions.keys()) == before
+    for constraint in list(target.pose.bones["chest"].constraints):
+        target.pose.bones["chest"].constraints.remove(constraint)
+
+    bridge.stage_patch(base)
+    original_mode = target.pose.bones["chest"].rotation_mode
+    target.pose.bones["chest"].rotation_mode = (
+        "XYZ" if original_mode != "XYZ" else "QUATERNION"
+    )
+    try:
+        bridge.apply_staged_patch()
+    except ValueError as exc:
+        assert "changed after this patch was planned" in str(exc)
+    else:
+        raise AssertionError("bake_pose accepted a changed target rotation representation")
+    assert bridge.get_staged_patch()["staged"] is True
+    assert set(bpy.data.actions.keys()) == before
+    assert target.animation_data is None
+    target.pose.bones["chest"].rotation_mode = original_mode
+    bridge.discard_staged_patch()
+
+    target.pose.bones["chest"].driver_add("location", 0)
+    try:
+        bridge.stage_patch(base)
+    except ValueError as exc:
+        assert "driven target bones" in str(exc)
+    else:
+        raise AssertionError("bake_pose accepted a driven target bone")
+    assert set(bpy.data.actions.keys()) == before
+    target.pose.bones["chest"].driver_remove("location", 0)
+    target.animation_data_clear()
+
+    missing_source = json.loads(json.dumps(base))
+    del missing_source["operations"][0]["payload"]["retarget"]["source_rig"]
+    missing_source["rig_fingerprints"] = {target_id: rigs[target_id]["fingerprint"]}
+    try:
+        bridge.stage_patch(missing_source)
+    except ValueError as exc:
+        assert "explicit source_rig" in str(exc)
+    else:
+        raise AssertionError("bake_pose accepted no source rig")
+    assert set(bpy.data.actions.keys()) == before
+
+    invalid_step = json.loads(json.dumps(base))
+    invalid_step["operations"][0]["payload"]["retarget"]["sample_step"] = 0
+    try:
+        bridge.stage_patch(invalid_step)
+    except ValueError as exc:
+        assert "sample_step" in str(exc)
+    else:
+        raise AssertionError("bake_pose accepted an invalid sample step")
+    assert set(bpy.data.actions.keys()) == before
+
+    malformed_root = json.loads(json.dumps(base))
+    malformed_root["operations"][0]["payload"]["retarget"]["root_motion"] = []
+    try:
+        bridge.stage_patch(malformed_root)
+    except ValueError as exc:
+        assert "root_motion" in str(exc)
+    else:
+        raise AssertionError("bake_pose accepted a non-string root motion policy")
+    assert set(bpy.data.actions.keys()) == before
+
+    source.animation_data.action = action
+    source.pose.bones["root"].rotation_euler.y = 0.5
+    source.pose.bones["root"].keyframe_insert(
+        data_path="rotation_euler", frame=20001, group="root"
+    )
+    source.animation_data.action = None
+    oversized = json.loads(json.dumps(base))
+    oversized["action_fingerprints"][action.name] = action_fingerprint(action)
+    try:
+        bridge.stage_patch(oversized)
+    except ValueError as exc:
+        assert "sample safety limit" in str(exc) or "keyframe safety limit" in str(exc)
+    else:
+        raise AssertionError("bake_pose accepted an oversized sampling workload")
+    assert set(bpy.data.actions.keys()) == before
+    assert target.animation_data is None
 
 
 def test_retarget_rig_guard_rejects_rest_pose_edit_and_keeps_staging():
@@ -1924,6 +2371,22 @@ CASES = [
     (
         "rig_action_inventory_retarget_rollback",
         test_rig_action_inventory_retarget_execution_and_rollback,
+    ),
+    (
+        "bake_pose_axis_scale_editable_action",
+        test_bake_pose_creates_axis_corrected_scaled_editable_action,
+    ),
+    (
+        "bake_pose_root_motion_policies",
+        test_bake_pose_root_motion_policies_are_deterministic,
+    ),
+    (
+        "bake_pose_quaternion_continuity",
+        test_bake_pose_quaternion_continuity_and_fractional_endpoint,
+    ),
+    (
+        "bake_pose_boundaries_fail_closed",
+        test_bake_pose_boundaries_fail_closed_without_generated_actions,
     ),
     (
         "retarget_stale_action_guard",

@@ -1,4 +1,4 @@
-# Local bridge protocol 1.6
+# Local bridge protocol 1.7
 
 The Blender extension writes one JSON discovery record per running Blender process. The
 directory is `${FACELINK_INSTANCE_DIR}` when configured, otherwise
@@ -116,6 +116,9 @@ Protocol 1.6 adds Scene Snapshot 1.4. Each bone includes a normalized `rest_rota
 quaternion derived from Blender's local rest matrix, and each rig includes a
 `rig-<24 lowercase hex>` fingerprint over sorted bone names, parents, deform flags, heads,
 tails and canonicalized rest rotations.
+Protocol 1.7 extends this opaque Rig fingerprint with each pose bone's rotation mode because
+the generated bake Action must choose Euler, quaternion or axis-angle FCurve channels. Changing
+that mode after staging therefore invalidates the patch before mutation.
 
 Scene Patch 1.4 adds `rig_fingerprints`. For every pose Action, its target armature must be
 guarded; a retarget operation also guards the explicit or deterministically inferred source
@@ -134,8 +137,47 @@ are `safe`, `review`, `bake_required` or `incompatible`; the compiler refuses a
 when the median target/source bone scale differs, because raw FCurve translation values would
 otherwise be applied in the wrong scale.
 
-Health additionally advertises `rig_rest_geometry` and `rig_fingerprint`. These diagnostics
-identify when pose baking is necessary; they do not perform the future transform-aware bake.
+Health additionally advertises `rig_rest_geometry` and `rig_fingerprint`.
+
+## Sampled pose bake
+
+Protocol 1.7 adds the `sampled_pose_bake` capability. A reviewed Scene Patch 1.4
+`play_clip.retarget` may use:
+
+```json
+{
+  "adapter": "bake_pose",
+  "bone_map": {"sourceBone": "targetBone"},
+  "source_rig": "source-armature-entity-id",
+  "strict": true,
+  "sample_step": 1,
+  "root_motion": "scale"
+}
+```
+
+`source_rig` is mandatory. `sample_step` is an integer from 1 through 16 and defaults to 1.
+The source Action's exact first and last frames are always included, including fractional end
+frames. `root_motion` defaults to `scale`: translation on a mapped root bone is multiplied by
+the median target/source mapped-bone length ratio. `preserve` keeps source units and `drop`
+zeros root-bone translation. Translation on non-root pose bones uses that bone's individual
+target/source length ratio. Non-pose object channels are deliberately omitted.
+
+Blender evaluates the Action on a temporary source-armature copy and samples each mapped
+`PoseBone.matrix_basis`. That transform is relative to the source bone's parent and rest bone;
+writing it through the target bone's own local basis makes different target rest axes evaluate
+naturally. The output contains ordinary location, scale and the target bone's current rotation
+representation, with linear keys, and is placed in an editable NLA strip. Quaternion signs and
+Euler compatibility are stabilized between samples.
+
+The first bake adapter requires `strict: true`, an equivalent fully mapped parent hierarchy,
+non-zero mapped bone lengths, ordinary pose transform channels, and no pose constraints or
+transform drivers on mapped source or target bones. Armatures must be outside Edit Mode and a
+Blender 4.4+ source Action may have at most one slot. Control-rig IK/FK, constraint and driver
+evaluation are not inferred. A source Action must contain pose-bone channels.
+Sampling is capped at 20,000 frames, 10,000 FCurves and 200,000 keyframe values. Stage summary
+records the adapter, sample count, root-motion policy and deterministic output name. That name
+includes the source Action fingerprint, bake settings and both Rig fingerprints; repeat apply
+reuses the same generated Action, while rollback removes it when unused.
 
 ## Scene consistency and transform space
 

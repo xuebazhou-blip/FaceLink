@@ -87,7 +87,8 @@ def _parser() -> argparse.ArgumentParser:
     profile.add_argument("--out")
 
     analyze_profile = commands.add_parser(
-        "analyze-profile", help="Measure whether rename-only is safe for two rig inventories"
+        "analyze-profile",
+        help="Measure retarget compatibility for two rig inventories",
     )
     analyze_profile.add_argument("--profile", required=True)
     analyze_profile.add_argument("--snapshot", required=True)

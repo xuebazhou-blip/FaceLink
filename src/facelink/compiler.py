@@ -174,6 +174,20 @@ def _rig_action_issues(shot: ShotSpec, snapshot: SceneSnapshot) -> list[Validati
                 )
             )
             continue
+        if (
+            beat.retarget is not None
+            and beat.retarget.adapter == "bake_pose"
+            and not action.pose_bones
+        ):
+            issues.append(
+                ValidationIssue(
+                    severity="error",
+                    code="bake_pose_requires_pose_channels",
+                    message="bake_pose requires at least one pose-bone Action channel.",
+                    beat_index=index,
+                )
+            )
+            continue
         actor = entities.get(beat.actor)
         needs_rig = bool(action.pose_bones or beat.retarget is not None)
         if actor is None or not needs_rig:
@@ -257,20 +271,45 @@ def _rig_action_issues(shot: ShotSpec, snapshot: SceneSnapshot) -> list[Validati
                     beat_index=index,
                 )
             )
-        if beat.retarget is not None and any(
+        has_non_pose_channels = any(
             not path.startswith('pose.bones["') for path in action.data_paths
-        ):
+        )
+        if beat.retarget is not None and has_non_pose_channels:
+            rename_only = beat.retarget.adapter == "rename_only"
             issues.append(
                 ValidationIssue(
                     severity="warning",
-                    code="retarget_preserves_non_pose_channels",
+                    code=(
+                        "retarget_preserves_non_pose_channels"
+                        if rename_only
+                        else "bake_pose_ignores_non_pose_channels"
+                    ),
                     message=(
-                        f"Action '{beat.clip}' contains non-pose channels; rename_only "
-                        "preserves them unchanged."
+                        f"Action '{beat.clip}' contains non-pose channels; "
+                        + (
+                            "rename_only preserves them unchanged."
+                            if rename_only
+                            else "bake_pose omits them. Root motion must be stored on a "
+                            "mapped root pose bone to be transferred."
+                        )
                     ),
                     beat_index=index,
                 )
             )
+        if (
+            beat.retarget is not None
+            and beat.retarget.adapter == "bake_pose"
+            and snapshot.schema_version != "1.4"
+        ):
+            issues.append(
+                ValidationIssue(
+                    severity="error",
+                    code="bake_pose_requires_rig_geometry",
+                    message="bake_pose requires a Scene Snapshot 1.4 rig geometry inventory.",
+                    beat_index=index,
+                )
+            )
+            continue
         if beat.retarget is not None and snapshot.schema_version == "1.4":
             source_rig, source_error = _resolve_source_rig(action, beat.retarget, rigs)
             if source_rig is None:
@@ -304,7 +343,51 @@ def _rig_action_issues(shot: ShotSpec, snapshot: SceneSnapshot) -> list[Validati
                 and compatibility.median_length_ratio is not None
                 and abs(compatibility.median_length_ratio - 1.0) > 0.02
             )
-            if compatibility.status in {"incompatible", "bake_required"}:
+            if beat.retarget.adapter == "bake_pose":
+                hierarchy_issues = {
+                    item.code
+                    for item in compatibility.issues
+                    if item.code in {"hierarchy_mismatch", "source_parent_unmapped"}
+                }
+                if compatibility.status == "incompatible":
+                    issues.append(
+                        ValidationIssue(
+                            severity="error",
+                            code="bake_pose_geometry_incompatible",
+                            message=(
+                                f"bake_pose cannot map '{source_rig.name}' to '{rig.name}' "
+                                "because the rig mapping is incomplete or invalid."
+                            ),
+                            beat_index=index,
+                        )
+                    )
+                elif hierarchy_issues:
+                    issues.append(
+                        ValidationIssue(
+                            severity="error",
+                            code="bake_pose_hierarchy_unsupported",
+                            message=(
+                                "bake_pose v1 requires mapped source and target parent "
+                                "hierarchies to match; remap or bake through an intermediate "
+                                "deform skeleton."
+                            ),
+                            beat_index=index,
+                        )
+                    )
+                elif compatibility.status in {"review", "bake_required"}:
+                    issues.append(
+                        ValidationIssue(
+                            severity="warning",
+                            code="bake_pose_output_review",
+                            message=(
+                                f"bake_pose will correct local rest orientation and scale "
+                                f"from '{source_rig.name}' to '{rig.name}', but the generated "
+                                "Action should be reviewed in Blender."
+                            ),
+                            beat_index=index,
+                        )
+                    )
+            elif compatibility.status in {"incompatible", "bake_required"}:
                 issues.append(
                     ValidationIssue(
                         severity="error",

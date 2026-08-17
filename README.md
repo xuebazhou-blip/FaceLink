@@ -34,6 +34,8 @@ the scene only after the artist presses **Apply Staged Patch**.
   hierarchy, local rest axes and scale-normalized bone proportions before execution;
 - copies compatible Actions through an open `rename_only` bone-map profile, rewrites editable
   FCurve paths, places the result in NLA, and removes created copies during rollback;
+- samples reviewed `bake_pose` profiles into ordinary editable target Actions, correcting
+  different local rest axes and bone scale with explicit root-motion policy and bounded work;
 - predicts the staged camera frame without creating scene datablocks, measuring target size,
   center offset, safe-area fit, clipping and center-point occlusion before the artist applies;
 - rejects a staged plan when a referenced transform, parent link, lock or scene timing value
@@ -75,7 +77,7 @@ $env:FACELINK_BLENDER_EXE='C:\path\to\Blender\blender.exe' # optional if on PATH
 ```
 
 Then in Blender 4.5: **Edit → Preferences → Get Extensions → Install from Disk**, choose
-`dist/facelink-0.3.3.zip`, enable FaceLink, and open the **FaceLink** tab in the 3D Viewport
+`dist/facelink-0.3.4.zip`, enable FaceLink, and open the **FaceLink** tab in the 3D Viewport
 sidebar. Press **Start Bridge**.
 
 Run the MCP server:
@@ -163,6 +165,16 @@ sized rigs. Generated Actions and NLA strips remain ordinary editable Blender da
 [profiles/README.md](profiles/README.md) and
 [examples/retargeted_clip_shot.json](examples/retargeted_clip_shot.json).
 
+When analysis says `bake_required` because local rest axes or rig scale differ, change the
+reviewed profile to `adapter: "bake_pose"`, set its explicit `source_rig`, and optionally set
+`sample_step` (1-16) and `root_motion` (`scale`, `preserve` or `drop`). FaceLink samples the
+source Action's native frame range, writes linear location/rotation/scale keys to a normal
+target Action, and puts it in the same editable NLA workflow. Object-level Action channels are
+omitted; root motion must be on a mapped root pose bone. This first adapter requires equivalent
+mapped parent hierarchy and unconstrained source/target deform bones. See
+[profiles/mixamo_to_facelink_compact_bake.json](profiles/mixamo_to_facelink_compact_bake.json)
+and [examples/baked_retargeted_clip_shot.json](examples/baked_retargeted_clip_shot.json).
+
 Inspect or roll back FaceLink revisions from the command line:
 
 ```powershell
@@ -219,11 +231,12 @@ docs/                  Architecture, protocol and development notes
 
 ## Project status
 
-Version 0.3.3 is a creator-review alpha, not yet a production animation system. It can now
-detect when different rest poses, axes, hierarchy or proportions make `rename_only` unsafe,
-but it intentionally refuses those cases instead of pretending to correct them. Pose baking,
-IK/FK controls and root-motion conversion, multi-level navigation, multi-shot sequencing and
-visual diff overlays remain explicit follow-up work.
+Version 0.3.4 is a creator-review alpha, not yet a production animation system. It now performs
+a bounded transform-aware pose bake for reviewed mappings across different local rest axes and
+scale, with explicit root-motion policy. It does not automatically infer IK/FK controls, solve
+different mapped parent hierarchies, evaluate constrained control rigs, transfer object-level
+motion, synthesize missing motion or judge the visual result. Multi-level navigation,
+multi-shot sequencing and visual diff overlays remain follow-up work.
 
 Before publishing your fork, replace the placeholder GitHub URLs in `pyproject.toml`, add a
 short screen recording to this README, and enable GitHub's private vulnerability reporting.

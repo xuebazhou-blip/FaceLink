@@ -2,8 +2,11 @@
   "additionalProperties": false,
   "properties": {
     "adapter": {
-      "const": "rename_only",
       "default": "rename_only",
+      "enum": [
+        "rename_only",
+        "bake_pose"
+      ],
       "title": "Adapter",
       "type": "string"
     },
@@ -33,6 +36,37 @@
       ],
       "default": null,
       "title": "Source Rig"
+    },
+    "sample_step": {
+      "anyOf": [
+        {
+          "maximum": 16,
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Sample Step"
+    },
+    "root_motion": {
+      "anyOf": [
+        {
+          "enum": [
+            "scale",
+            "preserve",
+            "drop"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Root Motion"
     },
     "schema_version": {
       "const": "1.0",

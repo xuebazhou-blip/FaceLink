@@ -58,12 +58,16 @@ human-readable summary.
   diagnostics additionally verify deterministic suggestion conflicts, parent-local rest-axis
   angles, uniform-scale normalization, proportion drift, scaled pose-translation rejection,
   source-rig ambiguity, compiler rejection of bake-required mappings and stale Edit Mode
-  rest-pose rejection.
+  rest-pose rejection. Sampled-bake coverage uses real rigs whose rest axes differ by 90
+  degrees and lengths by 2x, checks all root-motion policies, exact/fractional sample endpoints,
+  quaternion continuity, linear editable output, idempotent reuse, source/timeline preservation,
+  rollback cleanup, old-schema rejection, constraint boundaries and workload caps.
 - Bridge acceptance must pass: localhost binding, bearer authentication, malformed requests,
   concurrent jobs, protocol 1.1 fingerprint agreement, main-thread dispatch, failed-job
   reporting, protocol 1.2 history/rollback, protocol 1.3 navigation snapshots, protocol 1.4
   composition diagnostics, protocol 1.5 rig/action capabilities, protocol 1.6 rest-geometry
-  guards and preview diagnostics, Undo and discovery cleanup.
+  guards, protocol 1.7 sampled-pose-bake capability and preview diagnostics, Undo and discovery
+  cleanup.
 - The built ZIP must install, enable and load from each Blender version's isolated portable
   extension repository.
 
@@ -73,8 +77,8 @@ result.
 
 ## What this does not prove
 
-The harness deliberately reports live provider calls, visual composition quality,
-transform-aware pose baking across different rest poses/axes/proportions, large production
-rigs and non-Windows platforms as unverified. Passing acceptance means the implemented
-editing/control surface behaves as specified; it does not mean FaceLink already solves motion
-generation, general character retargeting or cinematic judgment.
+The harness deliberately reports live provider calls, visual composition quality, large
+production/control rigs, IK/FK or constraint-driven retargeting and non-Windows platforms as
+unverified. Passing acceptance means the implemented deform-skeleton pose-bake and editing
+surface behave as specified; it does not mean FaceLink solves motion generation, general
+character retargeting or cinematic judgment.
