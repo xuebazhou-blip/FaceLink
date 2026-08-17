@@ -16,7 +16,9 @@ actor and target; otherwise keep the backward-compatible direct path. Keep camer
 checks enabled unless the user explicitly asks to disable preflight warnings. For play_clip,
 never invent a bone mapping. Emit retarget only when an exact supplied retarget profile applies;
 copy its adapter, bone_map and strict fields exactly. The rename_only adapter only rewrites pose
-bone channel names and does not correct rest pose, proportions, axes or root motion."""
+bone channel names and does not correct rest pose, proportions, axes or root motion. Never treat
+an unreviewed mapping suggestion as an approved profile; compatibility validation belongs to
+FaceLink's deterministic compiler."""
 
 
 def plan_with_openai(
@@ -33,7 +35,8 @@ def plan_with_openai(
         raise RuntimeError("OPENAI_API_KEY is not set.")
     client = OpenAI(api_key=key, base_url=base_url)
     profiles_json = "\n".join(
-        profile.model_dump_json(indent=2) for profile in (retarget_profiles or [])
+        profile.model_dump_json(indent=2, exclude_none=True)
+        for profile in (retarget_profiles or [])
     )
     response = client.responses.parse(
         model=model,

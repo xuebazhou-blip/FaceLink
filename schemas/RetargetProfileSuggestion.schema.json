@@ -1,0 +1,166 @@
+{
+  "$defs": {
+    "BoneMapMatch": {
+      "additionalProperties": false,
+      "properties": {
+        "source_bone": {
+          "title": "Source Bone",
+          "type": "string"
+        },
+        "target_bone": {
+          "title": "Target Bone",
+          "type": "string"
+        },
+        "method": {
+          "enum": [
+            "exact",
+            "normalized",
+            "alias"
+          ],
+          "title": "Method",
+          "type": "string"
+        },
+        "confidence": {
+          "enum": [
+            "high",
+            "medium"
+          ],
+          "title": "Confidence",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_bone",
+        "target_bone",
+        "method",
+        "confidence"
+      ],
+      "title": "BoneMapMatch",
+      "type": "object"
+    },
+    "RetargetProfile": {
+      "additionalProperties": false,
+      "properties": {
+        "adapter": {
+          "const": "rename_only",
+          "default": "rename_only",
+          "title": "Adapter",
+          "type": "string"
+        },
+        "bone_map": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "maxProperties": 512,
+          "minProperties": 1,
+          "title": "Bone Map",
+          "type": "object"
+        },
+        "strict": {
+          "default": true,
+          "title": "Strict",
+          "type": "boolean"
+        },
+        "source_rig": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Rig"
+        },
+        "schema_version": {
+          "const": "1.0",
+          "default": "1.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "bone_map",
+        "name"
+      ],
+      "title": "RetargetProfile",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "source_rig_id": {
+      "title": "Source Rig Id",
+      "type": "string"
+    },
+    "target_rig_id": {
+      "title": "Target Rig Id",
+      "type": "string"
+    },
+    "profile": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RetargetProfile"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "matches": {
+      "items": {
+        "$ref": "#/$defs/BoneMapMatch"
+      },
+      "maxItems": 1024,
+      "title": "Matches",
+      "type": "array"
+    },
+    "unmapped_sources": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 1024,
+      "title": "Unmapped Sources",
+      "type": "array"
+    },
+    "unused_targets": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 1024,
+      "title": "Unused Targets",
+      "type": "array"
+    },
+    "conflicts": {
+      "additionalProperties": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "maxProperties": 1024,
+      "title": "Conflicts",
+      "type": "object"
+    },
+    "review_required": {
+      "const": true,
+      "default": true,
+      "title": "Review Required",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "source_rig_id",
+    "target_rig_id"
+  ],
+  "title": "RetargetProfileSuggestion",
+  "type": "object"
+}

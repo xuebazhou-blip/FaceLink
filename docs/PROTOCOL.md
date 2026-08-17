@@ -1,4 +1,4 @@
-# Local bridge protocol 1.5
+# Local bridge protocol 1.6
 
 The Blender extension writes one JSON discovery record per running Blender process. The
 directory is `${FACELINK_INSTANCE_DIR}` when configured, otherwise
@@ -94,6 +94,7 @@ A `play_clip` payload may contain:
   "retarget": {
     "adapter": "rename_only",
     "bone_map": {"sourceBone": "targetBone"},
+    "source_rig": "source-armature-entity-id",
     "strict": true
   }
 }
@@ -108,6 +109,33 @@ places it in the existing editable FaceLink NLA track. Non-pose channels are pre
 
 Health advertises `rig_action_inventory`, `action_fingerprint` and `rename_only_retarget`.
 The adapter does not perform rest-pose, axis, scale, IK/FK or root-motion correction.
+
+## Rest-geometry compatibility and Rig guard
+
+Protocol 1.6 adds Scene Snapshot 1.4. Each bone includes a normalized `rest_rotation`
+quaternion derived from Blender's local rest matrix, and each rig includes a
+`rig-<24 lowercase hex>` fingerprint over sorted bone names, parents, deform flags, heads,
+tails and canonicalized rest rotations.
+
+Scene Patch 1.4 adds `rig_fingerprints`. For every pose Action, its target armature must be
+guarded; a retarget operation also guards the explicit or deterministically inferred source
+armature. The key set must exactly match those referenced rigs. Blender recalculates every
+fingerprint during stage and apply, rejecting deleted bones, renames, reparenting, head/tail
+edits, roll/rest-axis changes and deform-flag changes before any Action or NLA data is created.
+Stage summaries expose `rig_guarded` and the Blender panel displays the guard.
+
+The sidecar's `suggest_retarget_profile_map` MCP tool and `suggest-profile` CLI command match
+only exact names, punctuation/case-normalized names and a bounded alias table. Output always
+contains `review_required: true`, unresolved names and ambiguity conflicts. The
+`analyze_retarget_profile`/`analyze-profile` pair reports mapped hierarchy, parent-local axis
+and rest-rotation angles, median uniform rig scale and per-bone proportion deviation. Outcomes
+are `safe`, `review`, `bake_required` or `incompatible`; the compiler refuses a
+`rename_only` operation in the latter two states. It also refuses pose-bone location channels
+when the median target/source bone scale differs, because raw FCurve translation values would
+otherwise be applied in the wrong scale.
+
+Health additionally advertises `rig_rest_geometry` and `rig_fingerprint`. These diagnostics
+identify when pose baking is necessary; they do not perform the future transform-aware bake.
 
 ## Scene consistency and transform space
 

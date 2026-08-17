@@ -72,6 +72,8 @@ class FACELINK_PT_main(Panel):
                 review.label(text="Navigation environment guarded", icon="MOD_DYNAMICPAINT")
             if summary.get("action_guarded"):
                 review.label(text="Action consistency check enabled", icon="ACTION")
+            if summary.get("rig_guarded"):
+                review.label(text="Rig consistency check enabled", icon="ARMATURE_DATA")
             review.label(text=f"Operations: {summary['operation_count']}")
             names = ", ".join(item["name"] for item in summary["affected_entities"])
             if names:

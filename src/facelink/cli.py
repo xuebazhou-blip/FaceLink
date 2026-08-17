@@ -9,6 +9,7 @@ from .bridge_client import BridgeClient, discover_instances, select_instance
 from .compiler import compile_shot
 from .models import RetargetProfile, ScenePatch, SceneSnapshot, ShotSpec
 from .provider import plan_with_openai
+from .retargeting import analyze_rig_compatibility, suggest_retarget_profile
 
 
 def _read_json(path: str) -> dict[str, Any]:
@@ -25,6 +26,13 @@ def _write_json(payload: Any, path: str | None) -> None:
 
 def _read_profiles(paths: list[str]) -> list[RetargetProfile]:
     return [RetargetProfile.model_validate(_read_json(path)) for path in paths]
+
+
+def _rig(snapshot: SceneSnapshot, entity_id: str):
+    rig = next((item for item in snapshot.rigs if item.entity_id == entity_id), None)
+    if rig is None:
+        raise ValueError(f"Rig inventory '{entity_id}' was not found in the snapshot")
+    return rig
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -77,6 +85,25 @@ def _parser() -> argparse.ArgumentParser:
     )
     profile.add_argument("--profile", required=True)
     profile.add_argument("--out")
+
+    analyze_profile = commands.add_parser(
+        "analyze-profile", help="Measure whether rename-only is safe for two rig inventories"
+    )
+    analyze_profile.add_argument("--profile", required=True)
+    analyze_profile.add_argument("--snapshot", required=True)
+    analyze_profile.add_argument("--source-rig", required=True)
+    analyze_profile.add_argument("--target-rig", required=True)
+    analyze_profile.add_argument("--out")
+
+    suggest_profile = commands.add_parser(
+        "suggest-profile", help="Suggest a deterministic bone map that requires human review"
+    )
+    suggest_profile.add_argument("--snapshot", required=True)
+    suggest_profile.add_argument("--source-rig", required=True)
+    suggest_profile.add_argument("--target-rig", required=True)
+    suggest_profile.add_argument("--name", required=True)
+    suggest_profile.add_argument("--action")
+    suggest_profile.add_argument("--out")
     return parser
 
 
@@ -151,7 +178,31 @@ def main() -> None:
         )
     elif args.command == "validate-profile":
         profile = RetargetProfile.model_validate(_read_json(args.profile))
-        _write_json(profile.model_dump(mode="json"), args.out)
+        _write_json(profile.model_dump(mode="json", exclude_none=True), args.out)
+    elif args.command == "analyze-profile":
+        profile = RetargetProfile.model_validate(_read_json(args.profile))
+        snapshot = SceneSnapshot.model_validate(_read_json(args.snapshot))
+        report = analyze_rig_compatibility(
+            _rig(snapshot, args.source_rig),
+            _rig(snapshot, args.target_rig),
+            profile,
+        )
+        _write_json(report.model_dump(mode="json"), args.out)
+    elif args.command == "suggest-profile":
+        snapshot = SceneSnapshot.model_validate(_read_json(args.snapshot))
+        source_bones = None
+        if args.action:
+            action = next((item for item in snapshot.actions if item.name == args.action), None)
+            if action is None:
+                raise ValueError(f"Action inventory '{args.action}' was not found in the snapshot")
+            source_bones = set(action.pose_bones)
+        suggestion = suggest_retarget_profile(
+            _rig(snapshot, args.source_rig),
+            _rig(snapshot, args.target_rig),
+            name=args.name,
+            source_bones=source_bones,
+        )
+        _write_json(suggestion.model_dump(mode="json"), args.out)
 
 
 if __name__ == "__main__":

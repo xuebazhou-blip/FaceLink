@@ -26,6 +26,7 @@ from facelink.executor import (  # noqa: E402
     rollback_to_revision,
     undo_last_patch,
 )
+from facelink.rig_inventory import rig_fingerprint  # noqa: E402
 from facelink.snapshot import ensure_entity_id, scan_scene, scene_fingerprint  # noqa: E402
 
 import facelink as blender_addon  # noqa: E402
@@ -231,7 +232,7 @@ def test_snapshot_identity_bounds_parent_and_lock():
     assert actor_first["id"] == actor_second["id"]
     assert actor_first["locked"] is True
     assert actor_first["metadata"]["parent"] == ensure_entity_id(parent)
-    assert first["schema_version"] == "1.3"
+    assert first["schema_version"] == "1.4"
     assert first["navigation_environment_fingerprint"].startswith("nav-")
     assert first["transform_space"] == "WORLD"
     assert actor_first["transform"]["location"] == {"x": 11.0, "y": 2.0, "z": 3.0}
@@ -471,7 +472,7 @@ def test_navigation_snapshot_guard_overlay_execution_and_stale_environment():
         item for item in snapshot["entities"] if item["name"] == "Navigation L Corridor"
     )
 
-    assert snapshot["schema_version"] == "1.3"
+    assert snapshot["schema_version"] == "1.4"
     assert snapshot["navigation_environment_fingerprint"] == (
         "nav-63fb67061dd69bff488050e7"
     )
@@ -709,7 +710,7 @@ def test_rig_action_inventory_retarget_execution_and_rollback():
     }
 
     snapshot = scan_scene()
-    assert snapshot["schema_version"] == "1.3"
+    assert snapshot["schema_version"] == "1.4"
     source_inventory = next(
         item for item in snapshot["rigs"] if item["entity_id"] == source_id
     )
@@ -730,12 +731,19 @@ def test_rig_action_inventory_retarget_execution_and_rollback():
     assert action_state["pose_bones"] == ["mixamorig:Hips", "mixamorig:Spine"]
     assert action_state["fingerprint"] == source_fingerprint
     assert action_state["keyframe_count"] > 0
+    assert source_inventory["fingerprint"] == rig_fingerprint(source_rig)
+    assert target_inventory["fingerprint"] == rig_fingerprint(target_rig)
+    assert set(source_inventory["bones"][0]["rest_rotation"]) == {"w", "x", "y", "z"}
 
     patch = {
-        "schema_version": "1.3",
+        "schema_version": "1.4",
         "patch_id": "retarget-editable-action",
         "source_title": "Retarget editable action",
         "action_fingerprints": {"Mixamo Walk": source_fingerprint},
+        "rig_fingerprints": {
+            source_id: source_inventory["fingerprint"],
+            target_id: target_inventory["fingerprint"],
+        },
         "operations": [
             {
                 "op": "play_clip",
@@ -748,6 +756,7 @@ def test_rig_action_inventory_retarget_execution_and_rollback():
                     "retarget": {
                         "adapter": "rename_only",
                         "strict": True,
+                        "source_rig": source_id,
                         "bone_map": {
                             "mixamorig:Hips": "pelvis",
                             "mixamorig:Spine": "spine",
@@ -757,9 +766,26 @@ def test_rig_action_inventory_retarget_execution_and_rollback():
             }
         ],
     }
+    missing_rig_guard = json.loads(json.dumps(patch))
+    missing_rig_guard["rig_fingerprints"] = {}
+    try:
+        bridge.stage_patch(missing_rig_guard)
+    except ValueError as exc:
+        assert "one rig fingerprint per referenced armature" in str(exc).lower()
+    else:
+        raise AssertionError("Scene Patch 1.4 accepted unguarded armatures")
+    malformed_rig_guard = json.loads(json.dumps(patch))
+    malformed_rig_guard["rig_fingerprints"][target_id] = "rig-ZZZZZZZZZZZZZZZZZZZZZZZZ"
+    try:
+        bridge.stage_patch(malformed_rig_guard)
+    except ValueError as exc:
+        assert "valid fingerprints" in str(exc).lower()
+    else:
+        raise AssertionError("Scene Patch 1.4 accepted a malformed rig fingerprint")
     action_names_before = set(bpy.data.actions.keys())
     staged = bridge.stage_patch(patch)
     assert staged["summary"]["action_guarded"] is True
+    assert staged["summary"]["rig_guarded"] is True
     assert staged["summary"]["retargeted_action_count"] == 1
     assert staged["summary"]["retargets"][0]["mapped_bone_count"] == 2
     expected_output = staged["summary"]["retargets"][0]["output_action"]
@@ -851,6 +877,64 @@ def test_retarget_action_guard_rejects_stale_source_and_keeps_staging():
     assert target_rig.animation_data is None
     assert not any(
         action.get("facelink_retarget_source") == "Guarded Action"
+        for action in bpy.data.actions
+    )
+    bridge.discard_staged_patch()
+
+
+def test_retarget_rig_guard_rejects_rest_pose_edit_and_keeps_staging():
+    source_rig = armature("Rig Guard Source", [("root", None)])
+    target_rig = armature("Rig Guard Target", [("pelvis", None)])
+    source_id = ensure_entity_id(source_rig)
+    target_id = ensure_entity_id(target_rig)
+    source_action = pose_action(source_rig, "Rig Guard Action", ["root"])
+    snapshot = scan_scene()
+    rig_states = {item["entity_id"]: item for item in snapshot["rigs"]}
+    patch = {
+        "schema_version": "1.4",
+        "patch_id": "stale-rig-guard",
+        "source_title": "Stale rig guard",
+        "action_fingerprints": {
+            "Rig Guard Action": action_fingerprint(source_action)
+        },
+        "rig_fingerprints": {
+            source_id: rig_states[source_id]["fingerprint"],
+            target_id: rig_states[target_id]["fingerprint"],
+        },
+        "operations": [
+            {
+                "op": "play_clip",
+                "entity_id": target_id,
+                "payload": {
+                    "clip": "Rig Guard Action",
+                    "frame_start": 1,
+                    "frame_end": 11,
+                    "retarget": {
+                        "adapter": "rename_only",
+                        "bone_map": {"root": "pelvis"},
+                        "source_rig": source_id,
+                    },
+                },
+            }
+        ],
+    }
+    bridge.stage_patch(patch)
+    bpy.ops.object.select_all(action="DESELECT")
+    target_rig.select_set(True)
+    bpy.context.view_layer.objects.active = target_rig
+    bpy.ops.object.mode_set(mode="EDIT")
+    target_rig.data.edit_bones["pelvis"].tail.z += 0.5
+    bpy.ops.object.mode_set(mode="OBJECT")
+    try:
+        bridge.apply_staged_patch()
+    except ValueError as exc:
+        assert "changed after this patch was planned" in str(exc)
+    else:
+        raise AssertionError("A staged patch accepted a modified target rest pose")
+    assert bridge.get_staged_patch()["staged"] is True
+    assert target_rig.animation_data is None
+    assert not any(
+        action.get("facelink_retarget_source") == "Rig Guard Action"
         for action in bpy.data.actions
     )
     bridge.discard_staged_patch()
@@ -1844,6 +1928,10 @@ CASES = [
     (
         "retarget_stale_action_guard",
         test_retarget_action_guard_rejects_stale_source_and_keeps_staging,
+    ),
+    (
+        "retarget_stale_rig_guard",
+        test_retarget_rig_guard_rejects_rest_pose_edit_and_keeps_staging,
     ),
     (
         "retarget_invalid_maps_fail_closed",

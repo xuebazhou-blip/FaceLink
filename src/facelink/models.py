@@ -18,6 +18,20 @@ class Vec3(StrictModel):
         return [self.x, self.y, self.z]
 
 
+class Quaternion(StrictModel):
+    w: float = 1.0
+    x: float = 0.0
+    y: float = 0.0
+    z: float = 0.0
+
+    @model_validator(mode="after")
+    def normalized(self) -> Quaternion:
+        magnitude = (self.w**2 + self.x**2 + self.y**2 + self.z**2) ** 0.5
+        if abs(magnitude - 1.0) > 1e-3:
+            raise ValueError("quaternion must be normalized")
+        return self
+
+
 class Transform(StrictModel):
     location: Vec3 = Field(default_factory=Vec3)
     rotation_euler: Vec3 = Field(default_factory=Vec3)
@@ -81,12 +95,14 @@ class RigBone(StrictModel):
     use_deform: bool = True
     head: Vec3
     tail: Vec3
+    rest_rotation: Quaternion = Field(default_factory=Quaternion)
 
 
 class RigInventory(StrictModel):
     entity_id: str = Field(min_length=1)
     name: str = Field(min_length=1)
     bones: list[RigBone] = Field(default_factory=list, max_length=1_024)
+    fingerprint: str | None = Field(default=None, pattern=r"^rig-[0-9a-f]{24}$")
 
     @model_validator(mode="after")
     def valid_bone_hierarchy(self) -> RigInventory:
@@ -135,7 +151,7 @@ class ActionInventory(StrictModel):
 
 
 class SceneSnapshot(StrictModel):
-    schema_version: Literal["1.0", "1.1", "1.2", "1.3"] = "1.3"
+    schema_version: Literal["1.0", "1.1", "1.2", "1.3", "1.4"] = "1.4"
     transform_space: Literal["WORLD"] = "WORLD"
     scene_name: str
     fps: float = Field(default=24.0, gt=0)
@@ -173,6 +189,8 @@ class SceneSnapshot(StrictModel):
         rig_ids = [rig.entity_id for rig in self.rigs]
         if len(rig_ids) != len(set(rig_ids)):
             raise ValueError("rig inventory entity IDs must be unique")
+        if self.schema_version == "1.4" and any(rig.fingerprint is None for rig in self.rigs):
+            raise ValueError("Scene Snapshot 1.4 requires a fingerprint for every rig")
         action_names = [action.name for action in self.actions]
         if len(action_names) != len(set(action_names)):
             raise ValueError("action inventory names must be unique")
@@ -235,6 +253,7 @@ class ActionRetargetSpec(StrictModel):
     adapter: Literal["rename_only"] = "rename_only"
     bone_map: dict[str, str] = Field(min_length=1, max_length=512)
     strict: bool = True
+    source_rig: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def valid_bone_map(self) -> ActionRetargetSpec:
@@ -252,6 +271,59 @@ class ActionRetargetSpec(StrictModel):
 class RetargetProfile(ActionRetargetSpec):
     schema_version: Literal["1.0"] = "1.0"
     name: str = Field(min_length=1)
+
+
+class RetargetCompatibilityIssue(StrictModel):
+    severity: Literal["warning", "error"]
+    code: str = Field(min_length=1)
+    message: str = Field(min_length=1)
+    source_bone: str | None = None
+    target_bone: str | None = None
+
+
+class RetargetBoneMetric(StrictModel):
+    source_bone: str
+    target_bone: str
+    source_length: float = Field(ge=0.0)
+    target_length: float = Field(ge=0.0)
+    length_ratio: float | None = Field(default=None, gt=0.0)
+    length_deviation_percent: float | None = Field(default=None, ge=0.0)
+    axis_angle_degrees: float = Field(ge=0.0, le=180.0)
+    rest_rotation_angle_degrees: float = Field(ge=0.0, le=180.0)
+    hierarchy_preserved: bool
+
+
+class RetargetCompatibilityReport(StrictModel):
+    source_rig_id: str
+    source_rig_name: str
+    target_rig_id: str
+    target_rig_name: str
+    status: Literal["safe", "review", "bake_required", "incompatible"]
+    rename_only_safe: bool
+    mapped_bone_count: int = Field(ge=0, le=1_024)
+    median_length_ratio: float | None = Field(default=None, gt=0.0)
+    max_axis_angle_degrees: float = Field(ge=0.0, le=180.0)
+    max_rest_rotation_angle_degrees: float = Field(ge=0.0, le=180.0)
+    metrics: list[RetargetBoneMetric] = Field(default_factory=list, max_length=1_024)
+    issues: list[RetargetCompatibilityIssue] = Field(default_factory=list, max_length=2_048)
+
+
+class BoneMapMatch(StrictModel):
+    source_bone: str
+    target_bone: str
+    method: Literal["exact", "normalized", "alias"]
+    confidence: Literal["high", "medium"]
+
+
+class RetargetProfileSuggestion(StrictModel):
+    source_rig_id: str
+    target_rig_id: str
+    profile: RetargetProfile | None = None
+    matches: list[BoneMapMatch] = Field(default_factory=list, max_length=1_024)
+    unmapped_sources: list[str] = Field(default_factory=list, max_length=1_024)
+    unused_targets: list[str] = Field(default_factory=list, max_length=1_024)
+    conflicts: dict[str, list[str]] = Field(default_factory=dict, max_length=1_024)
+    review_required: Literal[True] = True
 
 
 class PlayClipBeat(BeatBase):
@@ -323,7 +395,7 @@ class PatchOperation(StrictModel):
 
 
 class ScenePatch(StrictModel):
-    schema_version: Literal["1.0", "1.1", "1.2", "1.3"] = "1.3"
+    schema_version: Literal["1.0", "1.1", "1.2", "1.3", "1.4"] = "1.4"
     patch_id: str
     source_title: str
     operations: list[PatchOperation]
@@ -333,6 +405,7 @@ class ScenePatch(StrictModel):
     fingerprint_frame: float | None = None
     navigation_environment_fingerprint: str | None = None
     action_fingerprints: dict[str, str] = Field(default_factory=dict, max_length=512)
+    rig_fingerprints: dict[str, str] = Field(default_factory=dict, max_length=64)
 
     @model_validator(mode="after")
     def valid_action_fingerprints(self) -> ScenePatch:
@@ -346,6 +419,16 @@ class ScenePatch(StrictModel):
         }
         if invalid:
             raise ValueError("action_fingerprints contains an invalid name or fingerprint")
+        invalid_rigs = {
+            entity_id: fingerprint
+            for entity_id, fingerprint in self.rig_fingerprints.items()
+            if not entity_id
+            or not fingerprint.startswith("rig-")
+            or len(fingerprint) != 28
+            or any(character not in "0123456789abcdef" for character in fingerprint[4:])
+        }
+        if invalid_rigs:
+            raise ValueError("rig_fingerprints contains an invalid entity ID or fingerprint")
         return self
 
 

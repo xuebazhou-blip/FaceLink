@@ -1,3 +1,5 @@
+import math
+
 import pytest
 from pydantic import ValidationError
 
@@ -11,13 +13,17 @@ from facelink.models import (
     SceneSnapshot,
     ShotSpec,
 )
-from facelink.retargeting import analyze_retarget
+from facelink.retargeting import (
+    analyze_retarget,
+    analyze_rig_compatibility,
+    suggest_retarget_profile,
+)
 
 
 def rig_action_snapshot():
     return SceneSnapshot.model_validate(
         {
-            "schema_version": "1.3",
+            "schema_version": "1.4",
             "scene_name": "Retarget",
             "entities": [
                 {
@@ -43,6 +49,7 @@ def rig_action_snapshot():
                 {
                     "entity_id": "source-rig",
                     "name": "Source Rig",
+                    "fingerprint": "rig-111111111111111111111111",
                     "bones": [
                         {
                             "name": "mixamorig:Hips",
@@ -60,6 +67,7 @@ def rig_action_snapshot():
                 {
                     "entity_id": "target-rig",
                     "name": "Target Rig",
+                    "fingerprint": "rig-222222222222222222222222",
                     "bones": [
                         {"name": "pelvis", "head": {}, "tail": {"z": 1}},
                         {
@@ -210,6 +218,32 @@ def test_retarget_models_reject_invalid_hierarchies_maps_and_fingerprints():
                 "fingerprint": "not-a-fingerprint",
             }
         )
+    with pytest.raises(ValidationError, match="quaternion must be normalized"):
+        RigInventory.model_validate(
+            {
+                "entity_id": "rig",
+                "name": "Bad rotation",
+                "bones": [
+                    {
+                        "name": "root",
+                        "head": {},
+                        "tail": {"z": 1},
+                        "rest_rotation": {"w": 2, "x": 0, "y": 0, "z": 0},
+                    }
+                ],
+            }
+        )
+    with pytest.raises(ValidationError, match="requires a fingerprint for every rig"):
+        SceneSnapshot.model_validate(
+            {
+                "schema_version": "1.4",
+                "scene_name": "Missing rig guard",
+                "entities": [
+                    {"id": "rig", "name": "Rig", "type": "ARMATURE", "transform": {}}
+                ],
+                "rigs": [{"entity_id": "rig", "name": "Rig", "bones": []}],
+            }
+        )
     profile = RetargetProfile(
         name="Mixamo to compact",
         bone_map={"mixamorig:Hips": "pelvis"},
@@ -225,6 +259,13 @@ def test_scene_patch_rejects_non_hex_action_fingerprint():
             source_title="Bad fingerprint",
             operations=[],
             action_fingerprints={"Walk": "action-zzzzzzzzzzzzzzzzzzzzzzzz"},
+        )
+    with pytest.raises(ValidationError, match="invalid entity ID or fingerprint"):
+        ScenePatch(
+            patch_id="bad-rig-fingerprint",
+            source_title="Bad rig fingerprint",
+            operations=[],
+            rig_fingerprints={"rig": "rig-ZZZZZZZZZZZZZZZZZZZZZZZZ"},
         )
 
 
@@ -251,13 +292,18 @@ def test_compiler_emits_guarded_retarget_patch_and_explainable_warnings():
         "retarget_preserves_non_pose_channels"
     ]
     patch = compile_shot(shot, snapshot)
-    assert patch.schema_version == "1.3"
+    assert patch.schema_version == "1.4"
     assert patch.action_fingerprints == {
         "Source Walk": "action-111111111111111111111111"
     }
     operation = patch.operations[1]
     assert operation.payload["retarget"]["adapter"] == "rename_only"
+    assert operation.payload["retarget"]["source_rig"] == "source-rig"
     assert operation.payload["retarget"]["bone_map"]["mixamorig:Hips"] == "pelvis"
+    assert patch.rig_fingerprints == {
+        "source-rig": "rig-111111111111111111111111",
+        "target-rig": "rig-222222222222222222222222",
+    }
     assert "non-pose channels" in patch.warnings[0]
 
 
@@ -281,12 +327,233 @@ def test_compiler_accepts_identity_rig_and_rejects_unmapped_incompatible_rig():
     assert patch.action_fingerprints == {
         "Source Walk": "action-111111111111111111111111"
     }
+    assert patch.rig_fingerprints == {
+        "source-rig": "rig-111111111111111111111111"
+    }
     assert "retarget" not in patch.operations[1].payload
 
     shot.beats[0].actor = "target-rig"
     report = validate_shot(shot, snapshot)
     assert report.valid is False
     assert "action_incompatible_with_rig" in {issue.code for issue in report.issues}
+
+
+def test_rig_geometry_report_distinguishes_safe_review_bake_and_incompatible():
+    snapshot = rig_action_snapshot()
+    source = snapshot.rigs[0]
+    target = snapshot.rigs[1]
+    spec = retarget_spec(source_rig="source-rig")
+    safe = analyze_rig_compatibility(source, target, spec)
+    assert safe.status == "safe"
+    assert safe.rename_only_safe is True
+    assert safe.median_length_ratio == 1.0
+
+    target.bones[1].rest_rotation.w = math.cos(math.radians(1.5))
+    target.bones[1].rest_rotation.x = math.sin(math.radians(1.5))
+    review = analyze_rig_compatibility(source, target, spec)
+    assert review.status == "review"
+    assert review.max_rest_rotation_angle_degrees == pytest.approx(3.0)
+
+    target.bones[1].rest_rotation.w = math.cos(math.radians(10.0))
+    target.bones[1].rest_rotation.x = math.sin(math.radians(10.0))
+    bake = analyze_rig_compatibility(source, target, spec)
+    assert bake.status == "bake_required"
+    assert "rest_rotation_difference" in {issue.code for issue in bake.issues}
+
+    missing = analyze_rig_compatibility(
+        source,
+        target,
+        ActionRetargetSpec(
+            bone_map={
+                "mixamorig:Hips": "missing",
+                "mixamorig:Spine": "spine",
+            }
+        ),
+    )
+    assert missing.status == "incompatible"
+    assert "target_bone_missing" in {issue.code for issue in missing.issues}
+
+
+def test_profile_suggestion_uses_bounded_deterministic_matches_and_exposes_conflicts():
+    source = RigInventory.model_validate(
+        {
+            "entity_id": "source",
+            "name": "Source",
+            "bones": [
+                {"name": "mixamorig:Hips", "head": {}, "tail": {"z": 1}},
+                {
+                    "name": "mixamorig:Spine",
+                    "parent": "mixamorig:Hips",
+                    "head": {},
+                    "tail": {"z": 1},
+                },
+                {
+                    "name": "mixamorig:LeftArm",
+                    "parent": "mixamorig:Spine",
+                    "head": {},
+                    "tail": {"z": 1},
+                },
+            ],
+        }
+    )
+    target = RigInventory.model_validate(
+        {
+            "entity_id": "target",
+            "name": "Target",
+            "bones": [
+                {"name": "pelvis", "head": {}, "tail": {"z": 1}},
+                {
+                    "name": "Spine",
+                    "parent": "pelvis",
+                    "head": {},
+                    "tail": {"z": 1},
+                },
+                {
+                    "name": "upper_arm.L",
+                    "parent": "Spine",
+                    "head": {},
+                    "tail": {"z": 1},
+                },
+            ],
+        }
+    )
+    suggestion = suggest_retarget_profile(source, target, name="Suggested")
+    assert suggestion.review_required is True
+    assert suggestion.profile is not None
+    assert suggestion.profile.source_rig == "source"
+    assert suggestion.profile.bone_map == {
+        "mixamorig:Hips": "pelvis",
+        "mixamorig:LeftArm": "upper_arm.L",
+        "mixamorig:Spine": "Spine",
+    }
+    assert {match.method for match in suggestion.matches} == {"normalized", "alias"}
+    assert suggestion.unmapped_sources == []
+
+    action_limited = suggest_retarget_profile(
+        source,
+        target,
+        name="Action limited",
+        source_bones={"mixamorig:LeftArm"},
+    )
+    assert action_limited.profile is not None
+    assert set(action_limited.profile.bone_map) == {
+        "mixamorig:Hips",
+        "mixamorig:Spine",
+        "mixamorig:LeftArm",
+    }
+
+    ambiguous_target = target.model_copy(deep=True)
+    ambiguous_target.bones.append(
+        ambiguous_target.bones[0].model_copy(update={"name": "hip"})
+    )
+    ambiguous = suggest_retarget_profile(
+        source,
+        ambiguous_target,
+        name="Ambiguous",
+        source_bones={"mixamorig:Hips"},
+    )
+    assert ambiguous.profile is None
+    assert ambiguous.conflicts == {"mixamorig:Hips": ["hip", "pelvis"]}
+    assert ambiguous.unmapped_sources == ["mixamorig:Hips"]
+
+
+def test_compiler_blocks_rename_only_when_rest_geometry_requires_baking():
+    snapshot = rig_action_snapshot()
+    snapshot.rigs[1].bones[1].rest_rotation.w = math.cos(math.radians(10.0))
+    snapshot.rigs[1].bones[1].rest_rotation.x = math.sin(math.radians(10.0))
+    shot = ShotSpec.model_validate(
+        {
+            "duration": 1,
+            "beats": [
+                {
+                    "type": "play_clip",
+                    "actor": "target-rig",
+                    "clip": "Source Walk",
+                    "duration": 1,
+                    "retarget": retarget_spec().model_dump(mode="json"),
+                }
+            ],
+        }
+    )
+    report = validate_shot(shot, snapshot)
+    assert report.valid is False
+    assert "rename_only_geometry_incompatible" in {
+        issue.code for issue in report.issues
+    }
+
+
+def test_compiler_blocks_unscaled_pose_translation_on_uniformly_scaled_rig():
+    snapshot = rig_action_snapshot()
+    snapshot.actions[0].data_paths.append(
+        'pose.bones["mixamorig:Hips"].location'
+    )
+    snapshot.rigs[1].bones[0].tail.z = 2
+    snapshot.rigs[1].bones[1].head.z = 2
+    snapshot.rigs[1].bones[1].tail.z = 4
+    shot = ShotSpec.model_validate(
+        {
+            "duration": 1,
+            "beats": [
+                {
+                    "type": "play_clip",
+                    "actor": "target-rig",
+                    "clip": "Source Walk",
+                    "duration": 1,
+                    "retarget": retarget_spec().model_dump(mode="json"),
+                }
+            ],
+        }
+    )
+    report = validate_shot(shot, snapshot)
+    assert report.valid is False
+    assert "rename_only_translation_scale_mismatch" in {
+        issue.code for issue in report.issues
+    }
+
+
+def test_compiler_requires_explicit_source_rig_when_action_owner_is_ambiguous():
+    snapshot = rig_action_snapshot()
+    duplicate = snapshot.rigs[0].model_copy(
+        deep=True,
+        update={
+            "entity_id": "source-rig-copy",
+            "name": "Source Rig Copy",
+            "fingerprint": "rig-333333333333333333333333",
+        },
+    )
+    snapshot.rigs.append(duplicate)
+    snapshot.entities.append(
+        snapshot.entities[0].model_copy(
+            deep=True,
+            update={"id": "source-rig-copy", "name": "Source Rig Copy"},
+        )
+    )
+    shot = ShotSpec.model_validate(
+        {
+            "duration": 1,
+            "beats": [
+                {
+                    "type": "play_clip",
+                    "actor": "target-rig",
+                    "clip": "Source Walk",
+                    "duration": 1,
+                    "retarget": retarget_spec().model_dump(mode="json"),
+                }
+            ],
+        }
+    )
+    ambiguous = validate_shot(shot, snapshot)
+    assert ambiguous.valid is False
+    assert "retarget_source_rig_ambiguous" in {
+        issue.code for issue in ambiguous.issues
+    }
+
+    shot.beats[0].retarget.source_rig = "source-rig"
+    assert validate_shot(shot, snapshot).valid is True
+    shot.beats[0].retarget.source_rig = "missing"
+    missing = validate_shot(shot, snapshot)
+    assert missing.valid is False
+    assert "retarget_source_rig_missing" in {issue.code for issue in missing.issues}
 
 
 @pytest.mark.parametrize(

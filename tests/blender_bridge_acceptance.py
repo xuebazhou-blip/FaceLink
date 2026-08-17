@@ -139,14 +139,16 @@ def client_flow(result_box):
             "rig_action_inventory",
             "action_fingerprint",
             "rename_only_retarget",
+            "rig_rest_geometry",
+            "rig_fingerprint",
         } <= set(health["capabilities"])
-        assert health["protocol_version"] == "1.5"
+        assert health["protocol_version"] == "1.6"
         scan_ids = [submit(base_url, token, "scan_scene") for _ in range(3)]
         assert len(set(scan_ids)) == 3
         scans = [wait_job(base_url, token, job_id) for job_id in scan_ids]
         assert all(job["status"] == "succeeded" for job in scans)
         snapshot = scans[0]["result"]
-        assert snapshot["schema_version"] == "1.3"
+        assert snapshot["schema_version"] == "1.4"
         assert isinstance(snapshot["rigs"], list)
         assert isinstance(snapshot["actions"], list)
         assert snapshot["navigation_environment_fingerprint"].startswith("nav-")

@@ -81,6 +81,18 @@ state and removes a FaceLink-created Action when it has no remaining users. This
 no claim about different rest poses, axes, proportions, control rigs or root-motion policy;
 those require a future transform-aware adapter with stronger geometric validation.
 
+Protocol 1.6 adds Scene Snapshot 1.4 rest-orientation quaternions and deterministic Rig
+fingerprints. A pure-Python analyzer compares each reviewed mapping in parent-local space,
+checks mapped hierarchy, separates uniform rig scale from per-bone proportion drift and emits
+per-bone angular/length metrics. Deterministic name suggestions are limited to exact,
+punctuation/case-normalized and a small documented alias table; suggestions are never applied
+and always require review. The compiler blocks `rename_only` for `bake_required` or
+`incompatible` geometry. Scene Patch 1.4 guards every referenced armature, so an Edit Mode
+rest-pose change between scan, stage and apply fails before mutation.
+Uniform rig scale is separated from per-bone proportion drift, but an Action with pose-bone
+location channels is rejected when source and target scale differ because `rename_only` cannot
+rescale those translations without baking.
+
 Protocol 1.1 adds optimistic scene consistency. The compiler fingerprints scene timing and
 the world-space state of only the objects referenced by a patch. Blender checks that value
 both when staging and when applying, so an intervening transform, parent, lock or timing edit
@@ -113,6 +125,6 @@ versions are explicit so clients can negotiate future changes.
   geometry. It does not yet solve stacked floors, moving obstacles, crowds or character gait.
 - Camera composition preflight is geometric and evaluates the current target bounds plus the
   initial camera state (and both dolly endpoints). It does not judge lighting, aesthetics,
-  partial-surface occlusion or future animated deformations. v0.3.2 supports perspective
+  partial-surface occlusion or future animated deformations. v0.3.3 supports perspective
   cameras without lens shift and explicitly declines unsupported projections; broader camera
   models and artistic judgment need a later render/vision evaluator.

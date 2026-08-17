@@ -11,6 +11,7 @@ except ImportError:  # MCP Python SDK 1.x
 from .bridge_client import BridgeClient, discover_instances, select_instance
 from .compiler import compile_shot, validate_shot
 from .models import RetargetProfile, ScenePatch, SceneSnapshot, ShotSpec
+from .retargeting import analyze_rig_compatibility, suggest_retarget_profile
 
 logging.basicConfig(level=logging.INFO)
 LOGGER = logging.getLogger("facelink.mcp")
@@ -46,7 +47,56 @@ def scan_scene(instance_id: str | None = None) -> dict[str, Any]:
 @mcp.tool()
 def validate_retarget_profile(profile: RetargetProfile) -> dict[str, Any]:
     """Validate and normalize an open rename-only bone-map profile without changing Blender."""
-    return profile.model_dump(mode="json")
+    return profile.model_dump(mode="json", exclude_none=True)
+
+
+def _rig(scene_snapshot: SceneSnapshot, entity_id: str):
+    rig = next((item for item in scene_snapshot.rigs if item.entity_id == entity_id), None)
+    if rig is None:
+        raise ValueError(f"Rig inventory '{entity_id}' was not found in the snapshot")
+    return rig
+
+
+@mcp.tool()
+def analyze_retarget_profile(
+    profile: RetargetProfile,
+    source_rig_id: str,
+    target_rig_id: str,
+    scene_snapshot: SceneSnapshot,
+) -> dict[str, Any]:
+    """Measure hierarchy, rest-axis and proportion safety for a reviewed bone map."""
+    report = analyze_rig_compatibility(
+        _rig(scene_snapshot, source_rig_id),
+        _rig(scene_snapshot, target_rig_id),
+        profile,
+    )
+    return report.model_dump(mode="json")
+
+
+@mcp.tool()
+def suggest_retarget_profile_map(
+    source_rig_id: str,
+    target_rig_id: str,
+    profile_name: str,
+    scene_snapshot: SceneSnapshot,
+    action_name: str | None = None,
+) -> dict[str, Any]:
+    """Suggest exact/normalized/alias bone matches; output always requires human review."""
+    source_bones = None
+    if action_name is not None:
+        action = next(
+            (item for item in scene_snapshot.actions if item.name == action_name), None
+        )
+        if action is None:
+            raise ValueError(f"Action inventory '{action_name}' was not found in the snapshot")
+        source_bones = set(action.pose_bones)
+    suggestion = suggest_retarget_profile(
+        _rig(scene_snapshot, source_rig_id),
+        _rig(scene_snapshot, target_rig_id),
+        name=profile_name,
+        source_bones=source_bones,
+    )
+    return suggestion.model_dump(mode="json")
 
 
 @mcp.tool()

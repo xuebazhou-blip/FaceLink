@@ -21,6 +21,19 @@
       "title": "Strict",
       "type": "boolean"
     },
+    "source_rig": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Rig"
+    },
     "schema_version": {
       "const": "1.0",
       "default": "1.0",

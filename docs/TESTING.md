@@ -54,12 +54,16 @@ human-readable summary.
 - Rig/Action acceptance must create actual Blender armatures and pose-bone keyframes, verify
   bounded inventories and stable fingerprints, strict source/target coverage, unique targets,
   stale-Action rejection, source preservation, editable copied FCurve paths, non-pose channel
-  preservation, NLA idempotency and removal of created Actions after full rollback.
+  preservation, NLA idempotency and removal of created Actions after full rollback. Rig
+  diagnostics additionally verify deterministic suggestion conflicts, parent-local rest-axis
+  angles, uniform-scale normalization, proportion drift, scaled pose-translation rejection,
+  source-rig ambiguity, compiler rejection of bake-required mappings and stale Edit Mode
+  rest-pose rejection.
 - Bridge acceptance must pass: localhost binding, bearer authentication, malformed requests,
   concurrent jobs, protocol 1.1 fingerprint agreement, main-thread dispatch, failed-job
   reporting, protocol 1.2 history/rollback, protocol 1.3 navigation snapshots, protocol 1.4
-  composition diagnostics, protocol 1.5 rig/action capabilities and preview diagnostics, Undo
-  and discovery cleanup.
+  composition diagnostics, protocol 1.5 rig/action capabilities, protocol 1.6 rest-geometry
+  guards and preview diagnostics, Undo and discovery cleanup.
 - The built ZIP must install, enable and load from each Blender version's isolated portable
   extension repository.
 
@@ -70,7 +74,7 @@ result.
 ## What this does not prove
 
 The harness deliberately reports live provider calls, visual composition quality,
-transform-aware retargeting across different rest poses/axes/proportions, large production
+transform-aware pose baking across different rest poses/axes/proportions, large production
 rigs and non-Windows platforms as unverified. Passing acceptance means the implemented
 editing/control surface behaves as specified; it does not mean FaceLink already solves motion
 generation, general character retargeting or cinematic judgment.

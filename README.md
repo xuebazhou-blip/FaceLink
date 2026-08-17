@@ -29,7 +29,9 @@ the scene only after the artist presses **Apply Staged Patch**.
 - fingerprints the complete navigation environment so a newly added obstacle or edited
   navigation mesh invalidates an already staged plan;
 - inventories armature bone hierarchies and editable Blender Actions, including pose-bone
-  channels, frame ranges and deterministic content fingerprints;
+  channels, rest orientations, frame ranges and deterministic content fingerprints;
+- suggests review-only bone maps using deterministic name normalization, then measures mapped
+  hierarchy, local rest axes and scale-normalized bone proportions before execution;
 - copies compatible Actions through an open `rename_only` bone-map profile, rewrites editable
   FCurve paths, places the result in NLA, and removes created copies during rollback;
 - predicts the staged camera frame without creating scene datablocks, measuring target size,
@@ -73,7 +75,7 @@ $env:FACELINK_BLENDER_EXE='C:\path\to\Blender\blender.exe' # optional if on PATH
 ```
 
 Then in Blender 4.5: **Edit → Preferences → Get Extensions → Install from Disk**, choose
-`dist/facelink-0.3.2.zip`, enable FaceLink, and open the **FaceLink** tab in the 3D Viewport
+`dist/facelink-0.3.3.zip`, enable FaceLink, and open the **FaceLink** tab in the 3D Viewport
 sidebar. Press **Start Bridge**.
 
 Run the MCP server:
@@ -135,6 +137,16 @@ reviewed open profile:
 uv run facelink validate-profile `
   --profile profiles/mixamo_to_facelink_compact.json
 
+uv run facelink suggest-profile `
+  --snapshot scene.json --source-rig source-armature-id `
+  --target-rig target-armature-id --action "Mixamo Walk" `
+  --name "Reviewed map" --out suggestion.json
+
+uv run facelink analyze-profile `
+  --profile profiles/mixamo_to_facelink_compact.json `
+  --snapshot scene.json --source-rig source-armature-id `
+  --target-rig target-armature-id --out compatibility.json
+
 uv run facelink plan `
   --brief "Apply Mixamo Walk to the target rig for two seconds" `
   --snapshot scene.json `
@@ -142,10 +154,13 @@ uv run facelink plan `
   --out shot.json
 ```
 
-The default is strict: every pose bone used by the Action must be mapped to a real target
-bone. FaceLink fingerprints the source Action at scan time and rejects the patch if its curves
-change before stage/apply. The generated Action and NLA strip remain ordinary editable Blender
-data. See [profiles/README.md](profiles/README.md) and
+Suggestions are never applied automatically and always carry `review_required: true`. The
+compatibility result is `safe`, `review`, `bake_required` or `incompatible`. The compiler
+blocks `rename_only` when hierarchy, rest orientation or proportions require baking. FaceLink
+fingerprints both Actions and referenced rigs, so curve or rest-pose edits after scanning fail
+before mutation; it also blocks unscaled pose-bone translation channels across differently
+sized rigs. Generated Actions and NLA strips remain ordinary editable Blender data. See
+[profiles/README.md](profiles/README.md) and
 [examples/retargeted_clip_shot.json](examples/retargeted_clip_shot.json).
 
 Inspect or roll back FaceLink revisions from the command line:
@@ -187,7 +202,7 @@ the target center. `dolly_in` checks both its start and end positions. Threshold
 
 This is a deterministic preflight, not an artistic quality score. It does not render, use a
 vision model, judge lighting or guarantee that every part of a complex subject is unoccluded.
-Version 0.3.2 evaluates perspective cameras without lens shift and reports other projection
+Version 0.3.3 evaluates perspective cameras without lens shift and reports other projection
 types as unsupported instead of returning misleading metrics.
 
 ## Repository map
@@ -204,11 +219,11 @@ docs/                  Architecture, protocol and development notes
 
 ## Project status
 
-Version 0.3.2 is a creator-review alpha, not yet a production animation system. Its first
-retarget adapter is deliberately limited to channel-name rewriting for otherwise compatible
-rigs; it does not solve different rest poses, bone axes, proportions, IK/FK controls or root
-motion. Full character retargeting, multi-level and dynamic-obstacle navigation, multi-shot
-sequencing and visual diff overlays remain explicit follow-up work.
+Version 0.3.3 is a creator-review alpha, not yet a production animation system. It can now
+detect when different rest poses, axes, hierarchy or proportions make `rename_only` unsafe,
+but it intentionally refuses those cases instead of pretending to correct them. Pose baking,
+IK/FK controls and root-motion conversion, multi-level navigation, multi-shot sequencing and
+visual diff overlays remain explicit follow-up work.
 
 Before publishing your fork, replace the placeholder GitHub URLs in `pyproject.toml`, add a
 short screen recording to this README, and enable GitHub's private vulnerability reporting.

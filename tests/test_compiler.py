@@ -27,7 +27,7 @@ def test_compile_move_is_deterministic(scene_snapshot):
     first = compile_shot(shot, scene_snapshot)
     second = compile_shot(shot, scene_snapshot)
     assert first.patch_id == second.patch_id
-    assert first.schema_version == "1.3"
+    assert first.schema_version == "1.4"
     assert first.navigation_environment_fingerprint.startswith("nav-")
     assert first.scene_fingerprint.startswith("scene-")
     assert first.fingerprint_entities == ["actor", "marker"]

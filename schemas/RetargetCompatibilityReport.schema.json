@@ -1,0 +1,227 @@
+{
+  "$defs": {
+    "RetargetBoneMetric": {
+      "additionalProperties": false,
+      "properties": {
+        "source_bone": {
+          "title": "Source Bone",
+          "type": "string"
+        },
+        "target_bone": {
+          "title": "Target Bone",
+          "type": "string"
+        },
+        "source_length": {
+          "minimum": 0.0,
+          "title": "Source Length",
+          "type": "number"
+        },
+        "target_length": {
+          "minimum": 0.0,
+          "title": "Target Length",
+          "type": "number"
+        },
+        "length_ratio": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Length Ratio"
+        },
+        "length_deviation_percent": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Length Deviation Percent"
+        },
+        "axis_angle_degrees": {
+          "maximum": 180.0,
+          "minimum": 0.0,
+          "title": "Axis Angle Degrees",
+          "type": "number"
+        },
+        "rest_rotation_angle_degrees": {
+          "maximum": 180.0,
+          "minimum": 0.0,
+          "title": "Rest Rotation Angle Degrees",
+          "type": "number"
+        },
+        "hierarchy_preserved": {
+          "title": "Hierarchy Preserved",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "source_bone",
+        "target_bone",
+        "source_length",
+        "target_length",
+        "axis_angle_degrees",
+        "rest_rotation_angle_degrees",
+        "hierarchy_preserved"
+      ],
+      "title": "RetargetBoneMetric",
+      "type": "object"
+    },
+    "RetargetCompatibilityIssue": {
+      "additionalProperties": false,
+      "properties": {
+        "severity": {
+          "enum": [
+            "warning",
+            "error"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "code": {
+          "minLength": 1,
+          "title": "Code",
+          "type": "string"
+        },
+        "message": {
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "source_bone": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Bone"
+        },
+        "target_bone": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Bone"
+        }
+      },
+      "required": [
+        "severity",
+        "code",
+        "message"
+      ],
+      "title": "RetargetCompatibilityIssue",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "source_rig_id": {
+      "title": "Source Rig Id",
+      "type": "string"
+    },
+    "source_rig_name": {
+      "title": "Source Rig Name",
+      "type": "string"
+    },
+    "target_rig_id": {
+      "title": "Target Rig Id",
+      "type": "string"
+    },
+    "target_rig_name": {
+      "title": "Target Rig Name",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "safe",
+        "review",
+        "bake_required",
+        "incompatible"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "rename_only_safe": {
+      "title": "Rename Only Safe",
+      "type": "boolean"
+    },
+    "mapped_bone_count": {
+      "maximum": 1024,
+      "minimum": 0,
+      "title": "Mapped Bone Count",
+      "type": "integer"
+    },
+    "median_length_ratio": {
+      "anyOf": [
+        {
+          "exclusiveMinimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Median Length Ratio"
+    },
+    "max_axis_angle_degrees": {
+      "maximum": 180.0,
+      "minimum": 0.0,
+      "title": "Max Axis Angle Degrees",
+      "type": "number"
+    },
+    "max_rest_rotation_angle_degrees": {
+      "maximum": 180.0,
+      "minimum": 0.0,
+      "title": "Max Rest Rotation Angle Degrees",
+      "type": "number"
+    },
+    "metrics": {
+      "items": {
+        "$ref": "#/$defs/RetargetBoneMetric"
+      },
+      "maxItems": 1024,
+      "title": "Metrics",
+      "type": "array"
+    },
+    "issues": {
+      "items": {
+        "$ref": "#/$defs/RetargetCompatibilityIssue"
+      },
+      "maxItems": 2048,
+      "title": "Issues",
+      "type": "array"
+    }
+  },
+  "required": [
+    "source_rig_id",
+    "source_rig_name",
+    "target_rig_id",
+    "target_rig_name",
+    "status",
+    "rename_only_safe",
+    "mapped_bone_count",
+    "max_axis_angle_degrees",
+    "max_rest_rotation_angle_degrees"
+  ],
+  "title": "RetargetCompatibilityReport",
+  "type": "object"
+}

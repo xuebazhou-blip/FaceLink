@@ -152,7 +152,7 @@ def test_cli_workflow_scans_plans_and_stages_without_applying(
             if job_type == "scan_scene":
                 return scene_snapshot.model_dump(mode="json")
             assert job_type == "stage_patch"
-            assert payload["patch"]["schema_version"] == "1.3"
+            assert payload["patch"]["schema_version"] == "1.4"
             assert payload["patch"]["scene_fingerprint"].startswith("scene-")
             return {
                 "staged": True,
@@ -254,3 +254,85 @@ def test_cli_validates_and_normalizes_retarget_profile(monkeypatch, tmp_path):
         "schema_version": "1.0",
         "name": "Mixamo compact",
     }
+
+
+def test_cli_suggests_then_analyzes_retarget_profile(monkeypatch, tmp_path):
+    snapshot_path = tmp_path / "rigs.json"
+    suggestion_path = tmp_path / "suggestion.json"
+    profile_path = tmp_path / "profile.json"
+    report_path = tmp_path / "report.json"
+    snapshot_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.4",
+                "scene_name": "Rig tools",
+                "entities": [
+                    {"id": "source", "name": "Source", "type": "ARMATURE", "transform": {}},
+                    {"id": "target", "name": "Target", "type": "ARMATURE", "transform": {}},
+                ],
+                "rigs": [
+                    {
+                        "entity_id": "source",
+                        "name": "Source",
+                        "fingerprint": "rig-111111111111111111111111",
+                        "bones": [
+                            {"name": "mixamorig:Hips", "head": {}, "tail": {"z": 1}}
+                        ],
+                    },
+                    {
+                        "entity_id": "target",
+                        "name": "Target",
+                        "fingerprint": "rig-222222222222222222222222",
+                        "bones": [{"name": "pelvis", "head": {}, "tail": {"z": 1}}],
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "facelink",
+            "suggest-profile",
+            "--snapshot",
+            str(snapshot_path),
+            "--source-rig",
+            "source",
+            "--target-rig",
+            "target",
+            "--name",
+            "Suggested",
+            "--out",
+            str(suggestion_path),
+        ],
+    )
+    cli.main()
+    suggestion = json.loads(suggestion_path.read_text(encoding="utf-8"))
+    assert suggestion["review_required"] is True
+    assert suggestion["profile"]["bone_map"] == {"mixamorig:Hips": "pelvis"}
+    profile_path.write_text(json.dumps(suggestion["profile"]), encoding="utf-8")
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "facelink",
+            "analyze-profile",
+            "--profile",
+            str(profile_path),
+            "--snapshot",
+            str(snapshot_path),
+            "--source-rig",
+            "source",
+            "--target-rig",
+            "target",
+            "--out",
+            str(report_path),
+        ],
+    )
+    cli.main()
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["status"] == "safe"
+    assert report["rename_only_safe"] is True

@@ -22,6 +22,19 @@
           "default": true,
           "title": "Strict",
           "type": "boolean"
+        },
+        "source_rig": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Rig"
         }
       },
       "required": [

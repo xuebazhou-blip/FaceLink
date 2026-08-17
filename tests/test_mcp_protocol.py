@@ -18,6 +18,8 @@ async def test_stdio_server_lists_expected_tools():
         "list_blender_instances",
         "scan_scene",
         "validate_retarget_profile",
+        "analyze_retarget_profile",
+        "suggest_retarget_profile_map",
         "preview_shot",
         "stage_scene_patch",
         "get_staged_patch",

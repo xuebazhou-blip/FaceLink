@@ -7,10 +7,10 @@ import bpy
 from mathutils import Vector
 
 from .action_inventory import (
-    MAX_RIG_BONES,
     MAX_RIGS,
     action_inventories,
 )
+from .rig_inventory import rig_inventory
 
 MAX_NAVIGATION_VERTICES = 20_000
 MAX_NAVIGATION_POLYGONS = 20_000
@@ -177,25 +177,7 @@ def _rig_inventories():
         raise ValueError(f"A scene may contain at most {MAX_RIGS} armature rigs")
     inventories = []
     for obj in armatures:
-        bones = sorted(obj.data.bones, key=lambda item: item.name)
-        if len(bones) > MAX_RIG_BONES:
-            raise ValueError(f"Rig '{obj.name}' exceeds {MAX_RIG_BONES} bones")
-        inventories.append(
-            {
-                "entity_id": ensure_entity_id(obj),
-                "name": obj.name,
-                "bones": [
-                    {
-                        "name": bone.name,
-                        "parent": bone.parent.name if bone.parent else None,
-                        "use_deform": bool(bone.use_deform),
-                        "head": _vec3(bone.head_local),
-                        "tail": _vec3(bone.tail_local),
-                    }
-                    for bone in bones
-                ],
-            }
-        )
+        inventories.append(rig_inventory(obj, ensure_entity_id(obj)))
     return inventories
 
 
@@ -275,7 +257,7 @@ def scan_scene():
     rigs = _rig_inventories()
     actions = action_inventories()
     return {
-        "schema_version": "1.3",
+        "schema_version": "1.4",
         "transform_space": "WORLD",
         "scene_name": scene.name,
         "fps": float(scene.render.fps) / float(scene.render.fps_base),

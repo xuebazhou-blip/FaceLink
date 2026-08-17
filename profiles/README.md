@@ -11,6 +11,24 @@ Pass one or more reviewed profiles to BYOK planning with `--retarget-profile`. M
 call `validate_retarget_profile` and place the normalized `adapter`, `bone_map` and `strict`
 fields in a `play_clip` beat's `retarget` object.
 
+After `facelink scan --out scene.json`, `suggest-profile` can propose exact, normalized and a
+small set of explicit alias matches. Its output always says `review_required: true`; FaceLink
+never silently applies a suggestion. Run `analyze-profile` on the reviewed map to receive
+per-bone hierarchy, rest-axis, local-rest-rotation and relative-length metrics. The matching
+MCP tools are `suggest_retarget_profile_map` and `analyze_retarget_profile`.
+
+The controlled alias groups are intentionally short and auditable: hips/hip/pelvis,
+arm/upperarm, lowerarm/forearm, upleg/upperleg/thigh and lowerleg/leg/calf. Left/right tokens
+at either end of a name are preserved, and namespaces such as `mixamorig:` are ignored for
+matching. Ambiguous candidates remain conflicts rather than being guessed.
+
+Current deterministic thresholds are conservative: up to 1 degree of parent-local rest-axis
+or rest-rotation difference and 2% relative bone-length deviation is `safe`; small differences
+up to 5 degrees/10% are `review`; larger differences or hierarchy changes are
+`bake_required`. Missing/duplicate mappings are `incompatible`. A uniform whole-rig scale is
+normalized for rotation-only Actions, but pose-bone location channels across different scale
+are blocked because they need translation-aware baking.
+
 `rename_only` is intentionally narrow. It copies an Action, rewrites pose-bone FCurve paths,
 and attaches the copy as an editable NLA strip. It does not change rest pose, bone axes,
 proportions, IK/FK controls or root-motion conventions. With `strict: true`, every pose bone

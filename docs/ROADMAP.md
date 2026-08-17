@@ -54,7 +54,7 @@
 - Read-only center-ray occlusion detection plus start/end evaluation for dolly shots
 - Composition diagnostics exposed in Blender review summaries and bridge protocol 1.4
 
-## v0.3.2 — current rig/action compatibility release
+## v0.3.2 — completed rig/action compatibility release
 
 - Scene Snapshot 1.3 bounded rig hierarchies and Action channel inventories
 - Source-Action content fingerprints checked during both stage and apply
@@ -62,6 +62,16 @@
 - Strict `rename_only` Action copy/FCurve rewrite into editable NLA data
 - Explainable missing-source, missing-target and target-collision failures
 - Idempotent repeated apply plus transaction and revision rollback cleanup
+
+## v0.3.3 — current rig-compatibility diagnostics release
+
+- Scene Snapshot 1.4 local rest rotations and deterministic Rig fingerprints
+- Review-only exact, normalized and controlled-alias bone-map suggestions
+- Per-bone hierarchy, rest-axis, local-rest-rotation and relative-proportion metrics
+- `safe`, `review`, `bake_required` and `incompatible` compatibility outcomes
+- Compiler rejection when `rename_only` would require transform-aware pose baking
+- Stale rest-pose guards checked at both stage and apply
+- CLI and MCP profile suggestion/analysis tools
 
 ## v0.3.x — remaining useful intelligence
 

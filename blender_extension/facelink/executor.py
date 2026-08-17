@@ -14,6 +14,7 @@ from .action_inventory import (
     rewrite_bone_data_path,
 )
 from .composition import analyze_patch_composition
+from .rig_inventory import rig_fingerprint
 from .snapshot import (
     ensure_entity_id,
     navigation_environment_fingerprint,
@@ -122,7 +123,7 @@ def _validate_composition(value):
 def _resolved_retarget_map(obj, action, value):
     if not isinstance(value, dict):
         raise ValueError("play_clip retarget must be an object")
-    allowed = {"adapter", "bone_map", "strict"}
+    allowed = {"adapter", "bone_map", "strict", "source_rig"}
     unknown = set(value) - allowed
     if unknown:
         raise ValueError(f"play_clip retarget contains unsupported fields: {sorted(unknown)}")
@@ -147,6 +148,20 @@ def _resolved_retarget_map(obj, action, value):
     if obj.type != "ARMATURE":
         raise ValueError("play_clip retarget requires an armature target")
     action_bones = action_pose_bones(action)
+    source_rig_id = value.get("source_rig")
+    if source_rig_id is not None:
+        if not isinstance(source_rig_id, str) or not source_rig_id:
+            raise ValueError("play_clip retarget source_rig must be a non-empty entity ID")
+        source_rig = object_by_id(source_rig_id)
+        if source_rig.type != "ARMATURE":
+            raise ValueError("play_clip retarget source_rig must identify an armature")
+        source_bones = {bone.name for bone in source_rig.data.bones}
+        missing_source_channels = sorted(action_bones - source_bones)
+        if missing_source_channels:
+            raise ValueError(
+                f"Source armature '{source_rig.name}' is missing action bone(s): "
+                + ", ".join(missing_source_channels)
+            )
     missing_sources = sorted(action_bones - set(bone_map)) if strict else []
     if missing_sources:
         raise ValueError(
@@ -416,7 +431,7 @@ def validate_patch(patch):
     """Validate a patch against the current scene without changing scene content."""
     if not isinstance(patch, dict):
         raise ValueError("Patch must be an object")
-    if patch.get("schema_version") not in {"1.0", "1.1", "1.2", "1.3"}:
+    if patch.get("schema_version") not in {"1.0", "1.1", "1.2", "1.3", "1.4"}:
         raise ValueError("Unsupported patch schema_version")
     operations = patch.get("operations")
     if not isinstance(operations, list):
@@ -479,8 +494,8 @@ def validate_patch(patch):
         for item in operations
         if item.get("op") == "play_clip"
     }
-    if patch.get("schema_version") == "1.3" and set(expected_actions) != clip_names:
-        raise ValueError("Scene Patch 1.3 requires one action fingerprint per play_clip")
+    if patch.get("schema_version") in {"1.3", "1.4"} and set(expected_actions) != clip_names:
+        raise ValueError("Scene Patch 1.3+ requires one action fingerprint per play_clip")
     for name, expected in expected_actions.items():
         action = bpy.data.actions.get(name)
         if action is None:
@@ -489,6 +504,39 @@ def validate_patch(patch):
             raise ValueError(
                 f"Animation action '{name}' changed after this patch was planned; scan and "
                 "plan again"
+            )
+    expected_rigs = patch.get("rig_fingerprints", {})
+    if not isinstance(expected_rigs, dict) or not all(
+        isinstance(entity_id, str)
+        and entity_id
+        and isinstance(fingerprint, str)
+        and fingerprint.startswith("rig-")
+        and len(fingerprint) == 28
+        and all(character in "0123456789abcdef" for character in fingerprint[4:])
+        for entity_id, fingerprint in expected_rigs.items()
+    ):
+        raise ValueError("Patch rig_fingerprints must map entity IDs to valid fingerprints")
+    required_rigs = set()
+    for item in operations:
+        if item.get("op") != "play_clip":
+            continue
+        payload = item.get("payload", {})
+        action = bpy.data.actions.get(payload.get("clip"))
+        target = object_by_id(item.get("entity_id"))
+        if action is not None and action_pose_bones(action) and target.type == "ARMATURE":
+            required_rigs.add(str(item.get("entity_id")))
+        source_rig = (payload.get("retarget") or {}).get("source_rig")
+        if source_rig is not None:
+            required_rigs.add(str(source_rig))
+    if patch.get("schema_version") == "1.4" and set(expected_rigs) != required_rigs:
+        raise ValueError("Scene Patch 1.4 requires one rig fingerprint per referenced armature")
+    for entity_id, expected in expected_rigs.items():
+        obj = object_by_id(entity_id)
+        if obj.type != "ARMATURE":
+            raise ValueError(f"Rig fingerprint entity '{entity_id}' is not an armature")
+        if rig_fingerprint(obj) != expected:
+            raise ValueError(
+                f"Armature '{obj.name}' changed after this patch was planned; scan and plan again"
             )
     unknown = {item.get("op") for item in operations} - ALLOWED_OPERATIONS
     if unknown:
@@ -587,6 +635,7 @@ def summarize_patch(patch):
         "scene_guarded": patch.get("scene_fingerprint") is not None,
         "navigation_guarded": patch.get("navigation_environment_fingerprint") is not None,
         "action_guarded": bool(patch.get("action_fingerprints")),
+        "rig_guarded": bool(patch.get("rig_fingerprints")),
     }
 
 
