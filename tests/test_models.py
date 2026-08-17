@@ -1,7 +1,14 @@
 import pytest
 from pydantic import ValidationError
 
-from facelink.models import CameraSpec, ExecutionReceipt, ScenePatch, ShotSpec, Vec3
+from facelink.models import (
+    CameraCompositionSpec,
+    CameraSpec,
+    ExecutionReceipt,
+    ScenePatch,
+    ShotSpec,
+    Vec3,
+)
 
 
 @pytest.mark.parametrize("beat_type", ["move_to", "turn_to"])
@@ -79,6 +86,23 @@ def test_timed_beats_reject_zero_duration(beat_type):
 def test_camera_motion_modes_require_target(mode):
     with pytest.raises(ValidationError, match="requires a target"):
         CameraSpec(mode=mode)
+
+
+def test_camera_composition_thresholds_are_strict_and_ordered():
+    settings = CameraCompositionSpec()
+    assert settings.enabled is True
+    assert settings.safe_margin == 0.05
+    assert settings.min_subject_height == 0.15
+    assert settings.max_subject_height == 0.9
+    assert settings.max_center_offset == 0.2
+    assert settings.check_occlusion is True
+
+    with pytest.raises(ValidationError, match="less than"):
+        CameraCompositionSpec(min_subject_height=0.5, max_subject_height=0.5)
+    with pytest.raises(ValidationError):
+        CameraCompositionSpec(safe_margin=0.5)
+    with pytest.raises(ValidationError):
+        CameraCompositionSpec.model_validate({"enabled": "yes"}, strict=True)
 
 
 def test_actor_and_clip_identifiers_cannot_be_empty():

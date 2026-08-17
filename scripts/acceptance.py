@@ -389,8 +389,11 @@ def main() -> int:
                 "A paid/live OpenAI API request; provider behavior is verified with a "
                 "strict mock only."
             ),
-            "Interactive viewport clicking and visual quality of camera composition; the GPU "
-            "overlay draw callback itself is smoke-tested in a hidden Blender UI.",
+            (
+                "Interactive viewport clicking, lighting/aesthetic judgment and rendered "
+                "partial-occlusion quality; geometric composition and the GPU overlay draw "
+                "callback are tested."
+            ),
             (
                 "Large production rigs, retargeting, multi-level or dynamic-obstacle "
                 "navigation and multi-shot editing."

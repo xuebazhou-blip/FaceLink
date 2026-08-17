@@ -57,6 +57,16 @@ direct motion. Obstacles use a conservative swept-AABB test with actor bounds an
 The complete marked environment has its own fingerprint, preventing new obstacles or mesh
 edits from bypassing the earlier entity-scoped scene guard.
 
+Protocol 1.4 adds a non-mutating camera-composition preflight inside Blender. It reuses the
+same predicted camera transform as the viewport frustum, projects all eight world-space target
+bounds corners into normalized frame coordinates and reports subject size, center offset,
+safe-area fit and clipping. A scene ray cast from the predicted camera to the target bounds
+center adds an explainable first-occluder warning. Dolly shots are sampled at both endpoints.
+The analyzer runs during stage and apply preflight, creates no cameras or render data and puts
+the same warnings into the review summary and execution receipt. Target transforms are
+evaluated at the camera operation's declared start/end frames, then the user's current timeline
+frame and subframe are restored; camera execution uses the same frame contract.
+
 Protocol 1.1 adds optimistic scene consistency. The compiler fingerprints scene timing and
 the world-space state of only the objects referenced by a patch. Blender checks that value
 both when staging and when applying, so an intervening transform, parent, lock or timing edit
@@ -86,5 +96,8 @@ versions are explicit so clients can negotiate future changes.
   and retargeting are out of scope for v0.1.
 - Navigation planning is currently a single-level XY projection over explicitly marked static
   geometry. It does not yet solve stacked floors, moving obstacles, crowds or character gait.
-- A camera follow uses Blender constraints and remains artist-editable, but sophisticated
-  composition and occlusion solving need a later visual evaluator.
+- Camera composition preflight is geometric and evaluates the current target bounds plus the
+  initial camera state (and both dolly endpoints). It does not judge lighting, aesthetics,
+  partial-surface occlusion or future animated deformations. v0.3.1 supports perspective
+  cameras without lens shift and explicitly declines unsupported projections; broader camera
+  models and artistic judgment need a later render/vision evaluator.

@@ -169,6 +169,21 @@ ShotBeat = Annotated[
 ]
 
 
+class CameraCompositionSpec(StrictModel):
+    enabled: bool = True
+    safe_margin: float = Field(default=0.05, ge=0.0, le=0.45)
+    min_subject_height: float = Field(default=0.15, ge=0.0, le=1.0)
+    max_subject_height: float = Field(default=0.9, gt=0.0, le=1.0)
+    max_center_offset: float = Field(default=0.2, ge=0.0, le=0.75)
+    check_occlusion: bool = True
+
+    @model_validator(mode="after")
+    def valid_subject_height_range(self) -> CameraCompositionSpec:
+        if self.min_subject_height >= self.max_subject_height:
+            raise ValueError("min_subject_height must be less than max_subject_height")
+        return self
+
+
 class CameraSpec(StrictModel):
     name: str = Field(default="FaceLink Camera", min_length=1)
     mode: Literal["static", "look_at", "follow", "dolly_in"] = "static"
@@ -177,6 +192,7 @@ class CameraSpec(StrictModel):
     lens_mm: float = Field(default=50.0, ge=1.0, le=300.0)
     distance: float = Field(default=6.0, gt=0.0)
     height: float = 2.0
+    composition: CameraCompositionSpec = Field(default_factory=CameraCompositionSpec)
 
     @model_validator(mode="after")
     def moving_modes_require_target(self) -> CameraSpec:

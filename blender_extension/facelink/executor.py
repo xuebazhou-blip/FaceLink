@@ -6,6 +6,7 @@ import uuid
 import bpy
 from mathutils import Euler, Matrix, Vector
 
+from .composition import analyze_patch_composition
 from .snapshot import (
     ensure_entity_id,
     navigation_environment_fingerprint,
@@ -68,6 +69,47 @@ def _validate_xyz(value, field):
         raise ValueError(f"{field} must contain x, y and z numbers")
     if not all(math.isfinite(float(value[axis])) for axis in "xyz"):
         raise ValueError(f"{field} values must be finite numbers")
+
+
+def _validate_composition(value):
+    if not isinstance(value, dict):
+        raise ValueError("Camera composition must be an object")
+    allowed = {
+        "enabled",
+        "safe_margin",
+        "min_subject_height",
+        "max_subject_height",
+        "max_center_offset",
+        "check_occlusion",
+    }
+    unknown = set(value) - allowed
+    if unknown:
+        raise ValueError(f"Camera composition contains unsupported fields: {sorted(unknown)}")
+    for field in ("enabled", "check_occlusion"):
+        if field in value and not isinstance(value[field], bool):
+            raise ValueError(f"Camera composition {field} must be a boolean")
+    ranges = {
+        "safe_margin": (0.0, 0.45),
+        "min_subject_height": (0.0, 1.0),
+        "max_subject_height": (0.0, 1.0),
+        "max_center_offset": (0.0, 0.75),
+    }
+    for field, (minimum, maximum) in ranges.items():
+        if field not in value:
+            continue
+        if isinstance(value[field], bool) or not isinstance(value[field], (int, float)):
+            raise ValueError(f"Camera composition {field} must be a number")
+        number = float(value[field])
+        if not math.isfinite(number) or number < minimum or number > maximum:
+            raise ValueError(
+                f"Camera composition {field} must be between {minimum:g} and {maximum:g}"
+            )
+    minimum_height = float(value.get("min_subject_height", 0.15))
+    maximum_height = float(value.get("max_subject_height", 0.9))
+    if minimum_height >= maximum_height:
+        raise ValueError(
+            "Camera composition min_subject_height must be less than max_subject_height"
+        )
 
 
 def _preflight_operations(operations):
@@ -149,6 +191,8 @@ def _preflight_operations(operations):
                 _validate_xyz(payload["location"], "Camera location")
             if payload.get("space", "LOCAL") not in {"LOCAL", "WORLD"}:
                 raise ValueError("Camera space must be LOCAL or WORLD")
+            if "composition" in payload:
+                _validate_composition(payload["composition"])
 
 
 def _timeline_records(operations):
@@ -396,7 +440,13 @@ def summarize_patch(patch):
                 frames.extend((int(payload["frame_start"]), int(payload["frame_end"])))
 
     timeline_warnings = _existing_animation_warnings(operations)
-    warnings = list(dict.fromkeys([*patch.get("warnings", []), *timeline_warnings]))
+    composition = analyze_patch_composition(patch)
+    composition_warnings = [item["message"] for item in composition["warnings"]]
+    warnings = list(
+        dict.fromkeys(
+            [*patch.get("warnings", []), *timeline_warnings, *composition_warnings]
+        )
+    )
     return {
         "patch_id": patch.get("patch_id", "unknown"),
         "source_title": patch.get("source_title", "Untitled patch"),
@@ -407,6 +457,8 @@ def summarize_patch(patch):
         "frame_end": max(frames) if frames else None,
         "warnings": [str(item) for item in warnings],
         "timeline_warning_count": len(timeline_warnings),
+        "composition": composition,
+        "composition_warning_count": len(composition_warnings),
         "scene_guarded": patch.get("scene_fingerprint") is not None,
         "navigation_guarded": patch.get("navigation_environment_fingerprint") is not None,
     }
@@ -886,52 +938,70 @@ def _ensure_camera(payload):
     camera.data.lens = float(payload.get("lens_mm", 50.0))
     target = object_by_id(payload["target"]) if payload.get("target") else None
     space = payload.get("space", "LOCAL")
-    if payload.get("location"):
-        location = payload["location"]
-        values = [location[axis] for axis in ("x", "y", "z")]
-        if space == "WORLD":
-            _set_world_location(camera, values)
-        else:
-            camera.location = values
-    elif target:
-        target_location = target.matrix_world.translation if space == "WORLD" else target.location
-        location = [
-            target_location.x,
-            target_location.y - float(payload.get("distance", 6.0)),
-            target_location.z + float(payload.get("height", 2.0)),
-        ]
-        if space == "WORLD":
-            _set_world_location(camera, location)
-        else:
-            camera.location = location
-    if target and payload.get("mode") in {"look_at", "follow", "dolly_in"}:
-        _camera_target(camera, target)
-    if target and payload.get("mode") == "follow":
-        constraint = camera.constraints.get("FaceLink Follow")
-        if constraint is None:
-            constraint = camera.constraints.new(type="COPY_LOCATION")
-            constraint.name = "FaceLink Follow"
-        constraint.target = target
-        constraint.use_offset = True
-    if target and payload.get("mode") == "dolly_in":
-        start = int(payload["frame_start"])
-        end = int(payload["frame_end"])
-        camera.keyframe_insert(data_path="location", frame=start, group="FaceLink")
-        if space == "WORLD":
-            camera_location = camera.matrix_world.translation.copy()
-            direction = target.matrix_world.translation - camera_location
-        else:
-            camera_location = camera.location.copy()
-            direction = Vector(target.location) - camera_location
-        if direction.length > 0.001:
-            destination = camera_location + direction.normalized() * min(
-                direction.length * 0.5, float(payload.get("distance", 6.0)) * 0.5
-            )
+    scene = bpy.context.scene
+    original_frame = scene.frame_current
+    original_subframe = scene.frame_subframe
+    try:
+        if target and payload.get("frame_start") is not None:
+            scene.frame_set(int(payload["frame_start"]))
+            bpy.context.view_layer.update()
+        if payload.get("location"):
+            location = payload["location"]
+            values = [location[axis] for axis in ("x", "y", "z")]
             if space == "WORLD":
-                _set_world_location(camera, destination)
+                _set_world_location(camera, values)
             else:
-                camera.location = destination
-        camera.keyframe_insert(data_path="location", frame=end, group="FaceLink")
+                camera.location = values
+        elif target:
+            target_location = (
+                target.matrix_world.translation if space == "WORLD" else target.location
+            )
+            location = [
+                target_location.x,
+                target_location.y - float(payload.get("distance", 6.0)),
+                target_location.z + float(payload.get("height", 2.0)),
+            ]
+            if space == "WORLD":
+                _set_world_location(camera, location)
+            else:
+                camera.location = location
+        if target and payload.get("mode") in {"look_at", "follow", "dolly_in"}:
+            _camera_target(camera, target)
+        if target and payload.get("mode") == "follow":
+            constraint = camera.constraints.get("FaceLink Follow")
+            if constraint is None:
+                constraint = camera.constraints.new(type="COPY_LOCATION")
+                constraint.name = "FaceLink Follow"
+            constraint.target = target
+            constraint.use_offset = True
+        if target and payload.get("mode") == "dolly_in":
+            start = int(payload["frame_start"])
+            end = int(payload["frame_end"])
+            camera.keyframe_insert(data_path="location", frame=start, group="FaceLink")
+            camera_location = (
+                camera.matrix_world.translation.copy()
+                if space == "WORLD"
+                else camera.location.copy()
+            )
+            scene.frame_set(end)
+            bpy.context.view_layer.update()
+            target_location = (
+                target.matrix_world.translation if space == "WORLD" else Vector(target.location)
+            )
+            direction = target_location - camera_location
+            if direction.length > 0.001:
+                destination = camera_location + direction.normalized() * min(
+                    direction.length * 0.5,
+                    float(payload.get("distance", 6.0)) * 0.5,
+                )
+                if space == "WORLD":
+                    _set_world_location(camera, destination)
+                else:
+                    camera.location = destination
+            camera.keyframe_insert(data_path="location", frame=end, group="FaceLink")
+    finally:
+        scene.frame_set(original_frame, subframe=original_subframe)
+        bpy.context.view_layer.update()
     bpy.context.scene.camera = camera
     return camera
 
@@ -942,8 +1012,16 @@ def apply_patch(patch):
     revision = _capture_revision(patch, operations)
     _prepare_animation_edits(operations)
     changed = set()
+    composition = analyze_patch_composition(patch)
+    composition_warnings = [item["message"] for item in composition["warnings"]]
     warnings = list(
-        dict.fromkeys([*patch.get("warnings", []), *_existing_animation_warnings(operations)])
+        dict.fromkeys(
+            [
+                *patch.get("warnings", []),
+                *_existing_animation_warnings(operations),
+                *composition_warnings,
+            ]
+        )
     )
     try:
         for operation in operations:

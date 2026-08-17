@@ -1,4 +1,4 @@
-# Local bridge protocol 1.3
+# Local bridge protocol 1.4
 
 The Blender extension writes one JSON discovery record per running Blender process. The
 directory is `${FACELINK_INSTANCE_DIR}` when configured, otherwise
@@ -56,6 +56,22 @@ or deterministically chooses a mesh containing both endpoints, runs polygon-adja
 emits multiple ordinary world-space location keys. Marked obstacle intersections are warnings;
 invalid topology, disconnected paths, endpoints outside the mesh and insufficient frames are
 errors.
+
+## Camera composition preflight
+
+Protocol 1.4 adds the `camera_composition_preflight` capability. An `ensure_camera` payload may
+contain a typed `composition` object with `enabled`, `safe_margin`, `min_subject_height`,
+`max_subject_height`, `max_center_offset` and `check_occlusion`. Unsupported fields, wrong
+types, non-finite values and inverted height thresholds fail before staging.
+
+Stage summaries include `composition.evaluated_count`, `warning_count`, per-camera normalized
+frame metrics and stable warning codes: `composition_target_unavailable`,
+`composition_camera_unsupported`, `subject_behind_camera`, `subject_clipped`,
+`subject_outside_safe_area`, `subject_too_small`, `subject_too_large`, `subject_off_center` and
+`subject_occluded`. The analysis is read-only;
+it neither creates the proposed camera nor moves the target. `dolly_in` produces separate
+`start` and `end` samples with explicit frame and predicted camera-location fields. Animated
+targets are evaluated at those declared frames and the user's current frame is restored.
 
 ## Scene consistency and transform space
 

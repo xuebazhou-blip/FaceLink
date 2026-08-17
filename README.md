@@ -28,6 +28,8 @@ the scene only after the artist presses **Apply Staged Patch**.
   locomotion paths, and warns when an actor's swept bounds intersect a marked obstacle;
 - fingerprints the complete navigation environment so a newly added obstacle or edited
   navigation mesh invalidates an already staged plan;
+- predicts the staged camera frame without creating scene datablocks, measuring target size,
+  center offset, safe-area fit, clipping and center-point occlusion before the artist applies;
 - rejects a staged plan when a referenced transform, parent link, lock or scene timing value
   changed after the scene scan.
 
@@ -67,7 +69,7 @@ $env:FACELINK_BLENDER_EXE='C:\path\to\Blender\blender.exe' # optional if on PATH
 ```
 
 Then in Blender 4.5: **Edit → Preferences → Get Extensions → Install from Disk**, choose
-`dist/facelink-0.3.0.zip`, enable FaceLink, and open the **FaceLink** tab in the 3D Viewport
+`dist/facelink-0.3.1.zip`, enable FaceLink, and open the **FaceLink** tab in the 3D Viewport
 sidebar. Press **Start Bridge**.
 
 Run the MCP server:
@@ -150,6 +152,20 @@ treat every mesh as an obstacle. Current v0.3.0 planning is projected onto XY an
 for single-level previs floors; stacked floors, live moving obstacles and crowd routing are
 not yet supported. See [examples/navmesh_walk_shot.json](examples/navmesh_walk_shot.json).
 
+## Camera composition preflight
+
+Camera shots with a target are checked during staging. FaceLink projects the target's
+world-space bounds into the predicted camera frame and reports clipping, unsafe margins,
+subject size and center offset. A read-only Blender ray cast reports when another object blocks
+the target center. `dolly_in` checks both its start and end positions. Thresholds are typed in
+`camera.composition`, remain visible in the ShotSpec and can be disabled explicitly. See
+[examples/composition_checked_shot.json](examples/composition_checked_shot.json).
+
+This is a deterministic preflight, not an artistic quality score. It does not render, use a
+vision model, judge lighting or guarantee that every part of a complex subject is unoccluded.
+Version 0.3.1 evaluates perspective cameras without lens shift and reports other projection
+types as unsupported instead of returning misleading metrics.
+
 ## Repository map
 
 ```text
@@ -164,7 +180,7 @@ docs/                  Architecture, protocol and development notes
 
 ## Project status
 
-Version 0.3.0 is a creator-review alpha, not yet a production animation system. Character rig
+Version 0.3.1 is a creator-review alpha, not yet a production animation system. Character rig
 retargeting, multi-level and dynamic-obstacle navigation, multi-shot sequencing and visual
 diff overlays are intentionally listed as follow-up work rather than hidden behind unreliable
 prompts.

@@ -716,6 +716,33 @@ def test_locked_objects_and_unknown_operations_fail_closed():
         assert "unsupported camera mode" in str(exc).lower()
     else:
         raise AssertionError("An unknown camera mode was staged")
+
+    invalid_compositions = [
+        ([], "must be an object"),
+        ({"min_subject_height": 0.9, "max_subject_height": 0.2}, "less than"),
+        ({"safe_margin": 0.5}, "between 0 and 0.45"),
+        ({"enabled": "yes"}, "must be a boolean"),
+        ({"safe_margin": True}, "must be a number"),
+        ({"untrusted": True}, "unsupported fields"),
+    ]
+    for index, (composition, expected) in enumerate(invalid_compositions):
+        invalid_composition = operation_patch(
+            {
+                "op": "ensure_camera",
+                "payload": {
+                    "name": f"Invalid Composition {index}",
+                    "mode": "static",
+                    "composition": composition,
+                },
+            },
+            patch_id=f"invalid-composition-{index}",
+        )
+        try:
+            bridge.stage_patch(invalid_composition)
+        except ValueError as exc:
+            assert expected in str(exc).lower()
+        else:
+            raise AssertionError(f"Invalid composition {index} was staged")
     assert bpy.data.objects.get("Unsafe Camera") is None
     assert bridge.get_staged_patch()["staged"] is False
 
@@ -898,6 +925,10 @@ def test_staged_preview_builds_world_paths_and_camera_frustum_without_mutation()
     assert status["frustum_count"] == 1
     assert status["segment_count"] == 9
     assert status["draw_handler_active"] is True
+    unavailable = result["summary"]["composition"]
+    assert unavailable["evaluated_count"] == 1
+    assert unavailable["shots"][0]["status"] == "unavailable"
+    assert unavailable["warnings"][0]["code"] == "composition_target_unavailable"
     geometry = overlay.preview_geometry()
     assert geometry["paths"][0]["points"] == [
         [10.0, 0.0, 0.0],
@@ -926,6 +957,226 @@ def test_staged_preview_builds_world_paths_and_camera_frustum_without_mutation()
         "frustum_count": 0,
         "segment_count": 0,
     }
+
+
+def test_camera_composition_preflight_reports_size_clipping_occlusion_and_dolly():
+    target = cube("Composition Target")
+    target_id = ensure_entity_id(target)
+    original_transform = target.matrix_world.copy()
+    camera_count = len(bpy.data.cameras)
+
+    def camera_patch(name, location, *, mode="look_at", distance=8, composition=None):
+        payload = {
+            "name": name,
+            "mode": mode,
+            "target": target_id,
+            "space": "WORLD",
+            "location": {"x": location[0], "y": location[1], "z": location[2]},
+            "distance": distance,
+            "lens_mm": 50,
+            "frame_start": 1,
+            "frame_end": 49,
+        }
+        if composition is not None:
+            payload["composition"] = composition
+        return operation_patch(
+            {"op": "ensure_camera", "payload": payload},
+            patch_id=f"composition-{name}",
+        )
+
+    good = bridge.stage_patch(camera_patch("Good Camera", (0, -8, 0)))
+    analysis = good["summary"]["composition"]
+    assert analysis["evaluated_count"] == 1
+    assert analysis["warning_count"] == 0
+    metrics = analysis["shots"][0]["metrics"]
+    assert metrics["fully_visible"] is True
+    assert metrics["inside_safe_area"] is True
+    assert 0.6 < metrics["subject_height"] < 0.8
+    assert metrics["center_offset"] == 0
+    assert metrics["center_occluded"] is False
+    bridge.discard_staged_patch()
+
+    render = bpy.context.scene.render
+    original_resolution = (render.resolution_x, render.resolution_y)
+    render.resolution_x = 1080
+    render.resolution_y = 1920
+    portrait = bridge.stage_patch(camera_patch("Portrait Camera", (0, -8, 0)))
+    portrait_height = portrait["summary"]["composition"]["shots"][0]["metrics"][
+        "subject_height"
+    ]
+    assert 0.4 < portrait_height < 0.5
+    bridge.discard_staged_patch()
+    render.resolution_x, render.resolution_y = original_resolution
+
+    distant = bridge.stage_patch(camera_patch("Distant Camera", (0, -50, 0)))
+    distant_codes = {
+        item["code"] for item in distant["summary"]["composition"]["warnings"]
+    }
+    assert "subject_too_small" in distant_codes
+    bridge.discard_staged_patch()
+
+    offset = bridge.stage_patch(
+        camera_patch("Offset Camera", (1.5, 0, 8), mode="static")
+    )
+    offset_codes = {item["code"] for item in offset["summary"]["composition"]["warnings"]}
+    assert {"subject_outside_safe_area", "subject_off_center"} <= offset_codes
+    bridge.discard_staged_patch()
+
+    behind = bridge.stage_patch(
+        camera_patch("Backwards Camera", (0, 0, -8), mode="static")
+    )
+    behind_shot = behind["summary"]["composition"]["shots"][0]
+    assert behind_shot["metrics"]["visible_corner_count"] == 0
+    assert behind_shot["warnings"][0]["code"] == "subject_behind_camera"
+    bridge.discard_staged_patch()
+
+    camera_data = bpy.data.cameras.new("Orthographic Existing")
+    camera_data.type = "ORTHO"
+    orthographic = bpy.data.objects.new("Orthographic Existing", camera_data)
+    bpy.context.scene.collection.objects.link(orthographic)
+    orthographic.location = (0, 0, 8)
+    ensure_entity_id(orthographic)
+    unsupported = bridge.stage_patch(
+        camera_patch("Orthographic Existing", (0, 0, 8), mode="static")
+    )
+    unsupported_shot = unsupported["summary"]["composition"]["shots"][0]
+    assert unsupported_shot["status"] == "unavailable"
+    assert unsupported_shot["warnings"][0]["code"] == "composition_camera_unsupported"
+    bridge.discard_staged_patch()
+
+    camera_data.type = "PERSP"
+    camera_data.shift_x = 0.1
+    shifted = bridge.stage_patch(
+        camera_patch("Orthographic Existing", (0, 0, 8), mode="static")
+    )
+    shifted_shot = shifted["summary"]["composition"]["shots"][0]
+    assert shifted_shot["status"] == "unavailable"
+    assert "lens shift" in shifted_shot["warnings"][0]["message"]
+    bridge.discard_staged_patch()
+    bpy.data.objects.remove(orthographic, do_unlink=True)
+    bpy.data.cameras.remove(camera_data)
+
+    occluder = cube("Foreground Occluder", (0, -4, 0))
+    bpy.context.view_layer.update()
+    occluded = bridge.stage_patch(camera_patch("Occluded Camera", (0, -8, 0)))
+    occluded_shot = occluded["summary"]["composition"]["shots"][0]
+    assert occluded_shot["metrics"]["center_occluded"] is True
+    assert "subject_occluded" in {
+        item["code"] for item in occluded_shot["warnings"]
+    }
+    applied_occluded = bridge.apply_staged_patch()
+    assert any(
+        "blocks the center" in warning
+        for warning in applied_occluded["receipt"]["warnings"]
+    )
+    assert undo_last_patch()["patch_id"] == "composition-Occluded Camera"
+    assert bpy.data.objects.get("Occluded Camera") is None
+    bpy.data.objects.remove(occluder, do_unlink=True)
+    bpy.context.view_layer.update()
+
+    dolly = bridge.stage_patch(
+        camera_patch("Dolly Composition", (0, -8, 0), mode="dolly_in", distance=8)
+    )
+    dolly_analysis = dolly["summary"]["composition"]
+    assert dolly_analysis["evaluated_count"] == 2
+    assert [item["sample"] for item in dolly_analysis["shots"]] == ["start", "end"]
+    end_codes = {item["code"] for item in dolly_analysis["shots"][1]["warnings"]}
+    assert {"subject_clipped", "subject_too_large"} <= end_codes
+    bridge.discard_staged_patch()
+
+    disabled = bridge.stage_patch(
+        camera_patch(
+            "Disabled Composition",
+            (0, -8, 0),
+            composition={"enabled": False},
+        )
+    )
+    assert disabled["summary"]["composition"]["evaluated_count"] == 0
+    assert disabled["summary"]["composition_warning_count"] == 0
+    bridge.discard_staged_patch()
+
+    assert len(bpy.data.cameras) == camera_count
+    assert bpy.data.objects.get("Good Camera") is None
+    assert target.matrix_world == original_transform
+
+
+def test_camera_preflight_and_execution_use_declared_frame_and_restore_timeline():
+    target = cube("Animated Camera Target")
+    target_id = ensure_entity_id(target)
+    target.location.x = 0
+    target.keyframe_insert(data_path="location", frame=1)
+    target.location.x = 4
+    target.keyframe_insert(data_path="location", frame=49)
+    scene = bpy.context.scene
+    scene.frame_set(37)
+    bpy.context.view_layer.update()
+    current_target_x = target.matrix_world.translation.x
+    assert 2 < current_target_x < 4
+
+    patch = operation_patch(
+        {
+            "op": "ensure_camera",
+            "payload": {
+                "name": "Frame-stable Camera",
+                "mode": "look_at",
+                "target": target_id,
+                "space": "WORLD",
+                "distance": 8,
+                "height": 0,
+                "lens_mm": 50,
+                "frame_start": 1,
+                "frame_end": 49,
+                "composition": {"check_occlusion": False},
+            },
+        },
+        patch_id="frame-stable-camera",
+    )
+    staged = bridge.stage_patch(patch)
+    shot = staged["summary"]["composition"]["shots"][0]
+    assert shot["frame"] == 1
+    assert shot["camera_location"] == [0.0, -8.0, 0.0]
+    assert shot["metrics"]["center_offset"] == 0
+    assert overlay.preview_geometry()["frustums"][0]["origin"] == [0.0, -8.0, 0.0]
+    assert scene.frame_current == 37
+    assert target.matrix_world.translation.x == current_target_x
+
+    dolly_patch = operation_patch(
+        {
+            "op": "ensure_camera",
+            "payload": {
+                "name": "Animated Dolly Preview",
+                "mode": "dolly_in",
+                "target": target_id,
+                "space": "WORLD",
+                "distance": 8,
+                "height": 0,
+                "lens_mm": 50,
+                "frame_start": 1,
+                "frame_end": 49,
+                "composition": {"check_occlusion": False},
+            },
+        },
+        patch_id="animated-dolly-preview",
+    )
+    dolly = bridge.stage_patch(dolly_patch)["summary"]["composition"]
+    assert [shot["frame"] for shot in dolly["shots"]] == [1, 49]
+    assert dolly["shots"][0]["camera_location"] == [0.0, -8.0, 0.0]
+    assert dolly["shots"][1]["camera_location"][0] > 1.5
+    assert scene.frame_current == 37
+    assert target.matrix_world.translation.x == current_target_x
+    bridge.discard_staged_patch()
+
+    restaged = bridge.stage_patch(patch)["summary"]["composition"]["shots"][0]
+    assert restaged["camera_location"] == [0.0, -8.0, 0.0]
+    receipt = bridge.apply_staged_patch()["receipt"]
+    assert receipt["patch_id"] == "frame-stable-camera"
+    camera = bpy.data.objects["Frame-stable Camera"]
+    assert tuple(round(value, 6) for value in camera.location) == (0.0, -8.0, 0.0)
+    assert scene.frame_current == 37
+    assert target.matrix_world.translation.x == current_target_x
+    assert undo_last_patch()["patch_id"] == "frame-stable-camera"
+    assert bpy.data.objects.get("Frame-stable Camera") is None
+    assert scene.frame_current == 37
 
 
 def test_overlapping_existing_nla_strip_is_rejected_before_staging():
@@ -1292,6 +1543,14 @@ CASES = [
     (
         "spatial_preview_overlay",
         test_staged_preview_builds_world_paths_and_camera_frustum_without_mutation,
+    ),
+    (
+        "camera_composition_preflight",
+        test_camera_composition_preflight_reports_size_clipping_occlusion_and_dolly,
+    ),
+    (
+        "camera_declared_frame_stability",
+        test_camera_preflight_and_execution_use_declared_frame_and_restore_timeline,
     ),
     ("existing_nla_overlap", test_overlapping_existing_nla_strip_is_rejected_before_staging),
     (

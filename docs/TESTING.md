@@ -46,10 +46,15 @@ human-readable summary.
   invalid/non-manifold topology rejection, deterministic connected paths, disconnected and
   outside-mesh failures, distance-based unique frames, swept-bounds collision/height behavior,
   Blender role operators, stale-environment rejection and editable multi-key execution.
+- Camera composition acceptance must verify good framing, minimum/maximum subject size,
+  safe-area and clipping metrics, center occlusion identity, dolly start/end samples, missing
+  target bounds, disabled analysis, malformed-threshold rejection, receipt propagation and
+  zero scene mutation while staged. Animated targets must be sampled at declared camera frames
+  without changing the user's current frame, and execution must use the same start-frame pose.
 - Bridge acceptance must pass: localhost binding, bearer authentication, malformed requests,
   concurrent jobs, protocol 1.1 fingerprint agreement, main-thread dispatch, failed-job
-  reporting, protocol 1.2 history/rollback, protocol 1.3 navigation snapshots and preview
-  diagnostics, Undo and discovery cleanup.
+  reporting, protocol 1.2 history/rollback, protocol 1.3 navigation snapshots, protocol 1.4
+  composition diagnostics and preview diagnostics, Undo and discovery cleanup.
 - The built ZIP must install, enable and load from each Blender version's isolated portable
   extension repository.
 

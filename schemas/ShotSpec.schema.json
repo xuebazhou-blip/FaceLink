@@ -1,5 +1,50 @@
 {
   "$defs": {
+    "CameraCompositionSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "default": true,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "safe_margin": {
+          "default": 0.05,
+          "maximum": 0.45,
+          "minimum": 0.0,
+          "title": "Safe Margin",
+          "type": "number"
+        },
+        "min_subject_height": {
+          "default": 0.15,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Min Subject Height",
+          "type": "number"
+        },
+        "max_subject_height": {
+          "default": 0.9,
+          "exclusiveMinimum": 0.0,
+          "maximum": 1.0,
+          "title": "Max Subject Height",
+          "type": "number"
+        },
+        "max_center_offset": {
+          "default": 0.2,
+          "maximum": 0.75,
+          "minimum": 0.0,
+          "title": "Max Center Offset",
+          "type": "number"
+        },
+        "check_occlusion": {
+          "default": true,
+          "title": "Check Occlusion",
+          "type": "boolean"
+        }
+      },
+      "title": "CameraCompositionSpec",
+      "type": "object"
+    },
     "CameraSpec": {
       "additionalProperties": false,
       "properties": {
@@ -60,6 +105,9 @@
           "default": 2.0,
           "title": "Height",
           "type": "number"
+        },
+        "composition": {
+          "$ref": "#/$defs/CameraCompositionSpec"
         }
       },
       "title": "CameraSpec",

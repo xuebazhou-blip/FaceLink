@@ -3,7 +3,8 @@ import copy
 import bpy
 import gpu
 from gpu_extras.batch import batch_for_shader
-from mathutils import Matrix, Vector
+
+from .camera_preview import camera_preview, object_by_id, world_point
 
 _HANDLER = None
 _VISIBLE = False
@@ -12,110 +13,19 @@ _DRAW_CALL_COUNT = 0
 _LAST_DRAW_ERROR = None
 
 
-def _object_by_id(entity_id):
-    for obj in bpy.context.scene.objects:
-        if str(obj.get("facelink_id", "")) == str(entity_id):
-            return obj
-    return None
-
-
-def _vector(value):
-    if isinstance(value, dict):
-        return Vector((float(value["x"]), float(value["y"]), float(value["z"])))
-    return Vector(tuple(float(component) for component in value))
-
-
-def _world_point(obj, value, space):
-    point = _vector(value)
-    if space == "WORLD" or obj is None or obj.parent is None:
-        return point
-    parent_space = obj.parent.matrix_world @ obj.matrix_parent_inverse
-    return parent_space @ point
-
-
-def _camera_preview(operation):
-    payload = operation.get("payload", {})
-    name = payload.get("name", "FaceLink Camera")
-    camera = bpy.data.objects.get(name)
-    if camera is not None and camera.type != "CAMERA":
-        camera = None
-    target = _object_by_id(payload.get("target")) if payload.get("target") else None
-    space = payload.get("space", "LOCAL")
-
-    if payload.get("location") is not None:
-        location = _world_point(camera, payload["location"], space)
-    elif target is not None:
-        target_location = (
-            target.matrix_world.translation.copy()
-            if space == "WORLD"
-            else target.location.copy()
-        )
-        planned = target_location + Vector(
-            (0.0, -float(payload.get("distance", 6.0)), float(payload.get("height", 2.0)))
-        )
-        location = _world_point(camera, planned, space)
-    elif camera is not None:
-        location = camera.matrix_world.translation.copy()
-    else:
-        location = Vector((0.0, 0.0, 0.0))
-
-    if target is not None and payload.get("mode") in {"look_at", "follow", "dolly_in"}:
-        direction = target.matrix_world.translation - location
-        rotation = (
-            direction.to_track_quat("-Z", "Y").to_matrix()
-            if direction.length > 1e-8
-            else Matrix.Identity(3)
-        )
-    elif camera is not None:
-        rotation = camera.matrix_world.to_quaternion().to_matrix()
-    else:
-        rotation = Matrix.Identity(3)
-
-    lens = float(payload.get("lens_mm", camera.data.lens if camera else 50.0))
-    sensor_width = float(camera.data.sensor_width if camera else 36.0)
-    sensor_height = float(camera.data.sensor_height if camera else 32.0)
-    sensor_fit = camera.data.sensor_fit if camera else "AUTO"
-    scene = bpy.context.scene
-    render = scene.render
-    aspect = (render.resolution_x * render.pixel_aspect_x) / max(
-        1.0, render.resolution_y * render.pixel_aspect_y
-    )
-    depth = max(1.0, min(10.0, float(payload.get("distance", 6.0)) * 0.5))
-    if sensor_fit == "VERTICAL":
-        half_height = depth * sensor_height / (2.0 * lens)
-        half_width = half_height * aspect
-    else:
-        half_width = depth * sensor_width / (2.0 * lens)
-        half_height = half_width / max(aspect, 1e-8)
-    local_corners = [
-        Vector((-half_width, -half_height, -depth)),
-        Vector((half_width, -half_height, -depth)),
-        Vector((half_width, half_height, -depth)),
-        Vector((-half_width, half_height, -depth)),
-    ]
-    corners = [location + rotation @ corner for corner in local_corners]
-    segments = [(location, corner) for corner in corners]
-    segments.extend((corners[index], corners[(index + 1) % 4]) for index in range(4))
-    return {
-        "name": name,
-        "origin": list(location),
-        "segments": [[list(start), list(end)] for start, end in segments],
-    }
-
-
 def build_preview_geometry(patch):
     geometry = {"paths": [], "frustums": []}
     for operation in patch.get("operations", []):
         op = operation.get("op")
         payload = operation.get("payload", {})
         if op == "keyframe_transform":
-            obj = _object_by_id(operation.get("entity_id"))
+            obj = object_by_id(operation.get("entity_id"))
             points = []
             frames = []
             for frame in sorted(payload.get("frames", []), key=lambda item: int(item["frame"])):
                 if "location" not in frame:
                     continue
-                point = _world_point(obj, frame["location"], payload.get("space", "LOCAL"))
+                point = world_point(obj, frame["location"], payload.get("space", "LOCAL"))
                 points.append(list(point))
                 frames.append(int(frame["frame"]))
             if len(points) >= 2:
@@ -128,7 +38,7 @@ def build_preview_geometry(patch):
                     }
                 )
         elif op == "ensure_camera":
-            geometry["frustums"].append(_camera_preview(operation))
+            geometry["frustums"].append(camera_preview(operation))
     return geometry
 
 

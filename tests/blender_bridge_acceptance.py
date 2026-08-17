@@ -135,8 +135,9 @@ def client_flow(result_box):
             "navigation_mesh_paths",
             "collision_warnings",
             "navigation_fingerprint",
+            "camera_composition_preflight",
         } <= set(health["capabilities"])
-        assert health["protocol_version"] == "1.3"
+        assert health["protocol_version"] == "1.4"
         scan_ids = [submit(base_url, token, "scan_scene") for _ in range(3)]
         assert len(set(scan_ids)) == 3
         scans = [wait_job(base_url, token, job_id) for job_id in scan_ids]
@@ -146,6 +147,53 @@ def client_flow(result_box):
         assert snapshot["navigation_environment_fingerprint"].startswith("nav-")
         assert len(snapshot["navigation_meshes"]) == 1
         actor = next(item for item in snapshot["entities"] if item["name"] == "Bridge Actor")
+
+        composition_patch = {
+            "schema_version": "1.2",
+            "patch_id": "bridge-composition",
+            "source_title": "Bridge composition",
+            "operations": [
+                {
+                    "op": "ensure_camera",
+                    "payload": {
+                        "name": "Bridge Preview Camera",
+                        "mode": "look_at",
+                        "target": actor["id"],
+                        "space": "WORLD",
+                        "location": {"x": 0, "y": -8, "z": 0},
+                        "lens_mm": 50,
+                        "composition": {
+                            "safe_margin": 0.05,
+                            "min_subject_height": 0.15,
+                            "max_subject_height": 0.9,
+                            "max_center_offset": 0.2,
+                            "check_occlusion": False,
+                        },
+                    },
+                }
+            ],
+        }
+        composition_job = wait_job(
+            base_url,
+            token,
+            submit(base_url, token, "stage_patch", {"patch": composition_patch}),
+        )
+        assert composition_job["status"] == "succeeded"
+        composition = composition_job["result"]["summary"]["composition"]
+        assert composition["evaluated_count"] == 1
+        assert composition["warning_count"] == 0
+        assert composition["shots"][0]["metrics"]["fully_visible"] is True
+        composition_scan = wait_job(
+            base_url, token, submit(base_url, token, "scan_scene")
+        )["result"]
+        assert not any(
+            item["name"] == "Bridge Preview Camera"
+            for item in composition_scan["entities"]
+        )
+        discard_composition = wait_job(
+            base_url, token, submit(base_url, token, "discard_staged_patch")
+        )
+        assert discard_composition["status"] == "succeeded"
 
         fingerprint_entities = [actor["id"]]
         patch = {
@@ -287,6 +335,7 @@ def client_flow(result_box):
             preview_via_bridge=True,
             timeline_warning_via_bridge=True,
             navigation_snapshot_via_bridge=True,
+            composition_preflight_via_bridge=True,
             receipt=apply_job["result"]["receipt"],
             discarded_without_apply=True,
             persistent_history_entries=len(final_history["entries"]),

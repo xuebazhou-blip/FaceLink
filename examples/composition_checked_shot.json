@@ -1,0 +1,24 @@
+{
+  "schema_version": "1.0",
+  "title": "Composition-checked character shot",
+  "fps": 24,
+  "duration": 4,
+  "beats": [],
+  "camera": {
+    "name": "FaceLink Camera",
+    "mode": "look_at",
+    "target": "replace-with-subject-id",
+    "location": {"x": 0, "y": -8, "z": 2},
+    "lens_mm": 50,
+    "distance": 8,
+    "height": 2,
+    "composition": {
+      "enabled": true,
+      "safe_margin": 0.05,
+      "min_subject_height": 0.15,
+      "max_subject_height": 0.9,
+      "max_center_offset": 0.2,
+      "check_occlusion": true
+    }
+  }
+}

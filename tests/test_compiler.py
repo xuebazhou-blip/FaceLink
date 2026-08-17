@@ -114,6 +114,14 @@ def test_all_supported_beats_and_camera_compile(scene_snapshot):
     assert turn_end["rotation_euler"][2] == pytest.approx(math.atan2(-3, 0))
     assert patch.operations[-1].payload["mode"] == "follow"
     assert patch.operations[-1].payload["space"] == "WORLD"
+    assert patch.operations[-1].payload["composition"] == {
+        "enabled": True,
+        "safe_margin": 0.05,
+        "min_subject_height": 0.15,
+        "max_subject_height": 0.9,
+        "max_center_offset": 0.2,
+        "check_occlusion": True,
+    }
 
 
 def test_sequential_moves_start_from_previous_destination(scene_snapshot):

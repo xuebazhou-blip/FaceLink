@@ -38,7 +38,7 @@
 - Non-mutating viewport overlay for staged paths and predicted camera frustums
 - Overlay visibility control and automatic cleanup on apply, discard, file load and unload
 
-## v0.3.0 — current navigation-intelligence release
+## v0.3.0 — completed navigation-intelligence release
 
 - Explicit Blender UI roles for navmeshes and obstacles
 - Scene Snapshot 1.2 world-space navigation triangles and global navigation fingerprint
@@ -46,9 +46,17 @@
 - Swept actor-bounds collision warnings for marked static obstacles
 - Fail-closed topology, disconnected path, outside-mesh and stale-environment checks
 
+## v0.3.1 — current camera-composition preflight release
+
+- Typed composition thresholds carried from ShotSpec into the staged camera operation
+- Non-mutating perspective projection of target world bounds into normalized frame space
+- Explainable size, center, safe-area, frame-edge and clip-plane diagnostics
+- Read-only center-ray occlusion detection plus start/end evaluation for dolly shots
+- Composition diagnostics exposed in Blender review summaries and bridge protocol 1.4
+
 ## v0.3.x — remaining useful intelligence
 
-- Camera composition evaluator using viewport renders
+- Optional render/vision-based artistic composition evaluator
 - Rig/action inventory plus open retargeting adapters
 - Reusable shot templates and multi-shot sequencing
 

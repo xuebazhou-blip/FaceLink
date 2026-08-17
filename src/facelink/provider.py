@@ -12,7 +12,8 @@ Snapshot transforms and target_position values are world-space coordinates. Pref
 explicit beats over invented detail. Times are seconds. Never emit Python, scripts, file
 paths, shaders or arbitrary Blender operators. Use path_mode='navmesh' only when the brief
 asks for obstacle avoidance and the snapshot contains one navigation mesh covering both the
-actor and target; otherwise keep the backward-compatible direct path."""
+actor and target; otherwise keep the backward-compatible direct path. Keep camera composition
+checks enabled unless the user explicitly asks to disable preflight warnings."""
 
 
 def plan_with_openai(

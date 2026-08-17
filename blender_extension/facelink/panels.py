@@ -78,6 +78,16 @@ class FACELINK_PT_main(Panel):
                 review.label(
                     text=f"Frames: {summary['frame_start']} - {summary['frame_end']}"
                 )
+            composition = summary.get("composition", {})
+            if composition.get("evaluated_count"):
+                warning_count = composition.get("warning_count", 0)
+                review.label(
+                    text=(
+                        f"Composition: {composition['evaluated_count']} sample(s), "
+                        f"{warning_count} warning(s)"
+                    ),
+                    icon="CAMERA_DATA" if warning_count == 0 else "ERROR",
+                )
             for warning in summary["warnings"][:2]:
                 review.label(text=warning[:80], icon="ERROR")
             preview = overlay.preview_status()

@@ -32,6 +32,8 @@ async def test_stdio_server_lists_expected_tools():
     assert "ShotSpec" in schema_text
     assert "move_to" in schema_text
     assert "path_mode" in schema_text
+    assert "CameraCompositionSpec" in schema_text
+    assert "max_center_offset" in schema_text
     assert "SceneSnapshot" in schema_text
     assert "navigation_meshes" in schema_text
 
