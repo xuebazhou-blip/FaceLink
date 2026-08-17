@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import sys
 import traceback
@@ -23,7 +24,7 @@ from facelink.executor import (  # noqa: E402
 from facelink.snapshot import ensure_entity_id, scan_scene, scene_fingerprint  # noqa: E402
 
 import facelink as blender_addon  # noqa: E402
-from facelink import bridge  # noqa: E402
+from facelink import bridge, overlay  # noqa: E402
 
 RESULTS = []
 
@@ -114,6 +115,7 @@ def test_registration_surface():
     assert hasattr(bpy.ops.facelink, "start_bridge")
     assert hasattr(bpy.ops.facelink, "apply_staged_patch")
     assert hasattr(bpy.ops.facelink, "discard_staged_patch")
+    assert hasattr(bpy.ops.facelink, "toggle_preview")
     assert hasattr(bpy.ops.facelink, "rollback_revision")
 
 
@@ -127,12 +129,15 @@ def test_panel_stages_before_apply_and_can_discard():
     assert staged["staged"] is True
     assert staged["summary"]["operation_count"] == 1
     assert staged["summary"]["affected_entities"][0]["name"] == "Review Actor"
+    assert staged["summary"]["preview"]["path_count"] == 1
+    assert overlay.preview_status()["visible"] is True
     assert tuple(actor.location) == (0.0, 0.0, 0.0)
     assert actor.animation_data is None
     assert list_revision_history()["entries"] == []
 
     assert bpy.ops.facelink.apply_staged_patch() == {"FINISHED"}
     assert bridge.get_staged_patch()["staged"] is False
+    assert overlay.preview_status()["visible"] is False
     assert len(list_revision_history()["entries"]) == 1
     bpy.context.scene.frame_set(staged["summary"]["frame_end"])
     assert tuple(actor.location) == (2.0, 0.0, 0.0)
@@ -145,6 +150,7 @@ def test_panel_stages_before_apply_and_can_discard():
     assert bpy.ops.facelink.demo_patch() == {"FINISHED"}
     assert bpy.ops.facelink.discard_staged_patch() == {"FINISHED"}
     assert bridge.get_staged_patch()["staged"] is False
+    assert overlay.preview_status()["path_count"] == 0
     assert tuple(actor.location) == (0.0, 0.0, 0.0)
     assert list_revision_history() == history_before_discard
 
@@ -491,6 +497,38 @@ def test_locked_objects_and_unknown_operations_fail_closed():
         raise AssertionError("Invalid patch metadata was staged")
     assert bridge.get_staged_patch()["staged"] is False
 
+    actor["facelink_locked"] = False
+    non_finite = operation_patch(
+        {
+            "op": "keyframe_transform",
+            "entity_id": actor_id,
+            "payload": {"frames": [{"frame": 1, "location": [math.nan, 0, 0]}]},
+        },
+        patch_id="non-finite-transform",
+    )
+    try:
+        bridge.stage_patch(non_finite)
+    except ValueError as exc:
+        assert "finite" in str(exc).lower()
+    else:
+        raise AssertionError("A non-finite transform was staged")
+
+    invalid_camera_mode = operation_patch(
+        {
+            "op": "ensure_camera",
+            "payload": {"name": "Unsafe Camera", "mode": "teleport"},
+        },
+        patch_id="invalid-camera-mode",
+    )
+    try:
+        bridge.stage_patch(invalid_camera_mode)
+    except ValueError as exc:
+        assert "unsupported camera mode" in str(exc).lower()
+    else:
+        raise AssertionError("An unknown camera mode was staged")
+    assert bpy.data.objects.get("Unsafe Camera") is None
+    assert bridge.get_staged_patch()["staged"] is False
+
 
 def test_missing_entity_fails_with_clear_error():
     patch = operation_patch(
@@ -532,6 +570,230 @@ def test_failed_patch_rolls_back_earlier_operations():
     restored = bpy.data.objects.get("Transactional Actor")
     assert restored is not None
     assert tuple(round(value, 4) for value in restored.location) == (0.0, 0.0, 0.0)
+
+
+def test_internal_timeline_overlap_is_rejected_before_staging():
+    actor = cube("Timeline Conflict Actor")
+    actor_id = ensure_entity_id(actor)
+    patch = operation_patch(
+        {
+            "op": "keyframe_transform",
+            "entity_id": actor_id,
+            "payload": {
+                "frames": [
+                    {"frame": 1, "location": [0, 0, 0]},
+                    {"frame": 25, "location": [2, 0, 0]},
+                ]
+            },
+        },
+        {
+            "op": "keyframe_transform",
+            "entity_id": actor_id,
+            "payload": {
+                "frames": [
+                    {"frame": 13, "location": [1, 0, 0]},
+                    {"frame": 36, "location": [3, 0, 0]},
+                ]
+            },
+        },
+        patch_id="timeline-conflict",
+    )
+
+    try:
+        bridge.stage_patch(patch)
+    except ValueError as exc:
+        assert "timeline conflicts" in str(exc).lower()
+        assert "location" in str(exc).lower()
+    else:
+        raise AssertionError("An internally overlapping patch was staged")
+    assert bridge.get_staged_patch()["staged"] is False
+    assert actor.animation_data is None
+    assert list_revision_history()["entries"] == []
+
+    conflicting_frame = operation_patch(
+        {
+            "op": "keyframe_transform",
+            "entity_id": actor_id,
+            "payload": {
+                "frames": [
+                    {"frame": 10, "location": [1, 0, 0]},
+                    {"frame": 10, "location": [2, 0, 0]},
+                ]
+            },
+        },
+        patch_id="same-frame-conflict",
+    )
+    try:
+        bridge.stage_patch(conflicting_frame)
+    except ValueError as exc:
+        assert "conflicting location values" in str(exc).lower()
+    else:
+        raise AssertionError("Conflicting values at the same frame were staged")
+    assert bridge.get_staged_patch()["staged"] is False
+
+
+def test_existing_keyframes_are_reported_as_review_warnings():
+    actor = cube("Existing Animation Actor")
+    actor_id = ensure_entity_id(actor)
+    actor.location.x = 1
+    actor.keyframe_insert(data_path="location", frame=10)
+    actor.location.x = 2
+    actor.keyframe_insert(data_path="location", frame=20)
+    original_action = actor.animation_data.action
+
+    result = bridge.stage_patch(
+        operation_patch(
+            {
+                "op": "keyframe_transform",
+                "entity_id": actor_id,
+                "payload": {
+                    "frames": [
+                        {"frame": 15, "location": [3, 0, 0]},
+                        {"frame": 30, "location": [4, 0, 0]},
+                    ]
+                },
+            },
+            patch_id="existing-animation-warning",
+        )
+    )
+
+    summary = result["summary"]
+    assert summary["timeline_warning_count"] == 1
+    assert "Existing keyframes overlap" in summary["warnings"][0]
+    assert actor.animation_data.action == original_action
+    assert len(action_fcurves(actor)[0].keyframe_points) == 2
+    bridge.discard_staged_patch()
+
+
+def test_staged_preview_builds_world_paths_and_camera_frustum_without_mutation():
+    parent = empty("Preview Parent", (10, 0, 0))
+    actor = cube("Preview Actor")
+    actor.parent = parent
+    actor_id = ensure_entity_id(actor)
+    target = empty("Preview Target", (4, 4, 1))
+    target_id = ensure_entity_id(target)
+    camera_count = len(bpy.data.cameras)
+
+    result = bridge.stage_patch(
+        operation_patch(
+            {
+                "op": "keyframe_transform",
+                "entity_id": actor_id,
+                "payload": {
+                    "space": "LOCAL",
+                    "frames": [
+                        {"frame": 25, "location": [2, 0, 0]},
+                        {"frame": 1, "location": [0, 0, 0]},
+                    ],
+                },
+            },
+            {
+                "op": "ensure_camera",
+                "payload": {
+                    "name": "Preview Camera",
+                    "mode": "look_at",
+                    "target": target_id,
+                    "space": "WORLD",
+                    "location": {"x": 4, "y": -4, "z": 3},
+                    "lens_mm": 50,
+                },
+            },
+            patch_id="spatial-preview",
+        )
+    )
+
+    status = result["summary"]["preview"]
+    assert status["visible"] is True
+    assert status["path_count"] == 1
+    assert status["frustum_count"] == 1
+    assert status["segment_count"] == 9
+    assert status["draw_handler_active"] is True
+    geometry = overlay.preview_geometry()
+    assert geometry["paths"][0]["points"] == [
+        [10.0, 0.0, 0.0],
+        [12.0, 0.0, 0.0],
+    ]
+    assert geometry["frustums"][0]["origin"] == [4.0, -4.0, 3.0]
+    assert all(
+        math.isfinite(component)
+        for segment in geometry["frustums"][0]["segments"]
+        for point in segment
+        for component in point
+    )
+    assert len(bpy.data.cameras) == camera_count
+    assert bpy.data.objects.get("Preview Camera") is None
+    assert actor.animation_data is None
+
+    assert bpy.ops.facelink.toggle_preview() == {"FINISHED"}
+    assert overlay.preview_status()["visible"] is False
+    assert bpy.ops.facelink.toggle_preview() == {"FINISHED"}
+    assert overlay.preview_status()["visible"] is True
+    bridge.discard_staged_patch()
+    assert overlay.preview_status() == {
+        "visible": False,
+        "draw_handler_active": False,
+        "path_count": 0,
+        "frustum_count": 0,
+        "segment_count": 0,
+    }
+
+
+def test_overlapping_existing_nla_strip_is_rejected_before_staging():
+    source = cube("NLA Source")
+    source.animation_data_create()
+    first_action = bpy.data.actions.new("First Clip")
+    source.animation_data.action = first_action
+    source.keyframe_insert(data_path="location", frame=1)
+    source.location.x = 1
+    source.keyframe_insert(data_path="location", frame=11)
+    second_action = bpy.data.actions.new("Second Clip")
+    source.animation_data.action = second_action
+    source.keyframe_insert(data_path="location", frame=1)
+    source.location.x = 2
+    source.keyframe_insert(data_path="location", frame=11)
+    source.animation_data.action = None
+
+    actor = cube("NLA Conflict Actor")
+    actor_id = ensure_entity_id(actor)
+    apply_patch(
+        operation_patch(
+            {
+                "op": "play_clip",
+                "entity_id": actor_id,
+                "payload": {
+                    "clip": "First Clip",
+                    "frame_start": 10,
+                    "frame_end": 30,
+                },
+            },
+            patch_id="first-nla",
+        )
+    )
+
+    try:
+        bridge.stage_patch(
+            operation_patch(
+                {
+                    "op": "play_clip",
+                    "entity_id": actor_id,
+                    "payload": {
+                        "clip": "Second Clip",
+                        "frame_start": 20,
+                        "frame_end": 40,
+                    },
+                },
+                patch_id="overlapping-nla",
+            )
+        )
+    except ValueError as exc:
+        assert "overlap existing facelink nla strip" in str(exc).lower()
+    else:
+        raise AssertionError("A patch overlapping an existing NLA strip was staged")
+
+    track = actor.animation_data.nla_tracks["FaceLink"]
+    assert len(track.strips) == 1
+    assert track.strips[0].action == first_action
+    assert len(list_revision_history()["entries"]) == 1
 
 
 def test_revision_undo_restores_animation_constraints_camera_and_nla():
@@ -823,6 +1085,13 @@ CASES = [
     ("locked_and_unknown_fail_closed", test_locked_objects_and_unknown_operations_fail_closed),
     ("missing_entity_error", test_missing_entity_fails_with_clear_error),
     ("failed_patch_transaction_rollback", test_failed_patch_rolls_back_earlier_operations),
+    ("internal_timeline_overlap", test_internal_timeline_overlap_is_rejected_before_staging),
+    ("existing_keyframe_warning", test_existing_keyframes_are_reported_as_review_warnings),
+    (
+        "spatial_preview_overlay",
+        test_staged_preview_builds_world_paths_and_camera_frustum_without_mutation,
+    ),
+    ("existing_nla_overlap", test_overlapping_existing_nla_strip_is_rejected_before_staging),
     (
         "revision_undo_full_surface",
         test_revision_undo_restores_animation_constraints_camera_and_nla,

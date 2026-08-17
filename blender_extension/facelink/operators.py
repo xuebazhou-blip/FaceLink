@@ -4,6 +4,7 @@ import bpy
 from bpy.props import StringProperty
 from bpy.types import Operator
 
+from . import overlay
 from .bridge import (
     apply_staged_patch,
     discard_staged_patch,
@@ -144,6 +145,27 @@ class FACELINK_OT_discard_staged_patch(Operator):
         return {"FINISHED"}
 
 
+class FACELINK_OT_toggle_preview(Operator):
+    bl_idname = "facelink.toggle_preview"
+    bl_label = "Toggle Preview Overlay"
+    bl_description = "Show or hide staged movement paths and camera frustums"
+
+    @classmethod
+    def poll(cls, _context):
+        status = overlay.preview_status()
+        return get_staged_patch()["staged"] and (
+            status["path_count"] > 0 or status["frustum_count"] > 0
+        )
+
+    def execute(self, context):
+        current = overlay.preview_status()
+        status = overlay.set_visible(not current["visible"])
+        state = "shown" if status["visible"] else "hidden"
+        context.window_manager.facelink.last_result = f"Preview overlay {state}"
+        self.report({"INFO"}, context.window_manager.facelink.last_result)
+        return {"FINISHED"}
+
+
 class FACELINK_OT_undo_patch(Operator):
     bl_idname = "facelink.undo_patch"
     bl_label = "Undo Last FaceLink Patch"
@@ -187,6 +209,7 @@ CLASSES = (
     FACELINK_OT_copy_brief,
     FACELINK_OT_apply_staged_patch,
     FACELINK_OT_discard_staged_patch,
+    FACELINK_OT_toggle_preview,
     FACELINK_OT_undo_patch,
     FACELINK_OT_rollback_revision,
 )

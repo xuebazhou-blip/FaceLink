@@ -1,6 +1,11 @@
 $ErrorActionPreference = 'Stop'
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
+$manifestText = Get-Content -LiteralPath (Join-Path $projectRoot 'blender_extension\facelink\blender_manifest.toml') -Raw
+if ($manifestText -notmatch '(?m)^version\s*=\s*"([^"]+)"') {
+    throw 'Could not read the FaceLink extension version from blender_manifest.toml.'
+}
+$extensionPackage = Join-Path $projectRoot "dist\facelink-$($Matches[1]).zip"
 $blender = $env:FACELINK_BLENDER_EXE
 if (-not $blender) {
     $command = Get-Command blender -ErrorAction SilentlyContinue
@@ -41,7 +46,7 @@ try {
     }
     & (Join-Path $PSScriptRoot 'build_extension.ps1') -BlenderExe $blender
     if ($LASTEXITCODE -ne 0) { throw "Extension build failed with exit code $LASTEXITCODE" }
-    & $blender --command extension validate (Join-Path $projectRoot 'dist\facelink-0.2.2.zip')
+    & $blender --command extension validate $extensionPackage
     if ($LASTEXITCODE -ne 0) { throw "Extension validation failed with exit code $LASTEXITCODE" }
 } finally {
     Pop-Location

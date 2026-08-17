@@ -130,6 +130,7 @@ def client_flow(result_box):
         )
 
         health = request_json("GET", f"{base_url}/v1/health", token)
+        assert {"timeline_diagnostics", "viewport_preview"} <= set(health["capabilities"])
         scan_ids = [submit(base_url, token, "scan_scene") for _ in range(3)]
         assert len(set(scan_ids)) == 3
         scans = [wait_job(base_url, token, job_id) for job_id in scan_ids]
@@ -167,6 +168,7 @@ def client_flow(result_box):
         )
         assert stage_job["status"] == "succeeded"
         assert stage_job["result"]["summary"]["operation_count"] == 1
+        assert stage_job["result"]["summary"]["preview"]["path_count"] == 1
         staged_job = wait_job(base_url, token, submit(base_url, token, "get_staged_patch"))
         assert staged_job["result"]["staged"] is True
         assert staged_job["result"]["patch"]["patch_id"] == "bridge-acceptance"
@@ -193,6 +195,7 @@ def client_flow(result_box):
             submit(base_url, token, "stage_patch", {"patch": patch | {"patch_id": "discard-me"}}),
         )
         assert restage_job["status"] == "succeeded"
+        assert restage_job["result"]["summary"]["timeline_warning_count"] == 1
         discard_job = wait_job(base_url, token, submit(base_url, token, "discard_staged_patch"))
         assert discard_job["result"]["patch_id"] == "discard-me"
         assert discard_job["result"]["discarded"] is True
@@ -269,6 +272,8 @@ def client_flow(result_box):
             health=health,
             scan_jobs=len(scans),
             staged_without_mutation=True,
+            preview_via_bridge=True,
+            timeline_warning_via_bridge=True,
             receipt=apply_job["result"]["receipt"],
             discarded_without_apply=True,
             persistent_history_entries=len(final_history["entries"]),

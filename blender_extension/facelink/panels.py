@@ -1,6 +1,7 @@
 import bpy
 from bpy.types import Panel
 
+from . import overlay
 from .bridge import get_staged_patch, is_running
 from .executor import list_revision_history
 
@@ -56,6 +57,20 @@ class FACELINK_PT_main(Panel):
                 )
             for warning in summary["warnings"][:2]:
                 review.label(text=warning[:80], icon="ERROR")
+            preview = overlay.preview_status()
+            if preview["path_count"] or preview["frustum_count"]:
+                review.label(
+                    text=(
+                        f"Preview: {preview['path_count']} path(s), "
+                        f"{preview['frustum_count']} camera(s)"
+                    ),
+                    icon="HIDE_OFF" if preview["visible"] else "HIDE_ON",
+                )
+                review.operator(
+                    "facelink.toggle_preview",
+                    text="Hide Overlay" if preview["visible"] else "Show Overlay",
+                    icon="HIDE_OFF" if preview["visible"] else "HIDE_ON",
+                )
             row = review.row(align=True)
             row.operator("facelink.apply_staged_patch", icon="CHECKMARK")
             row.operator("facelink.discard_staged_patch", icon="TRASH")

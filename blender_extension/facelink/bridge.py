@@ -14,6 +14,7 @@ from pathlib import Path
 
 import bpy
 
+from . import overlay
 from .executor import (
     apply_patch,
     list_revision_history,
@@ -52,7 +53,7 @@ def _safe_job(job_id):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "FaceLink/0.2.2"
+    server_version = "FaceLink/0.2.3"
 
     def log_message(self, format, *args):
         return
@@ -168,6 +169,7 @@ def is_running():
 
 def stage_patch(patch):
     summary = summarize_patch(patch)
+    summary["preview"] = overlay.set_preview(patch)
     previous = Runtime.staged_summary
     Runtime.staged_patch = copy.deepcopy(patch)
     Runtime.staged_summary = copy.deepcopy(summary)
@@ -207,6 +209,7 @@ def discard_staged_patch():
 def clear_staged_patch():
     Runtime.staged_patch = None
     Runtime.staged_summary = None
+    overlay.clear_preview()
 
 
 def connection_info():
@@ -239,6 +242,8 @@ def start_bridge():
             "discard_staged_patch",
             "world_space_transforms",
             "scene_fingerprint",
+            "timeline_diagnostics",
+            "viewport_preview",
             "revision_history",
             "rollback_revision",
             "keyframe_transform",

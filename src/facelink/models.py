@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False, str_strip_whitespace=True)
 
 
 class Vec3(StrictModel):
@@ -60,8 +60,9 @@ class BeatBase(StrictModel):
 
 class MoveToBeat(BeatBase):
     type: Literal["move_to"]
-    actor: str
-    target_entity: str | None = None
+    actor: str = Field(min_length=1)
+    duration: float = Field(default=1.0, gt=0.0, description="Duration in seconds")
+    target_entity: str | None = Field(default=None, min_length=1)
     target_position: Vec3 | None = None
     easing: Literal["LINEAR", "BEZIER", "CONSTANT"] = "BEZIER"
 
@@ -74,8 +75,9 @@ class MoveToBeat(BeatBase):
 
 class TurnToBeat(BeatBase):
     type: Literal["turn_to"]
-    actor: str
-    target_entity: str | None = None
+    actor: str = Field(min_length=1)
+    duration: float = Field(default=1.0, gt=0.0, description="Duration in seconds")
+    target_entity: str | None = Field(default=None, min_length=1)
     target_position: Vec3 | None = None
     easing: Literal["LINEAR", "BEZIER", "CONSTANT"] = "BEZIER"
 
@@ -88,19 +90,21 @@ class TurnToBeat(BeatBase):
 
 class LookAtBeat(BeatBase):
     type: Literal["look_at"]
-    actor: str
-    target: str
+    actor: str = Field(min_length=1)
+    target: str = Field(min_length=1)
 
 
 class WaitBeat(BeatBase):
     type: Literal["wait"]
-    actor: str | None = None
+    actor: str | None = Field(default=None, min_length=1)
+    duration: float = Field(default=1.0, gt=0.0, description="Duration in seconds")
 
 
 class PlayClipBeat(BeatBase):
     type: Literal["play_clip"]
-    actor: str
-    clip: str
+    actor: str = Field(min_length=1)
+    clip: str = Field(min_length=1)
+    duration: float = Field(default=1.0, gt=0.0, description="Duration in seconds")
     loop: bool = False
 
 
@@ -111,13 +115,19 @@ ShotBeat = Annotated[
 
 
 class CameraSpec(StrictModel):
-    name: str = "FaceLink Camera"
+    name: str = Field(default="FaceLink Camera", min_length=1)
     mode: Literal["static", "look_at", "follow", "dolly_in"] = "static"
     target: str | None = None
     location: Vec3 | None = None
     lens_mm: float = Field(default=50.0, ge=1.0, le=300.0)
     distance: float = Field(default=6.0, gt=0.0)
     height: float = 2.0
+
+    @model_validator(mode="after")
+    def moving_modes_require_target(self) -> CameraSpec:
+        if self.mode in {"look_at", "follow", "dolly_in"} and not self.target:
+            raise ValueError(f"camera mode '{self.mode}' requires a target")
+        return self
 
 
 class ShotSpec(StrictModel):

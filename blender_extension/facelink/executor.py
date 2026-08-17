@@ -1,4 +1,5 @@
 import json
+import math
 import time
 import uuid
 
@@ -53,7 +54,15 @@ def _validate_vector(value, field):
     if not isinstance(value, (list, tuple)) or len(value) != 3:
         raise ValueError(f"{field} must contain exactly three numbers")
     for component in value:
-        float(component)
+        if not math.isfinite(float(component)):
+            raise ValueError(f"{field} values must be finite numbers")
+
+
+def _validate_xyz(value, field):
+    if not isinstance(value, dict) or not all(axis in value for axis in "xyz"):
+        raise ValueError(f"{field} must contain x, y and z numbers")
+    if not all(math.isfinite(float(value[axis])) for axis in "xyz"):
+        raise ValueError(f"{field} values must be finite numbers")
 
 
 def _preflight_operations(operations):
@@ -68,7 +77,7 @@ def _preflight_operations(operations):
             fps = float(payload["fps"])
             frame_start = int(payload["frame_start"])
             frame_end = int(payload["frame_end"])
-            if fps <= 0 or frame_end < frame_start:
+            if not math.isfinite(fps) or fps <= 0 or frame_end < frame_start:
                 raise ValueError("Invalid frame range or FPS")
         elif op == "keyframe_transform":
             obj = object_by_id(operation.get("entity_id"))
@@ -80,8 +89,9 @@ def _preflight_operations(operations):
                 raise ValueError("Transform space must be LOCAL or WORLD")
             if payload.get("interpolation", "BEZIER") not in INTERPOLATIONS:
                 raise ValueError("Unsupported keyframe interpolation")
+            seen_values = {}
             for item in frames:
-                int(item["frame"])
+                frame = int(item["frame"])
                 fields = [
                     field for field in ("location", "rotation_euler", "scale") if field in item
                 ]
@@ -89,6 +99,13 @@ def _preflight_operations(operations):
                     raise ValueError("A transform keyframe must change a transform field")
                 for field in fields:
                     _validate_vector(item[field], field)
+                    value = tuple(float(component) for component in item[field])
+                    key = (frame, field)
+                    if key in seen_values and seen_values[key] != value:
+                        raise ValueError(
+                            f"keyframe_transform has conflicting {field} values at frame {frame}"
+                        )
+                    seen_values[key] = value
         elif op == "look_at":
             obj = object_by_id(operation.get("entity_id"))
             _assert_editable(obj)
@@ -102,6 +119,11 @@ def _preflight_operations(operations):
                 raise ValueError("play_clip frame_end must not precede frame_start")
         elif op == "ensure_camera":
             name = payload.get("name", "FaceLink Camera")
+            mode = payload.get("mode", "static")
+            if mode not in {"static", "look_at", "follow", "dolly_in"}:
+                raise ValueError(f"Unsupported camera mode '{mode}'")
+            if mode != "static" and not payload.get("target"):
+                raise ValueError(f"Camera mode '{mode}' requires a target")
             existing = bpy.data.objects.get(name)
             if existing is not None:
                 if existing.type != "CAMERA":
@@ -110,10 +132,160 @@ def _preflight_operations(operations):
             if payload.get("target"):
                 object_by_id(payload["target"])
             lens = float(payload.get("lens_mm", 50.0))
-            if lens < 1.0 or lens > 300.0:
+            if not math.isfinite(lens) or lens < 1.0 or lens > 300.0:
                 raise ValueError("Camera lens must be between 1 and 300 mm")
+            distance = float(payload.get("distance", 6.0))
+            height = float(payload.get("height", 2.0))
+            if not math.isfinite(distance) or distance <= 0:
+                raise ValueError("Camera distance must be a positive finite number")
+            if not math.isfinite(height):
+                raise ValueError("Camera height must be a finite number")
+            if payload.get("location") is not None:
+                _validate_xyz(payload["location"], "Camera location")
             if payload.get("space", "LOCAL") not in {"LOCAL", "WORLD"}:
                 raise ValueError("Camera space must be LOCAL or WORLD")
+
+
+def _timeline_records(operations):
+    records = []
+    channel_names = {
+        "location": "location",
+        "rotation_euler": "rotation",
+        "scale": "scale",
+    }
+    for operation_index, operation in enumerate(operations):
+        op = operation["op"]
+        payload = operation.get("payload", {})
+        if op == "keyframe_transform":
+            for field, channel in channel_names.items():
+                samples = {
+                    int(item["frame"]): tuple(float(value) for value in item[field])
+                    for item in payload["frames"]
+                    if field in item
+                }
+                if samples:
+                    records.append(
+                        {
+                            "key": (str(operation.get("entity_id")), channel),
+                            "label": f"entity '{operation.get('entity_id')}' {channel}",
+                            "start": min(samples),
+                            "end": max(samples),
+                            "samples": samples,
+                            "operation_index": operation_index,
+                        }
+                    )
+        elif op == "play_clip":
+            records.append(
+                {
+                    "key": (str(operation.get("entity_id")), "action"),
+                    "label": f"entity '{operation.get('entity_id')}' action",
+                    "start": int(payload["frame_start"]),
+                    "end": int(payload["frame_end"]),
+                    "samples": {},
+                    "operation_index": operation_index,
+                }
+            )
+        elif op == "ensure_camera" and payload.get("mode") == "dolly_in":
+            name = payload.get("name", "FaceLink Camera")
+            records.append(
+                {
+                    "key": (f"camera:{name}", "location"),
+                    "label": f"camera '{name}' location",
+                    "start": int(payload["frame_start"]),
+                    "end": int(payload["frame_end"]),
+                    "samples": {},
+                    "operation_index": operation_index,
+                }
+            )
+    return records
+
+
+def _internal_timeline_conflicts(operations):
+    conflicts = []
+    occupied = {}
+    for record in _timeline_records(operations):
+        for previous in occupied.get(record["key"], []):
+            overlap_start = max(record["start"], previous["start"])
+            overlap_end = min(record["end"], previous["end"])
+            overlaps = overlap_start < overlap_end
+            if overlap_start == overlap_end:
+                current_value = record["samples"].get(overlap_start)
+                previous_value = previous["samples"].get(overlap_start)
+                point_interval = (
+                    record["start"] == record["end"]
+                    or previous["start"] == previous["end"]
+                )
+                overlaps = (
+                    current_value is not None
+                    and previous_value is not None
+                    and current_value != previous_value
+                ) or (point_interval and (current_value is None or previous_value is None))
+            if overlaps:
+                conflicts.append(
+                    f"operations {previous['operation_index']} and "
+                    f"{record['operation_index']} overlap on {record['label']} "
+                    f"during frames {overlap_start}-{overlap_end}"
+                )
+        occupied.setdefault(record["key"], []).append(record)
+    return conflicts
+
+
+def _preflight_nla_overlaps(operations):
+    for operation in operations:
+        if operation["op"] != "play_clip":
+            continue
+        payload = operation["payload"]
+        obj = object_by_id(operation.get("entity_id"))
+        animation = obj.animation_data
+        track = animation.nla_tracks.get("FaceLink") if animation else None
+        if track is None:
+            continue
+        start = int(payload["frame_start"])
+        end = int(payload["frame_end"])
+        replacement_name = f"FaceLink {payload['clip']} {payload['frame_start']}"
+        for strip in track.strips:
+            if strip.name == replacement_name:
+                continue
+            if start < float(strip.frame_end) and end > float(strip.frame_start):
+                raise ValueError(
+                    f"play_clip frames {start}-{end} overlap existing FaceLink NLA strip "
+                    f"'{strip.name}' on '{obj.name}'"
+                )
+
+
+def _existing_animation_warnings(operations):
+    warnings = []
+    data_paths = {
+        "location": "location",
+        "rotation": "rotation_euler",
+        "scale": "scale",
+    }
+    for record in _timeline_records(operations):
+        entity_key, channel = record["key"]
+        if entity_key.startswith("camera:"):
+            obj = bpy.data.objects.get(entity_key.split(":", 1)[1])
+        elif channel != "action":
+            try:
+                obj = object_by_id(entity_key)
+            except ValueError:
+                obj = None
+        else:
+            obj = None
+        if obj is None or channel not in data_paths:
+            continue
+        curves = [
+            curve for curve in _action_fcurves(obj) if curve.data_path == data_paths[channel]
+        ]
+        if any(
+            record["start"] <= float(point.co.x) <= record["end"]
+            for curve in curves
+            for point in curve.keyframe_points
+        ):
+            warnings.append(
+                f"Existing keyframes overlap '{obj.name}' {channel} during frames "
+                f"{record['start']}-{record['end']}."
+            )
+    return list(dict.fromkeys(warnings))
 
 
 def validate_patch(patch):
@@ -160,6 +332,10 @@ def validate_patch(patch):
     if unknown:
         raise ValueError(f"Patch contains unsupported operations: {sorted(unknown)}")
     _preflight_operations(operations)
+    conflicts = _internal_timeline_conflicts(operations)
+    if conflicts:
+        raise ValueError("Patch timeline conflicts: " + "; ".join(conflicts))
+    _preflight_nla_overlaps(operations)
     return operations
 
 
@@ -203,6 +379,8 @@ def summarize_patch(patch):
             if payload.get("mode") == "dolly_in":
                 frames.extend((int(payload["frame_start"]), int(payload["frame_end"])))
 
+    timeline_warnings = _existing_animation_warnings(operations)
+    warnings = list(dict.fromkeys([*patch.get("warnings", []), *timeline_warnings]))
     return {
         "patch_id": patch.get("patch_id", "unknown"),
         "source_title": patch.get("source_title", "Untitled patch"),
@@ -211,7 +389,8 @@ def summarize_patch(patch):
         "affected_entities": [affected[name] for name in sorted(affected)],
         "frame_start": min(frames) if frames else None,
         "frame_end": max(frames) if frames else None,
-        "warnings": [str(item) for item in patch.get("warnings", [])],
+        "warnings": [str(item) for item in warnings],
+        "timeline_warning_count": len(timeline_warnings),
         "scene_guarded": patch.get("scene_fingerprint") is not None,
     }
 
@@ -746,7 +925,9 @@ def apply_patch(patch):
     revision = _capture_revision(patch, operations)
     _prepare_animation_edits(operations)
     changed = set()
-    warnings = list(patch.get("warnings", []))
+    warnings = list(
+        dict.fromkeys([*patch.get("warnings", []), *_existing_animation_warnings(operations)])
+    )
     try:
         for operation in operations:
             op = operation["op"]

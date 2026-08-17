@@ -26,6 +26,17 @@ replaces the previous staged patch and reports its ID. `apply_staged_patch` clea
 only after a successful transactional apply; `discard_staged_patch` clears it without any
 scene mutation. Staging is in memory and is cleared when a new `.blend` file loads.
 
+Stage summaries may include additive `timeline_warning_count` and `preview` fields. `preview`
+reports path, camera-frustum and line-segment counts plus current overlay visibility; it does
+not expose GPU or Blender datablock handles. Protocol 1.2 clients that ignore these fields
+remain compatible. Health capabilities advertise `timeline_diagnostics` and
+`viewport_preview` when they are available.
+
+Internally overlapping operations on the same entity/channel and collisions with existing
+FaceLink NLA strips fail preflight. Existing transform keyframes in the requested frame span
+are non-blocking warnings shown in the stage summary and copied into the eventual receipt and
+revision audit record.
+
 ## Scene consistency and transform space
 
 Protocol 1.1 snapshots declare `transform_space: "WORLD"` and include `frame_current`.

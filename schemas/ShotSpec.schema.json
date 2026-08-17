@@ -5,6 +5,7 @@
       "properties": {
         "name": {
           "default": "FaceLink Camera",
+          "minLength": 1,
           "title": "Name",
           "type": "string"
         },
@@ -87,10 +88,12 @@
           "type": "string"
         },
         "actor": {
+          "minLength": 1,
           "title": "Actor",
           "type": "string"
         },
         "target": {
+          "minLength": 1,
           "title": "Target",
           "type": "string"
         }
@@ -114,9 +117,9 @@
           "type": "number"
         },
         "duration": {
-          "default": 0.0,
+          "default": 1.0,
           "description": "Duration in seconds",
-          "minimum": 0.0,
+          "exclusiveMinimum": 0.0,
           "title": "Duration",
           "type": "number"
         },
@@ -126,12 +129,14 @@
           "type": "string"
         },
         "actor": {
+          "minLength": 1,
           "title": "Actor",
           "type": "string"
         },
         "target_entity": {
           "anyOf": [
             {
+              "minLength": 1,
               "type": "string"
             },
             {
@@ -181,9 +186,9 @@
           "type": "number"
         },
         "duration": {
-          "default": 0.0,
+          "default": 1.0,
           "description": "Duration in seconds",
-          "minimum": 0.0,
+          "exclusiveMinimum": 0.0,
           "title": "Duration",
           "type": "number"
         },
@@ -193,10 +198,12 @@
           "type": "string"
         },
         "actor": {
+          "minLength": 1,
           "title": "Actor",
           "type": "string"
         },
         "clip": {
+          "minLength": 1,
           "title": "Clip",
           "type": "string"
         },
@@ -225,9 +232,9 @@
           "type": "number"
         },
         "duration": {
-          "default": 0.0,
+          "default": 1.0,
           "description": "Duration in seconds",
-          "minimum": 0.0,
+          "exclusiveMinimum": 0.0,
           "title": "Duration",
           "type": "number"
         },
@@ -237,12 +244,14 @@
           "type": "string"
         },
         "actor": {
+          "minLength": 1,
           "title": "Actor",
           "type": "string"
         },
         "target_entity": {
           "anyOf": [
             {
+              "minLength": 1,
               "type": "string"
             },
             {
@@ -314,9 +323,9 @@
           "type": "number"
         },
         "duration": {
-          "default": 0.0,
+          "default": 1.0,
           "description": "Duration in seconds",
-          "minimum": 0.0,
+          "exclusiveMinimum": 0.0,
           "title": "Duration",
           "type": "number"
         },
@@ -328,6 +337,7 @@
         "actor": {
           "anyOf": [
             {
+              "minLength": 1,
               "type": "string"
             },
             {

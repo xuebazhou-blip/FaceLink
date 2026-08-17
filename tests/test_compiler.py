@@ -283,6 +283,82 @@ def test_overlapping_moves_for_one_actor_are_rejected(scene_snapshot):
     assert any(issue.code == "overlapping_channel" for issue in report.issues)
 
 
+@pytest.mark.parametrize(
+    ("beat_type", "extra"),
+    [
+        ("turn_to", {"target_position": {"x": 1}}),
+        ("play_clip", {"clip": "Walk"}),
+    ],
+)
+def test_overlapping_rotation_and_action_channels_are_rejected(
+    scene_snapshot, beat_type, extra
+):
+    shot = ShotSpec.model_validate(
+        {
+            "duration": 3,
+            "beats": [
+                {
+                    "type": beat_type,
+                    "actor": "actor",
+                    "at": 0,
+                    "duration": 2,
+                    **extra,
+                },
+                {
+                    "type": beat_type,
+                    "actor": "actor",
+                    "at": 1,
+                    "duration": 1,
+                    **extra,
+                },
+            ],
+        }
+    )
+    report = validate_shot(shot, scene_snapshot)
+    assert any(issue.code == "overlapping_channel" for issue in report.issues)
+
+
+def test_location_and_rotation_can_run_concurrently(scene_snapshot):
+    shot = ShotSpec.model_validate(
+        {
+            "duration": 2,
+            "beats": [
+                {
+                    "type": "move_to",
+                    "actor": "actor",
+                    "target_position": {"x": 1},
+                    "duration": 2,
+                },
+                {
+                    "type": "turn_to",
+                    "actor": "actor",
+                    "target_position": {"y": 1},
+                    "duration": 2,
+                },
+            ],
+        }
+    )
+    assert validate_shot(shot, scene_snapshot).valid is True
+
+
+def test_positive_beat_that_rounds_to_zero_frames_is_rejected(scene_snapshot):
+    shot = ShotSpec.model_validate(
+        {
+            "duration": 1,
+            "beats": [
+                {
+                    "type": "move_to",
+                    "actor": "actor",
+                    "target_position": {"x": 1},
+                    "duration": 0.01,
+                }
+            ],
+        }
+    )
+    report = validate_shot(shot, scene_snapshot)
+    assert any(issue.code == "beat_shorter_than_frame" for issue in report.issues)
+
+
 @given(
     x=st.floats(min_value=-1000, max_value=1000, allow_nan=False, allow_infinity=False),
     y=st.floats(min_value=-1000, max_value=1000, allow_nan=False, allow_infinity=False),

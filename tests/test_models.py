@@ -60,3 +60,47 @@ def test_execution_receipt_preserves_revision_identity_and_legacy_compatibility(
 
     legacy_receipt = ExecutionReceipt(patch_id="legacy", applied_operations=0)
     assert legacy_receipt.revision_id is None
+
+
+@pytest.mark.parametrize("beat_type", ["move_to", "turn_to", "wait", "play_clip"])
+def test_timed_beats_reject_zero_duration(beat_type):
+    beat = {"type": beat_type, "duration": 0}
+    if beat_type != "wait":
+        beat["actor"] = "actor"
+    if beat_type in {"move_to", "turn_to"}:
+        beat["target_position"] = {"x": 1}
+    if beat_type == "play_clip":
+        beat["clip"] = "Walk"
+    with pytest.raises(ValidationError):
+        ShotSpec.model_validate({"duration": 1, "beats": [beat]})
+
+
+@pytest.mark.parametrize("mode", ["look_at", "follow", "dolly_in"])
+def test_camera_motion_modes_require_target(mode):
+    with pytest.raises(ValidationError, match="requires a target"):
+        CameraSpec(mode=mode)
+
+
+def test_actor_and_clip_identifiers_cannot_be_empty():
+    with pytest.raises(ValidationError):
+        ShotSpec.model_validate(
+            {
+                "duration": 1,
+                "beats": [
+                    {
+                        "type": "play_clip",
+                        "actor": "",
+                        "clip": "",
+                        "duration": 1,
+                    }
+                ],
+            }
+        )
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_models_reject_non_finite_numbers(value):
+    with pytest.raises(ValidationError):
+        Vec3(x=value)
+    with pytest.raises(ValidationError):
+        ShotSpec(fps=value, duration=1)

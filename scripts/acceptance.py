@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import time
+import tomllib
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -19,6 +20,12 @@ ARTIFACTS = PROJECT / "artifacts"
 RUN_ID = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 RUN_DIR = ARTIFACTS / RUN_ID
 LOG_DIR = RUN_DIR / "logs"
+MANIFEST = tomllib.loads(
+    (PROJECT / "blender_extension" / "facelink" / "blender_manifest.toml").read_text(
+        encoding="utf-8"
+    )
+)
+EXTENSION_VERSION = MANIFEST["version"]
 
 
 @dataclass
@@ -43,6 +50,7 @@ def run_command(
     environment: dict[str, str] | None = None,
     timeout: float = 180.0,
     blender_version: str | None = None,
+    hidden_window: bool = False,
 ) -> CommandResult:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     normalized = [str(item) for item in command]
@@ -52,6 +60,11 @@ def run_command(
         merged_environment.update(environment)
     print(f"[RUN] {name}", flush=True)
     started = time.monotonic()
+    startupinfo = None
+    if hidden_window and os.name == "nt":
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
     try:
         process = subprocess.run(
             normalized,
@@ -63,6 +76,7 @@ def run_command(
             errors="replace",
             timeout=timeout,
             check=False,
+            startupinfo=startupinfo,
         )
         output = process.stdout + process.stderr
         exit_code = process.returncode
@@ -220,7 +234,7 @@ def main() -> int:
 
     dist = RUN_DIR / "dist"
     dist.mkdir(exist_ok=True)
-    package = dist / "facelink-0.2.2.zip"
+    package = dist / f"facelink-{EXTENSION_VERSION}.zip"
     build_result = run_command(
         "extension-build",
         [
@@ -270,6 +284,26 @@ def main() -> int:
             )
         )
         suite_reports[f"source-{version}"] = read_json(source_report)
+
+        overlay_report = RUN_DIR / f"blender-overlay-ui-{version_key}.json"
+        commands.append(
+            run_command(
+                f"blender-overlay-ui-{version_key}",
+                [
+                    executable,
+                    "--factory-startup",
+                    "--python-exit-code",
+                    "1",
+                    "--python",
+                    PROJECT / "tests" / "blender_overlay_ui_acceptance.py",
+                ],
+                environment={"FACELINK_TEST_REPORT": str(overlay_report)},
+                timeout=20.0,
+                blender_version=version,
+                hidden_window=True,
+            )
+        )
+        suite_reports[f"overlay-ui-{version}"] = read_json(overlay_report)
 
         bridge_report = RUN_DIR / f"blender-bridge-{version_key}.json"
         commands.append(
@@ -355,7 +389,8 @@ def main() -> int:
                 "A paid/live OpenAI API request; provider behavior is verified with a "
                 "strict mock only."
             ),
-            "Interactive viewport clicking and visual quality of camera composition.",
+            "Interactive viewport clicking and visual quality of camera composition; the GPU "
+            "overlay draw callback itself is smoke-tested in a hidden Blender UI.",
             "Large production rigs, retargeting, collision avoidance and multi-shot editing.",
             "Linux and macOS Blender builds; this run covers Windows x64 only.",
         ],

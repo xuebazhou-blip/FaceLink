@@ -42,6 +42,13 @@ patch, Blender displays its operation count, affected objects, frame span and wa
 only an explicit apply action mutates the scene. This review gate is provider-independent,
 so an MCP client can use its existing model subscription while BYOK users use the CLI.
 
+The v0.2.3 preflight rejects overlapping operations on the same transform/action channel and
+FaceLink NLA-strip collisions. Existing editable keyframes are reported as review warnings
+instead of hard failures, because overwriting them can be intentional. Staging also builds a
+transient GPU overlay from the patch: cyan world-space movement paths and orange predicted
+camera frustums. Overlay geometry is kept outside Blender datablocks and is cleared with the
+staged patch, so previewing does not dirty or mutate the scene.
+
 Protocol 1.1 adds optimistic scene consistency. The compiler fingerprints scene timing and
 the world-space state of only the objects referenced by a patch. Blender checks that value
 both when staging and when applying, so an intervening transform, parent, lock or timing edit

@@ -3,6 +3,9 @@
 FaceLink uses two test levels. `pytest` covers pure Python schemas, compiler behavior, bridge
 client behavior, CLI, provider contract and a real MCP stdio handshake. Blender acceptance
 scripts run inside Blender's own Python runtime and exercise the actual `bpy` mutation path.
+Each supported version also runs a short hidden-window UI smoke test because GPU draw calls
+are unavailable in Blender background mode; the smoke test requires a real viewport callback
+before Blender exits automatically.
 
 Run the complete Windows matrix:
 
@@ -36,9 +39,12 @@ human-readable summary.
   boundary coverage also verifies unique revision IDs for repeated patch IDs, unknown-target
   rollback safety, malformed audit-log recovery, the 100-entry audit/50-snapshot limits, and
   that staging or discarding a patch never creates a false history entry.
+- Preflight visualization acceptance must verify world/local path conversion, finite camera
+  frustum geometry, overlay show/hide/cleanup, zero scene mutation while staged, internal
+  timeline rejection, existing-keyframe warnings and existing FaceLink NLA collision safety.
 - Bridge acceptance must pass: localhost binding, bearer authentication, malformed requests,
   concurrent jobs, protocol 1.1 fingerprint agreement, main-thread dispatch, failed-job
-  reporting, protocol 1.2 history/rollback, Undo and discovery cleanup.
+  reporting, protocol 1.2 history/rollback and preview diagnostics, Undo and discovery cleanup.
 - The built ZIP must install, enable and load from each Blender version's isolated portable
   extension repository.
 

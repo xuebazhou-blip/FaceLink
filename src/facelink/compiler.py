@@ -80,6 +80,19 @@ def validate_shot(shot: ShotSpec, snapshot: SceneSnapshot) -> ValidationReport:
                     beat_index=index,
                 )
             )
+        if isinstance(beat, (MoveToBeat, TurnToBeat, PlayClipBeat)) and _frame(
+            beat.at, shot.fps, snapshot.frame_start
+        ) == _frame(beat.at + beat.duration, shot.fps, snapshot.frame_start):
+            issues.append(
+                ValidationIssue(
+                    severity="error",
+                    code="beat_shorter_than_frame",
+                    message=(
+                        f"Beat {index} is too short to occupy a frame at {shot.fps:g} FPS."
+                    ),
+                    beat_index=index,
+                )
+            )
         channel = None
         if isinstance(beat, MoveToBeat):
             channel = "location"

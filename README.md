@@ -20,6 +20,10 @@ the scene only after the artist presses **Apply Staged Patch**.
 - runs a localhost-only authenticated bridge between the MCP process and Blender;
 - supports Blender-side stage/review/apply/discard, persistent audit history and safe
   rollback to a selected current-session revision.
+- rejects internally overlapping transform/action timelines, warns before overwriting
+  existing keyframes and rejects colliding FaceLink NLA clips;
+- previews staged world-space motion paths and predicted camera frustums directly in the
+  Blender viewport without creating scene datablocks;
 - rejects a staged plan when a referenced transform, parent link, lock or scene timing value
   changed after the scene scan.
 
@@ -59,7 +63,7 @@ $env:FACELINK_BLENDER_EXE='C:\path\to\Blender\blender.exe' # optional if on PATH
 ```
 
 Then in Blender 4.5: **Edit → Preferences → Get Extensions → Install from Disk**, choose
-`dist/facelink-0.2.2.zip`, enable FaceLink, and open the **FaceLink** tab in the 3D Viewport
+`dist/facelink-0.2.3.zip`, enable FaceLink, and open the **FaceLink** tab in the 3D Viewport
 sidebar. Press **Start Bridge**.
 
 Run the MCP server:
@@ -143,7 +147,7 @@ docs/                  Architecture, protocol and development notes
 
 ## Project status
 
-Version 0.2.2 is a creator-review alpha, not yet a production animation system. Character rig
+Version 0.2.3 is a creator-review alpha, not yet a production animation system. Character rig
 retargeting, collision-aware path planning, multi-shot sequencing and visual diff overlays
 are intentionally listed as follow-up work rather than hidden behind unreliable prompts.
 
