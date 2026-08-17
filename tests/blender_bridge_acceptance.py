@@ -136,14 +136,19 @@ def client_flow(result_box):
             "collision_warnings",
             "navigation_fingerprint",
             "camera_composition_preflight",
+            "rig_action_inventory",
+            "action_fingerprint",
+            "rename_only_retarget",
         } <= set(health["capabilities"])
-        assert health["protocol_version"] == "1.4"
+        assert health["protocol_version"] == "1.5"
         scan_ids = [submit(base_url, token, "scan_scene") for _ in range(3)]
         assert len(set(scan_ids)) == 3
         scans = [wait_job(base_url, token, job_id) for job_id in scan_ids]
         assert all(job["status"] == "succeeded" for job in scans)
         snapshot = scans[0]["result"]
-        assert snapshot["schema_version"] == "1.2"
+        assert snapshot["schema_version"] == "1.3"
+        assert isinstance(snapshot["rigs"], list)
+        assert isinstance(snapshot["actions"], list)
         assert snapshot["navigation_environment_fingerprint"].startswith("nav-")
         assert len(snapshot["navigation_meshes"]) == 1
         actor = next(item for item in snapshot["entities"] if item["name"] == "Bridge Actor")

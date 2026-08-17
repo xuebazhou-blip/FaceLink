@@ -395,8 +395,8 @@ def main() -> int:
                 "callback are tested."
             ),
             (
-                "Large production rigs, retargeting, multi-level or dynamic-obstacle "
-                "navigation and multi-shot editing."
+                "Large production rigs, rest-pose/axis/proportion-aware retargeting, "
+                "multi-level or dynamic-obstacle navigation and multi-shot editing."
             ),
             "Linux and macOS Blender builds; this run covers Windows x64 only.",
         ],

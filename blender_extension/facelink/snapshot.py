@@ -6,6 +6,12 @@ import uuid
 import bpy
 from mathutils import Vector
 
+from .action_inventory import (
+    MAX_RIG_BONES,
+    MAX_RIGS,
+    action_inventories,
+)
+
 MAX_NAVIGATION_VERTICES = 20_000
 MAX_NAVIGATION_POLYGONS = 20_000
 MAX_NAVIGATION_MESHES = 32
@@ -162,6 +168,37 @@ def _world_transform(obj):
     }
 
 
+def _rig_inventories():
+    armatures = sorted(
+        (obj for obj in bpy.context.scene.objects if obj.type == "ARMATURE"),
+        key=lambda item: item.name,
+    )
+    if len(armatures) > MAX_RIGS:
+        raise ValueError(f"A scene may contain at most {MAX_RIGS} armature rigs")
+    inventories = []
+    for obj in armatures:
+        bones = sorted(obj.data.bones, key=lambda item: item.name)
+        if len(bones) > MAX_RIG_BONES:
+            raise ValueError(f"Rig '{obj.name}' exceeds {MAX_RIG_BONES} bones")
+        inventories.append(
+            {
+                "entity_id": ensure_entity_id(obj),
+                "name": obj.name,
+                "bones": [
+                    {
+                        "name": bone.name,
+                        "parent": bone.parent.name if bone.parent else None,
+                        "use_deform": bool(bone.use_deform),
+                        "head": _vec3(bone.head_local),
+                        "tail": _vec3(bone.tail_local),
+                    }
+                    for bone in bones
+                ],
+            }
+        )
+    return inventories
+
+
 def _fingerprint_entity(obj, entity_id):
     transform = _world_transform(obj)
     return {
@@ -235,8 +272,10 @@ def scan_scene():
             }
         )
     navigation_meshes, obstacles = _navigation_payload(assign_ids=True)
+    rigs = _rig_inventories()
+    actions = action_inventories()
     return {
-        "schema_version": "1.2",
+        "schema_version": "1.3",
         "transform_space": "WORLD",
         "scene_name": scene.name,
         "fps": float(scene.render.fps) / float(scene.render.fps_base),
@@ -248,6 +287,8 @@ def scan_scene():
         "navigation_environment_fingerprint": _navigation_fingerprint(
             navigation_meshes, obstacles
         ),
+        "rigs": rigs,
+        "actions": actions,
     }
 
 

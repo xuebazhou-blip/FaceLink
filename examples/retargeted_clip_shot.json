@@ -1,0 +1,24 @@
+{
+  "schema_version": "1.0",
+  "title": "Editable retargeted clip",
+  "fps": 24,
+  "duration": 2,
+  "beats": [
+    {
+      "type": "play_clip",
+      "actor": "replace-with-target-armature-id",
+      "clip": "Mixamo Walk",
+      "at": 0,
+      "duration": 2,
+      "loop": false,
+      "retarget": {
+        "adapter": "rename_only",
+        "bone_map": {
+          "mixamorig:Hips": "pelvis",
+          "mixamorig:Spine": "spine"
+        },
+        "strict": true
+      }
+    }
+  ]
+}

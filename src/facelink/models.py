@@ -75,8 +75,67 @@ class NavigationMesh(StrictModel):
         return self
 
 
+class RigBone(StrictModel):
+    name: str = Field(min_length=1)
+    parent: str | None = Field(default=None, min_length=1)
+    use_deform: bool = True
+    head: Vec3
+    tail: Vec3
+
+
+class RigInventory(StrictModel):
+    entity_id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    bones: list[RigBone] = Field(default_factory=list, max_length=1_024)
+
+    @model_validator(mode="after")
+    def valid_bone_hierarchy(self) -> RigInventory:
+        names = [bone.name for bone in self.bones]
+        if len(names) != len(set(names)):
+            raise ValueError("rig bone names must be unique")
+        known = set(names)
+        for bone in self.bones:
+            if bone.parent == bone.name:
+                raise ValueError(f"rig bone '{bone.name}' cannot parent itself")
+            if bone.parent is not None and bone.parent not in known:
+                raise ValueError(
+                    f"rig bone '{bone.name}' references missing parent '{bone.parent}'"
+                )
+        parents = {bone.name: bone.parent for bone in self.bones}
+        for bone_name in names:
+            visited = set()
+            current = bone_name
+            while current is not None:
+                if current in visited:
+                    raise ValueError(f"rig bone hierarchy contains a cycle at '{current}'")
+                visited.add(current)
+                current = parents[current]
+        return self
+
+
+class ActionInventory(StrictModel):
+    name: str = Field(min_length=1)
+    frame_start: float
+    frame_end: float
+    fcurve_count: int = Field(ge=0, le=10_000)
+    keyframe_count: int = Field(ge=0, le=200_000)
+    pose_bones: list[str] = Field(default_factory=list, max_length=1_024)
+    data_paths: list[str] = Field(default_factory=list, max_length=10_000)
+    fingerprint: str = Field(pattern=r"^action-[0-9a-f]{24}$")
+
+    @model_validator(mode="after")
+    def valid_action_inventory(self) -> ActionInventory:
+        if self.frame_end < self.frame_start:
+            raise ValueError("action frame_end must not precede frame_start")
+        if len(self.pose_bones) != len(set(self.pose_bones)):
+            raise ValueError("action pose_bones must be unique")
+        if len(self.data_paths) != len(set(self.data_paths)):
+            raise ValueError("action data_paths must be unique")
+        return self
+
+
 class SceneSnapshot(StrictModel):
-    schema_version: Literal["1.0", "1.1", "1.2"] = "1.2"
+    schema_version: Literal["1.0", "1.1", "1.2", "1.3"] = "1.3"
     transform_space: Literal["WORLD"] = "WORLD"
     scene_name: str
     fps: float = Field(default=24.0, gt=0)
@@ -86,6 +145,8 @@ class SceneSnapshot(StrictModel):
     entities: list[SceneEntity] = Field(default_factory=list)
     navigation_meshes: list[NavigationMesh] = Field(default_factory=list, max_length=32)
     navigation_environment_fingerprint: str | None = None
+    rigs: list[RigInventory] = Field(default_factory=list, max_length=64)
+    actions: list[ActionInventory] = Field(default_factory=list, max_length=512)
 
     def by_id(self) -> dict[str, SceneEntity]:
         return {entity.id: entity for entity in self.entities}
@@ -100,6 +161,21 @@ class SceneSnapshot(StrictModel):
         ]
         if missing:
             raise ValueError(f"navigation meshes reference missing entities: {missing}")
+        missing_rigs = [rig.entity_id for rig in self.rigs if rig.entity_id not in entity_ids]
+        if missing_rigs:
+            raise ValueError(f"rig inventories reference missing entities: {missing_rigs}")
+        entity_types = {entity.id: entity.type for entity in self.entities}
+        invalid_rigs = [
+            rig.entity_id for rig in self.rigs if entity_types.get(rig.entity_id) != "ARMATURE"
+        ]
+        if invalid_rigs:
+            raise ValueError(f"rig inventories reference non-armature entities: {invalid_rigs}")
+        rig_ids = [rig.entity_id for rig in self.rigs]
+        if len(rig_ids) != len(set(rig_ids)):
+            raise ValueError("rig inventory entity IDs must be unique")
+        action_names = [action.name for action in self.actions]
+        if len(action_names) != len(set(action_names)):
+            raise ValueError("action inventory names must be unique")
         return self
 
 
@@ -155,12 +231,36 @@ class WaitBeat(BeatBase):
     duration: float = Field(default=1.0, gt=0.0, description="Duration in seconds")
 
 
+class ActionRetargetSpec(StrictModel):
+    adapter: Literal["rename_only"] = "rename_only"
+    bone_map: dict[str, str] = Field(min_length=1, max_length=512)
+    strict: bool = True
+
+    @model_validator(mode="after")
+    def valid_bone_map(self) -> ActionRetargetSpec:
+        if any(
+            not source.strip() or not target.strip()
+            for source, target in self.bone_map.items()
+        ):
+            raise ValueError("retarget bone names cannot be empty")
+        targets = list(self.bone_map.values())
+        if len(targets) != len(set(targets)):
+            raise ValueError("retarget target bones must be unique")
+        return self
+
+
+class RetargetProfile(ActionRetargetSpec):
+    schema_version: Literal["1.0"] = "1.0"
+    name: str = Field(min_length=1)
+
+
 class PlayClipBeat(BeatBase):
     type: Literal["play_clip"]
     actor: str = Field(min_length=1)
     clip: str = Field(min_length=1)
     duration: float = Field(default=1.0, gt=0.0, description="Duration in seconds")
     loop: bool = False
+    retarget: ActionRetargetSpec | None = None
 
 
 ShotBeat = Annotated[
@@ -223,7 +323,7 @@ class PatchOperation(StrictModel):
 
 
 class ScenePatch(StrictModel):
-    schema_version: Literal["1.0", "1.1", "1.2"] = "1.2"
+    schema_version: Literal["1.0", "1.1", "1.2", "1.3"] = "1.3"
     patch_id: str
     source_title: str
     operations: list[PatchOperation]
@@ -232,6 +332,21 @@ class ScenePatch(StrictModel):
     fingerprint_entities: list[str] = Field(default_factory=list)
     fingerprint_frame: float | None = None
     navigation_environment_fingerprint: str | None = None
+    action_fingerprints: dict[str, str] = Field(default_factory=dict, max_length=512)
+
+    @model_validator(mode="after")
+    def valid_action_fingerprints(self) -> ScenePatch:
+        invalid = {
+            name: fingerprint
+            for name, fingerprint in self.action_fingerprints.items()
+            if not name
+            or not fingerprint.startswith("action-")
+            or len(fingerprint) != 31
+            or any(character not in "0123456789abcdef" for character in fingerprint[7:])
+        }
+        if invalid:
+            raise ValueError("action_fingerprints contains an invalid name or fingerprint")
+        return self
 
 
 class ValidationIssue(StrictModel):

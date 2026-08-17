@@ -46,7 +46,7 @@
 - Swept actor-bounds collision warnings for marked static obstacles
 - Fail-closed topology, disconnected path, outside-mesh and stale-environment checks
 
-## v0.3.1 — current camera-composition preflight release
+## v0.3.1 — completed camera-composition preflight release
 
 - Typed composition thresholds carried from ShotSpec into the staged camera operation
 - Non-mutating perspective projection of target world bounds into normalized frame space
@@ -54,10 +54,19 @@
 - Read-only center-ray occlusion detection plus start/end evaluation for dolly shots
 - Composition diagnostics exposed in Blender review summaries and bridge protocol 1.4
 
+## v0.3.2 — current rig/action compatibility release
+
+- Scene Snapshot 1.3 bounded rig hierarchies and Action channel inventories
+- Source-Action content fingerprints checked during both stage and apply
+- Open, validated JSON retarget profiles with CLI and MCP support
+- Strict `rename_only` Action copy/FCurve rewrite into editable NLA data
+- Explainable missing-source, missing-target and target-collision failures
+- Idempotent repeated apply plus transaction and revision rollback cleanup
+
 ## v0.3.x — remaining useful intelligence
 
 - Optional render/vision-based artistic composition evaluator
-- Rig/action inventory plus open retargeting adapters
+- Rest-pose/axis/proportion-aware retarget adapter with root-motion policy
 - Reusable shot templates and multi-shot sequencing
 
 The technical moat should live in deterministic scene understanding, validation, repair and

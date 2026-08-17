@@ -347,7 +347,7 @@ def test_compiler_emits_editable_distance_timed_navmesh_keyframes_and_guards():
     patch = compile_shot(shot, snapshot)
     movement = patch.operations[1]
     frames = movement.payload["frames"]
-    assert patch.schema_version == "1.2"
+    assert patch.schema_version == "1.3"
     assert patch.navigation_environment_fingerprint == (
         snapshot.navigation_environment_fingerprint
     )

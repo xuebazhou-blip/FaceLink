@@ -10,7 +10,7 @@ except ImportError:  # MCP Python SDK 1.x
 
 from .bridge_client import BridgeClient, discover_instances, select_instance
 from .compiler import compile_shot, validate_shot
-from .models import ScenePatch, SceneSnapshot, ShotSpec
+from .models import RetargetProfile, ScenePatch, SceneSnapshot, ShotSpec
 
 logging.basicConfig(level=logging.INFO)
 LOGGER = logging.getLogger("facelink.mcp")
@@ -39,8 +39,14 @@ def facelink_health(instance_id: str | None = None) -> dict[str, Any]:
 
 @mcp.tool()
 def scan_scene(instance_id: str | None = None) -> dict[str, Any]:
-    """Read stable scene IDs, bounds, obstacles and explicitly marked navigation meshes."""
+    """Read stable IDs, bounds, nav data, armature bones and Action channel inventories."""
     return BridgeClient(select_instance(instance_id)).run_job("scan_scene")
+
+
+@mcp.tool()
+def validate_retarget_profile(profile: RetargetProfile) -> dict[str, Any]:
+    """Validate and normalize an open rename-only bone-map profile without changing Blender."""
+    return profile.model_dump(mode="json")
 
 
 @mcp.tool()

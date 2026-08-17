@@ -7,7 +7,7 @@ from typing import Any
 
 from .bridge_client import BridgeClient, discover_instances, select_instance
 from .compiler import compile_shot
-from .models import ScenePatch, SceneSnapshot, ShotSpec
+from .models import RetargetProfile, ScenePatch, SceneSnapshot, ShotSpec
 from .provider import plan_with_openai
 
 
@@ -21,6 +21,10 @@ def _write_json(payload: Any, path: str | None) -> None:
         Path(path).write_text(text + "\n", encoding="utf-8")
     else:
         print(text)
+
+
+def _read_profiles(paths: list[str]) -> list[RetargetProfile]:
+    return [RetargetProfile.model_validate(_read_json(path)) for path in paths]
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -55,6 +59,7 @@ def _parser() -> argparse.ArgumentParser:
     plan.add_argument("--snapshot", required=True)
     plan.add_argument("--model", default="gpt-5-mini")
     plan.add_argument("--base-url")
+    plan.add_argument("--retarget-profile", action="append", default=[])
     plan.add_argument("--out")
 
     workflow = commands.add_parser(
@@ -64,7 +69,14 @@ def _parser() -> argparse.ArgumentParser:
     workflow.add_argument("--instance")
     workflow.add_argument("--model", default="gpt-5-mini")
     workflow.add_argument("--base-url")
+    workflow.add_argument("--retarget-profile", action="append", default=[])
     workflow.add_argument("--out")
+
+    profile = commands.add_parser(
+        "validate-profile", help="Validate and normalize an open retarget profile"
+    )
+    profile.add_argument("--profile", required=True)
+    profile.add_argument("--out")
     return parser
 
 
@@ -105,13 +117,25 @@ def main() -> None:
         _write_json(result, None)
     elif args.command == "plan":
         snapshot = SceneSnapshot.model_validate(_read_json(args.snapshot))
-        shot = plan_with_openai(args.brief, snapshot, model=args.model, base_url=args.base_url)
+        shot = plan_with_openai(
+            args.brief,
+            snapshot,
+            model=args.model,
+            base_url=args.base_url,
+            retarget_profiles=_read_profiles(args.retarget_profile),
+        )
         _write_json(shot.model_dump(mode="json"), args.out)
     elif args.command == "workflow":
         instance = select_instance(args.instance)
         client = BridgeClient(instance)
         snapshot = SceneSnapshot.model_validate(client.run_job("scan_scene"))
-        shot = plan_with_openai(args.brief, snapshot, model=args.model, base_url=args.base_url)
+        shot = plan_with_openai(
+            args.brief,
+            snapshot,
+            model=args.model,
+            base_url=args.base_url,
+            retarget_profiles=_read_profiles(args.retarget_profile),
+        )
         patch = compile_shot(shot, snapshot)
         staged = client.run_job("stage_patch", {"patch": patch.model_dump(mode="json")})
         _write_json(
@@ -125,6 +149,9 @@ def main() -> None:
             },
             args.out,
         )
+    elif args.command == "validate-profile":
+        profile = RetargetProfile.model_validate(_read_json(args.profile))
+        _write_json(profile.model_dump(mode="json"), args.out)
 
 
 if __name__ == "__main__":

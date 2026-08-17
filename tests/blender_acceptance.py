@@ -10,6 +10,11 @@ import bpy
 PROJECT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT / "blender_extension"))
 
+from facelink.action_inventory import (  # noqa: E402
+    action_fingerprint,
+    action_inventory,
+    iter_action_fcurves,
+)
 from facelink.executor import (  # noqa: E402
     AUDIT_LOG_KEY,
     MAX_AUDIT_ENTRIES,
@@ -37,7 +42,12 @@ def reset_scene():
         bpy.ops.object.mode_set(mode="OBJECT")
     bpy.ops.object.select_all(action="SELECT")
     bpy.ops.object.delete(use_global=False)
-    for collection in (bpy.data.actions, bpy.data.cameras, bpy.data.meshes):
+    for collection in (
+        bpy.data.actions,
+        bpy.data.armatures,
+        bpy.data.cameras,
+        bpy.data.meshes,
+    ):
         for item in list(collection):
             if item.users == 0:
                 collection.remove(item)
@@ -70,6 +80,50 @@ def mesh_object(name, vertices, faces):
     obj = bpy.data.objects.new(name, mesh)
     bpy.context.scene.collection.objects.link(obj)
     return obj
+
+
+def armature(name, bones):
+    data = bpy.data.armatures.new(f"{name} Data")
+    obj = bpy.data.objects.new(name, data)
+    bpy.context.scene.collection.objects.link(obj)
+    bpy.context.view_layer.objects.active = obj
+    obj.select_set(True)
+    bpy.ops.object.mode_set(mode="EDIT")
+    created = {}
+    for bone_name, parent_name in bones:
+        bone = data.edit_bones.new(bone_name)
+        bone.head = (0.0, 0.0, float(len(created)))
+        bone.tail = (0.0, 0.0, float(len(created) + 1))
+        if parent_name is not None:
+            bone.parent = created[parent_name]
+            bone.use_connect = True
+        created[bone_name] = bone
+    bpy.ops.object.mode_set(mode="OBJECT")
+    return obj
+
+
+def pose_action(obj, name, bone_names, *, include_object_location=False):
+    obj.animation_data_create()
+    action = bpy.data.actions.new(name)
+    obj.animation_data.action = action
+    for index, bone_name in enumerate(bone_names, start=1):
+        pose_bone = obj.pose.bones[bone_name]
+        pose_bone.rotation_mode = "XYZ"
+        pose_bone.rotation_euler = (0.0, 0.0, 0.0)
+        pose_bone.keyframe_insert(
+            data_path="rotation_euler", frame=1, group=bone_name
+        )
+        pose_bone.rotation_euler.y = 0.1 * index
+        pose_bone.keyframe_insert(
+            data_path="rotation_euler", frame=11, group=bone_name
+        )
+    if include_object_location:
+        obj.location.x = 0.0
+        obj.keyframe_insert(data_path="location", frame=1)
+        obj.location.x = 1.0
+        obj.keyframe_insert(data_path="location", frame=11)
+    obj.animation_data.action = None
+    return action
 
 
 def operation_patch(*operations, patch_id="acceptance"):
@@ -177,7 +231,7 @@ def test_snapshot_identity_bounds_parent_and_lock():
     assert actor_first["id"] == actor_second["id"]
     assert actor_first["locked"] is True
     assert actor_first["metadata"]["parent"] == ensure_entity_id(parent)
-    assert first["schema_version"] == "1.2"
+    assert first["schema_version"] == "1.3"
     assert first["navigation_environment_fingerprint"].startswith("nav-")
     assert first["transform_space"] == "WORLD"
     assert actor_first["transform"]["location"] == {"x": 11.0, "y": 2.0, "z": 3.0}
@@ -417,7 +471,7 @@ def test_navigation_snapshot_guard_overlay_execution_and_stale_environment():
         item for item in snapshot["entities"] if item["name"] == "Navigation L Corridor"
     )
 
-    assert snapshot["schema_version"] == "1.2"
+    assert snapshot["schema_version"] == "1.3"
     assert snapshot["navigation_environment_fingerprint"] == (
         "nav-63fb67061dd69bff488050e7"
     )
@@ -631,6 +685,254 @@ def test_play_clip_creates_one_reusable_nla_strip():
     assert len(track.strips) == 1
     assert track.strips[0].action == action
     assert track.strips[0].frame_start == 20
+
+
+def test_rig_action_inventory_retarget_execution_and_rollback():
+    source_rig = armature(
+        "Mixamo Source",
+        [("mixamorig:Hips", None), ("mixamorig:Spine", "mixamorig:Hips")],
+    )
+    target_rig = armature(
+        "FaceLink Target", [("pelvis", None), ("spine", "pelvis")]
+    )
+    source_id = ensure_entity_id(source_rig)
+    target_id = ensure_entity_id(target_rig)
+    source_action = pose_action(
+        source_rig,
+        "Mixamo Walk",
+        ["mixamorig:Hips", "mixamorig:Spine"],
+        include_object_location=True,
+    )
+    source_fingerprint = action_fingerprint(source_action)
+    source_paths = {
+        curve.data_path for _, curve in iter_action_fcurves(source_action)
+    }
+
+    snapshot = scan_scene()
+    assert snapshot["schema_version"] == "1.3"
+    source_inventory = next(
+        item for item in snapshot["rigs"] if item["entity_id"] == source_id
+    )
+    target_inventory = next(
+        item for item in snapshot["rigs"] if item["entity_id"] == target_id
+    )
+    action_state = next(
+        item for item in snapshot["actions"] if item["name"] == "Mixamo Walk"
+    )
+    assert [bone["name"] for bone in source_inventory["bones"]] == [
+        "mixamorig:Hips",
+        "mixamorig:Spine",
+    ]
+    assert [bone["name"] for bone in target_inventory["bones"]] == [
+        "pelvis",
+        "spine",
+    ]
+    assert action_state["pose_bones"] == ["mixamorig:Hips", "mixamorig:Spine"]
+    assert action_state["fingerprint"] == source_fingerprint
+    assert action_state["keyframe_count"] > 0
+
+    patch = {
+        "schema_version": "1.3",
+        "patch_id": "retarget-editable-action",
+        "source_title": "Retarget editable action",
+        "action_fingerprints": {"Mixamo Walk": source_fingerprint},
+        "operations": [
+            {
+                "op": "play_clip",
+                "entity_id": target_id,
+                "payload": {
+                    "clip": "Mixamo Walk",
+                    "frame_start": 20,
+                    "frame_end": 40,
+                    "loop": False,
+                    "retarget": {
+                        "adapter": "rename_only",
+                        "strict": True,
+                        "bone_map": {
+                            "mixamorig:Hips": "pelvis",
+                            "mixamorig:Spine": "spine",
+                        },
+                    },
+                },
+            }
+        ],
+    }
+    action_names_before = set(bpy.data.actions.keys())
+    staged = bridge.stage_patch(patch)
+    assert staged["summary"]["action_guarded"] is True
+    assert staged["summary"]["retargeted_action_count"] == 1
+    assert staged["summary"]["retargets"][0]["mapped_bone_count"] == 2
+    expected_output = staged["summary"]["retargets"][0]["output_action"]
+    assert set(bpy.data.actions.keys()) == action_names_before
+    assert target_rig.animation_data is None
+
+    receipt = bridge.apply_staged_patch()["receipt"]
+    assert receipt["applied_operations"] == 1
+    track = target_rig.animation_data.nla_tracks["FaceLink"]
+    assert len(track.strips) == 1
+    derived = track.strips[0].action
+    derived_name = derived.name
+    assert derived_name == expected_output
+    assert derived != source_action
+    assert derived.get("facelink_retarget_source") == "Mixamo Walk"
+    derived_inventory = action_inventory(derived)
+    assert derived_inventory["pose_bones"] == ["pelvis", "spine"]
+    assert any(path == "location" for path in derived_inventory["data_paths"])
+    assert {curve.group.name for _, curve in iter_action_fcurves(derived) if curve.group} >= {
+        "pelvis",
+        "spine",
+    }
+    assert {curve.data_path for _, curve in iter_action_fcurves(source_action)} == source_paths
+    assert {
+        curve.group.name
+        for _, curve in iter_action_fcurves(source_action)
+        if curve.group
+    } >= {"mixamorig:Hips", "mixamorig:Spine"}
+    assert action_fingerprint(source_action) == source_fingerprint
+    assert list_revision_history()["entries"][-1]["created_actions"] == [derived_name]
+
+    apply_patch(patch)
+    assert len(track.strips) == 1
+    assert track.strips[0].action == derived
+    assert len(
+        [
+            action
+            for action in bpy.data.actions
+            if action.get("facelink_retarget_source") == "Mixamo Walk"
+        ]
+    ) == 1
+    assert list_revision_history()["entries"][-1]["created_actions"] == []
+
+    undo_last_patch()
+    assert bpy.data.actions.get(derived_name) is not None
+    assert len(target_rig.animation_data.nla_tracks["FaceLink"].strips) == 1
+    undo_last_patch()
+    assert bpy.data.actions.get(derived_name) is None
+    assert target_rig.animation_data is None
+
+
+def test_retarget_action_guard_rejects_stale_source_and_keeps_staging():
+    source_rig = armature("Guard Source", [("root", None)])
+    target_rig = armature("Guard Target", [("pelvis", None)])
+    source_action = pose_action(source_rig, "Guarded Action", ["root"])
+    target_id = ensure_entity_id(target_rig)
+    source_fingerprint = action_fingerprint(source_action)
+    patch = {
+        "schema_version": "1.3",
+        "patch_id": "stale-action-guard",
+        "source_title": "Stale action guard",
+        "action_fingerprints": {"Guarded Action": source_fingerprint},
+        "operations": [
+            {
+                "op": "play_clip",
+                "entity_id": target_id,
+                "payload": {
+                    "clip": "Guarded Action",
+                    "frame_start": 1,
+                    "frame_end": 11,
+                    "retarget": {
+                        "adapter": "rename_only",
+                        "bone_map": {"root": "pelvis"},
+                    },
+                },
+            }
+        ],
+    }
+    bridge.stage_patch(patch)
+    curve = next(iter(iter_action_fcurves(source_action)))[1]
+    curve.keyframe_points[0].co.y += 0.25
+    try:
+        bridge.apply_staged_patch()
+    except ValueError as exc:
+        assert "changed after this patch was planned" in str(exc)
+    else:
+        raise AssertionError("A staged patch accepted a modified source Action")
+    assert bridge.get_staged_patch()["staged"] is True
+    assert target_rig.animation_data is None
+    assert not any(
+        action.get("facelink_retarget_source") == "Guarded Action"
+        for action in bpy.data.actions
+    )
+    bridge.discard_staged_patch()
+
+
+def test_retarget_invalid_maps_fail_closed_without_creating_actions():
+    source_rig = armature("Invalid Source", [("root", None), ("spine", "root")])
+    target_rig = armature("Invalid Target", [("pelvis", None), ("chest", "pelvis")])
+    source_action = pose_action(source_rig, "Invalid Map Action", ["root", "spine"])
+    target_id = ensure_entity_id(target_rig)
+    fingerprint = action_fingerprint(source_action)
+    base_patch = {
+        "schema_version": "1.3",
+        "patch_id": "invalid-retarget-map",
+        "source_title": "Invalid retarget map",
+        "action_fingerprints": {"Invalid Map Action": fingerprint},
+        "operations": [
+            {
+                "op": "play_clip",
+                "entity_id": target_id,
+                "payload": {
+                    "clip": "Invalid Map Action",
+                    "frame_start": 1,
+                    "frame_end": 11,
+                    "retarget": {
+                        "adapter": "rename_only",
+                        "strict": True,
+                        "bone_map": {"root": "pelvis", "spine": "chest"},
+                    },
+                },
+            }
+        ],
+    }
+    invalid_variants = [
+        ({"root": "pelvis"}, "does not cover"),
+        ({"root": "pelvis", "spine": "missing"}, "missing bone"),
+        ({"root": "pelvis", "spine": "pelvis"}, "must be unique"),
+    ]
+    action_names_before = set(bpy.data.actions.keys())
+    for bone_map, expected_message in invalid_variants:
+        candidate = json.loads(json.dumps(base_patch))
+        candidate["operations"][0]["payload"]["retarget"]["bone_map"] = bone_map
+        try:
+            bridge.stage_patch(candidate)
+        except ValueError as exc:
+            assert expected_message in str(exc).lower()
+        else:
+            raise AssertionError(f"Invalid retarget map was accepted: {bone_map}")
+        assert set(bpy.data.actions.keys()) == action_names_before
+        assert target_rig.animation_data is None
+
+    unsupported = json.loads(json.dumps(base_patch))
+    unsupported["operations"][0]["payload"]["retarget"]["adapter"] = "rest_pose"
+    try:
+        bridge.stage_patch(unsupported)
+    except ValueError as exc:
+        assert "rename_only" in str(exc)
+    else:
+        raise AssertionError("An unsupported retarget adapter was accepted")
+    assert set(bpy.data.actions.keys()) == action_names_before
+
+    missing_guard = json.loads(json.dumps(base_patch))
+    missing_guard["action_fingerprints"] = {}
+    try:
+        bridge.stage_patch(missing_guard)
+    except ValueError as exc:
+        assert "one action fingerprint per play_clip" in str(exc).lower()
+    else:
+        raise AssertionError("Scene Patch 1.3 accepted an unguarded source Action")
+
+    malformed_guard = json.loads(json.dumps(base_patch))
+    malformed_guard["action_fingerprints"]["Invalid Map Action"] = (
+        "action-ZZZZZZZZZZZZZZZZZZZZZZZZ"
+    )
+    try:
+        bridge.stage_patch(malformed_guard)
+    except ValueError as exc:
+        assert "valid fingerprints" in str(exc).lower()
+    else:
+        raise AssertionError("A malformed source Action fingerprint was accepted")
+    assert set(bpy.data.actions.keys()) == action_names_before
+    assert target_rig.animation_data is None
 
 
 def test_locked_objects_and_unknown_operations_fail_closed():
@@ -1535,6 +1837,18 @@ CASES = [
     ("look_at_camera_idempotency", test_look_at_and_camera_are_idempotent),
     ("dolly_camera_keyframes", test_dolly_camera_creates_editable_keyframes),
     ("play_clip_nla_idempotency", test_play_clip_creates_one_reusable_nla_strip),
+    (
+        "rig_action_inventory_retarget_rollback",
+        test_rig_action_inventory_retarget_execution_and_rollback,
+    ),
+    (
+        "retarget_stale_action_guard",
+        test_retarget_action_guard_rejects_stale_source_and_keeps_staging,
+    ),
+    (
+        "retarget_invalid_maps_fail_closed",
+        test_retarget_invalid_maps_fail_closed_without_creating_actions,
+    ),
     ("locked_and_unknown_fail_closed", test_locked_objects_and_unknown_operations_fail_closed),
     ("missing_entity_error", test_missing_entity_fails_with_clear_error),
     ("failed_patch_transaction_rollback", test_failed_patch_rolls_back_earlier_operations),

@@ -92,6 +92,39 @@ def test_cli_plan_uses_provider_and_writes_shot(monkeypatch, tmp_path, scene_sna
     assert json.loads(output_path.read_text(encoding="utf-8"))["title"] == "Planned"
 
 
+def test_cli_plan_loads_explicit_retarget_profile(monkeypatch, tmp_path, scene_snapshot):
+    snapshot_path = tmp_path / "snapshot.json"
+    profile_path = tmp_path / "profile.json"
+    snapshot_path.write_text(scene_snapshot.model_dump_json(), encoding="utf-8")
+    profile_path.write_text(
+        json.dumps({"name": "Exact", "bone_map": {"source": "target"}}),
+        encoding="utf-8",
+    )
+    captured = {}
+
+    def planner(*args, **kwargs):
+        captured.update(kwargs)
+        return ShotSpec(title="Profile plan", duration=1)
+
+    monkeypatch.setattr(cli, "plan_with_openai", planner)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "facelink",
+            "plan",
+            "--brief",
+            "retarget",
+            "--snapshot",
+            str(snapshot_path),
+            "--retarget-profile",
+            str(profile_path),
+        ],
+    )
+    cli.main()
+    assert captured["retarget_profiles"][0].bone_map == {"source": "target"}
+
+
 def test_cli_workflow_scans_plans_and_stages_without_applying(
     monkeypatch, tmp_path, scene_snapshot
 ):
@@ -119,7 +152,7 @@ def test_cli_workflow_scans_plans_and_stages_without_applying(
             if job_type == "scan_scene":
                 return scene_snapshot.model_dump(mode="json")
             assert job_type == "stage_patch"
-            assert payload["patch"]["schema_version"] == "1.2"
+            assert payload["patch"]["schema_version"] == "1.3"
             assert payload["patch"]["scene_fingerprint"].startswith("scene-")
             return {
                 "staged": True,
@@ -186,3 +219,38 @@ def test_cli_history_and_rollback_use_revision_jobs(monkeypatch, capsys):
         ("list_revisions", None),
         ("rollback_revision", {"revision_id": "rev-1"}),
     ]
+
+
+def test_cli_validates_and_normalizes_retarget_profile(monkeypatch, tmp_path):
+    profile_path = tmp_path / "profile.json"
+    output_path = tmp_path / "normalized.json"
+    profile_path.write_text(
+        json.dumps(
+            {
+                "name": "Mixamo compact",
+                "bone_map": {"mixamorig:Hips": "pelvis"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "facelink",
+            "validate-profile",
+            "--profile",
+            str(profile_path),
+            "--out",
+            str(output_path),
+        ],
+    )
+    cli.main()
+    normalized = json.loads(output_path.read_text(encoding="utf-8"))
+    assert normalized == {
+        "adapter": "rename_only",
+        "bone_map": {"mixamorig:Hips": "pelvis"},
+        "strict": True,
+        "schema_version": "1.0",
+        "name": "Mixamo compact",
+    }

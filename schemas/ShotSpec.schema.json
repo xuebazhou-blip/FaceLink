@@ -1,5 +1,35 @@
 {
   "$defs": {
+    "ActionRetargetSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "adapter": {
+          "const": "rename_only",
+          "default": "rename_only",
+          "title": "Adapter",
+          "type": "string"
+        },
+        "bone_map": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "maxProperties": 512,
+          "minProperties": 1,
+          "title": "Bone Map",
+          "type": "object"
+        },
+        "strict": {
+          "default": true,
+          "title": "Strict",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "bone_map"
+      ],
+      "title": "ActionRetargetSpec",
+      "type": "object"
+    },
     "CameraCompositionSpec": {
       "additionalProperties": false,
       "properties": {
@@ -288,6 +318,17 @@
           "default": false,
           "title": "Loop",
           "type": "boolean"
+        },
+        "retarget": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActionRetargetSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [

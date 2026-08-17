@@ -1,0 +1,42 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "adapter": {
+      "const": "rename_only",
+      "default": "rename_only",
+      "title": "Adapter",
+      "type": "string"
+    },
+    "bone_map": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "maxProperties": 512,
+      "minProperties": 1,
+      "title": "Bone Map",
+      "type": "object"
+    },
+    "strict": {
+      "default": true,
+      "title": "Strict",
+      "type": "boolean"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "name": {
+      "minLength": 1,
+      "title": "Name",
+      "type": "string"
+    }
+  },
+  "required": [
+    "bone_map",
+    "name"
+  ],
+  "title": "RetargetProfile",
+  "type": "object"
+}

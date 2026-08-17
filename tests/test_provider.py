@@ -3,8 +3,8 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from facelink.models import SceneSnapshot, ShotSpec
-from facelink.provider import plan_with_openai
+from facelink.models import RetargetProfile, SceneSnapshot, ShotSpec
+from facelink.provider import SYSTEM_PROMPT, plan_with_openai
 
 
 def test_openai_provider_uses_typed_response_and_configuration():
@@ -25,6 +25,9 @@ def test_openai_provider_uses_typed_response_and_configuration():
             api_key="test-key",
             model="test-model",
             base_url="https://example.invalid/v1",
+            retarget_profiles=[
+                RetargetProfile(name="Exact map", bone_map={"source": "target"})
+            ],
         )
     assert result.title == "Empty establishing shot"
     constructor.assert_called_once_with(api_key="test-key", base_url="https://example.invalid/v1")
@@ -32,6 +35,9 @@ def test_openai_provider_uses_typed_response_and_configuration():
     assert kwargs["text_format"].__name__ == "ShotSpec"
     assert kwargs["model"] == "test-model"
     assert "Scene snapshot" in kwargs["input"][1]["content"]
+    assert '"source": "target"' in kwargs["input"][1]["content"]
+    assert "never invent a bone mapping" in SYSTEM_PROMPT
+    assert "does not correct rest pose" in SYSTEM_PROMPT
 
 
 def test_openai_provider_requires_api_key(monkeypatch):

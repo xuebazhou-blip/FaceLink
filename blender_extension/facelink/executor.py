@@ -6,6 +6,13 @@ import uuid
 import bpy
 from mathutils import Euler, Matrix, Vector
 
+from .action_inventory import (
+    action_fingerprint,
+    action_pose_bones,
+    iter_action_fcurves,
+    retarget_action_name,
+    rewrite_bone_data_path,
+)
 from .composition import analyze_patch_composition
 from .snapshot import (
     ensure_entity_id,
@@ -112,6 +119,61 @@ def _validate_composition(value):
         )
 
 
+def _resolved_retarget_map(obj, action, value):
+    if not isinstance(value, dict):
+        raise ValueError("play_clip retarget must be an object")
+    allowed = {"adapter", "bone_map", "strict"}
+    unknown = set(value) - allowed
+    if unknown:
+        raise ValueError(f"play_clip retarget contains unsupported fields: {sorted(unknown)}")
+    if value.get("adapter", "rename_only") != "rename_only":
+        raise ValueError("Only the rename_only retarget adapter is supported")
+    strict = value.get("strict", True)
+    if not isinstance(strict, bool):
+        raise ValueError("play_clip retarget strict must be a boolean")
+    bone_map = value.get("bone_map")
+    if not isinstance(bone_map, dict) or not 1 <= len(bone_map) <= 512:
+        raise ValueError("play_clip retarget bone_map must contain 1 to 512 mappings")
+    if not all(
+        isinstance(source, str)
+        and isinstance(target, str)
+        and source.strip()
+        and target.strip()
+        for source, target in bone_map.items()
+    ):
+        raise ValueError("play_clip retarget bone names must be non-empty strings")
+    if len(set(bone_map.values())) != len(bone_map):
+        raise ValueError("play_clip retarget target bones must be unique")
+    if obj.type != "ARMATURE":
+        raise ValueError("play_clip retarget requires an armature target")
+    action_bones = action_pose_bones(action)
+    missing_sources = sorted(action_bones - set(bone_map)) if strict else []
+    if missing_sources:
+        raise ValueError(
+            "Strict retarget mapping does not cover action bone(s): "
+            + ", ".join(missing_sources)
+        )
+    resolved = {
+        source: bone_map.get(source, source) for source in sorted(action_bones)
+    }
+    target_bones = {bone.name for bone in obj.data.bones}
+    missing_targets = sorted(set(resolved.values()) - target_bones)
+    if missing_targets:
+        raise ValueError(
+            f"Target armature '{obj.name}' is missing bone(s): "
+            + ", ".join(missing_targets)
+        )
+    owners = {}
+    for source, target in resolved.items():
+        owners.setdefault(target, []).append(source)
+    collisions = sorted(target for target, sources in owners.items() if len(sources) > 1)
+    if collisions:
+        raise ValueError(
+            "Multiple source bones resolve to target bone(s): " + ", ".join(collisions)
+        )
+    return resolved
+
+
 def _preflight_operations(operations):
     for operation in operations:
         if not isinstance(operation, dict):
@@ -160,10 +222,13 @@ def _preflight_operations(operations):
         elif op == "play_clip":
             obj = object_by_id(operation.get("entity_id"))
             _assert_editable(obj)
-            if bpy.data.actions.get(payload["clip"]) is None:
+            action = bpy.data.actions.get(payload["clip"])
+            if action is None:
                 raise ValueError(f"Animation action '{payload['clip']}' was not found")
             if int(payload["frame_end"]) < int(payload["frame_start"]):
                 raise ValueError("play_clip frame_end must not precede frame_start")
+            if payload.get("retarget") is not None:
+                _resolved_retarget_map(obj, action, payload["retarget"])
         elif op == "ensure_camera":
             name = payload.get("name", "FaceLink Camera")
             mode = payload.get("mode", "static")
@@ -291,7 +356,17 @@ def _preflight_nla_overlaps(operations):
             continue
         start = int(payload["frame_start"])
         end = int(payload["frame_end"])
-        replacement_name = f"FaceLink {payload['clip']} {payload['frame_start']}"
+        action_name = payload["clip"]
+        if payload.get("retarget") is not None:
+            source = bpy.data.actions[payload["clip"]]
+            resolved = _resolved_retarget_map(obj, source, payload["retarget"])
+            action_name = retarget_action_name(
+                source.name,
+                obj.name,
+                resolved,
+                action_fingerprint(source),
+            )
+        replacement_name = f"FaceLink {action_name} {payload['frame_start']}"
         for strip in track.strips:
             if strip.name == replacement_name:
                 continue
@@ -341,7 +416,7 @@ def validate_patch(patch):
     """Validate a patch against the current scene without changing scene content."""
     if not isinstance(patch, dict):
         raise ValueError("Patch must be an object")
-    if patch.get("schema_version") not in {"1.0", "1.1", "1.2"}:
+    if patch.get("schema_version") not in {"1.0", "1.1", "1.2", "1.3"}:
         raise ValueError("Unsupported patch schema_version")
     operations = patch.get("operations")
     if not isinstance(operations, list):
@@ -388,6 +463,33 @@ def validate_patch(patch):
                 "The Blender navigation environment changed after this patch was planned; "
                 "scan and plan again"
             )
+    expected_actions = patch.get("action_fingerprints", {})
+    if not isinstance(expected_actions, dict) or not all(
+        isinstance(name, str)
+        and name
+        and isinstance(fingerprint, str)
+        and fingerprint.startswith("action-")
+        and len(fingerprint) == 31
+        and all(character in "0123456789abcdef" for character in fingerprint[7:])
+        for name, fingerprint in expected_actions.items()
+    ):
+        raise ValueError("Patch action_fingerprints must map names to valid fingerprints")
+    clip_names = {
+        item.get("payload", {}).get("clip")
+        for item in operations
+        if item.get("op") == "play_clip"
+    }
+    if patch.get("schema_version") == "1.3" and set(expected_actions) != clip_names:
+        raise ValueError("Scene Patch 1.3 requires one action fingerprint per play_clip")
+    for name, expected in expected_actions.items():
+        action = bpy.data.actions.get(name)
+        if action is None:
+            raise ValueError(f"Animation action '{name}' no longer exists")
+        if action_fingerprint(action) != expected:
+            raise ValueError(
+                f"Animation action '{name}' changed after this patch was planned; scan and "
+                "plan again"
+            )
     unknown = {item.get("op") for item in operations} - ALLOWED_OPERATIONS
     if unknown:
         raise ValueError(f"Patch contains unsupported operations: {sorted(unknown)}")
@@ -405,6 +507,7 @@ def summarize_patch(patch):
     affected = {}
     operation_types = {}
     frames = []
+    retargets = []
 
     for operation in operations:
         op = operation["op"]
@@ -427,6 +530,26 @@ def summarize_patch(patch):
             frames.extend(int(item["frame"]) for item in payload["frames"])
         elif op == "play_clip":
             frames.extend((int(payload["frame_start"]), int(payload["frame_end"])))
+            if payload.get("retarget") is not None:
+                obj = object_by_id(operation.get("entity_id"))
+                action = bpy.data.actions[payload["clip"]]
+                resolved = _resolved_retarget_map(obj, action, payload["retarget"])
+                retargets.append(
+                    {
+                        "source_action": action.name,
+                        "target_rig_id": operation.get("entity_id"),
+                        "target_rig_name": obj.name,
+                        "adapter": "rename_only",
+                        "strict": payload["retarget"].get("strict", True),
+                        "mapped_bone_count": len(resolved),
+                        "output_action": retarget_action_name(
+                            action.name,
+                            obj.name,
+                            resolved,
+                            action_fingerprint(action),
+                        ),
+                    }
+                )
         elif op == "ensure_camera":
             name = payload.get("name", "FaceLink Camera")
             camera = bpy.data.objects.get(name)
@@ -459,8 +582,11 @@ def summarize_patch(patch):
         "timeline_warning_count": len(timeline_warnings),
         "composition": composition,
         "composition_warning_count": len(composition_warnings),
+        "retargets": retargets,
+        "retargeted_action_count": len(retargets),
         "scene_guarded": patch.get("scene_fingerprint") is not None,
         "navigation_guarded": patch.get("navigation_environment_fingerprint") is not None,
+        "action_guarded": bool(patch.get("action_fingerprints")),
     }
 
 
@@ -519,6 +645,7 @@ def _capture_revision(patch, operations):
     scene = bpy.context.scene
     affected = {}
     new_camera_names = []
+    new_action_names = []
     for operation in operations:
         entity_id = operation.get("entity_id")
         if entity_id:
@@ -531,6 +658,21 @@ def _capture_revision(patch, operations):
                 new_camera_names.append(name)
             else:
                 affected.setdefault(camera.name, _capture_object(camera))
+        if operation["op"] == "play_clip" and operation.get("payload", {}).get(
+            "retarget"
+        ) is not None:
+            obj = object_by_id(operation.get("entity_id"))
+            payload = operation["payload"]
+            source = bpy.data.actions[payload["clip"]]
+            resolved = _resolved_retarget_map(obj, source, payload["retarget"])
+            action_name = retarget_action_name(
+                source.name,
+                obj.name,
+                resolved,
+                action_fingerprint(source),
+            )
+            if bpy.data.actions.get(action_name) is None:
+                new_action_names.append(action_name)
     return {
         "revision_id": "rev-" + uuid.uuid4().hex[:16],
         "patch_id": patch.get("patch_id", "unknown"),
@@ -548,6 +690,7 @@ def _capture_revision(patch, operations):
         },
         "objects": affected,
         "new_camera_names": new_camera_names,
+        "new_action_names": new_action_names,
     }
 
 
@@ -583,9 +726,7 @@ def _record_revision(revision, operations, warnings):
     for operation in operations:
         op = operation["op"]
         operation_types[op] = operation_types.get(op, 0) + 1
-    affected_objects = sorted(
-        set(revision["objects"]) | set(revision["new_camera_names"])
-    )
+    affected_objects = sorted(set(revision["objects"]) | set(revision["new_camera_names"]))
     entry = {
         "revision_id": revision["revision_id"],
         "patch_id": revision["patch_id"],
@@ -594,6 +735,7 @@ def _record_revision(revision, operations, warnings):
         "operation_count": len(operations),
         "operation_types": dict(sorted(operation_types.items())),
         "affected_objects": affected_objects,
+        "created_actions": sorted(revision["new_action_names"]),
         "warnings": list(warnings),
         "status": "applied",
     }
@@ -737,6 +879,10 @@ def _restore_revision(revision, *, restore_audit=False):
                 bpy.data.cameras.remove(data)
     for state in revision["objects"].values():
         _restore_object(state)
+    for name in revision["new_action_names"]:
+        action = bpy.data.actions.get(name)
+        if action is not None and action.users == 0:
+            bpy.data.actions.remove(action)
     if restore_audit:
         if revision["had_audit_log"]:
             scene[AUDIT_LOG_KEY] = revision["audit_log_raw"]
@@ -893,12 +1039,52 @@ def _look_at(entity_id, payload):
     return obj
 
 
+def _retarget_action(obj, source, value):
+    resolved = _resolved_retarget_map(obj, source, value)
+    source_fingerprint = action_fingerprint(source)
+    name = retarget_action_name(
+        source.name,
+        obj.name,
+        resolved,
+        source_fingerprint,
+    )
+    canonical_map = json.dumps(resolved, sort_keys=True, separators=(",", ":"))
+    existing = bpy.data.actions.get(name)
+    if existing is not None:
+        if (
+            existing.get("facelink_retarget_source") != source.name
+            or existing.get("facelink_retarget_map") != canonical_map
+            or existing.get("facelink_source_fingerprint") != source_fingerprint
+        ):
+            raise ValueError(f"Retarget action name collision for '{name}'")
+        return existing
+    action = source.copy()
+    action.name = name
+    action.use_fake_user = False
+    action["facelink_retarget_source"] = source.name
+    action["facelink_retarget_map"] = canonical_map
+    action["facelink_source_fingerprint"] = source_fingerprint
+    renamed_groups = set()
+    for _, curve in iter_action_fcurves(action):
+        curve.data_path = rewrite_bone_data_path(curve.data_path, resolved)
+        group = curve.group
+        if group is not None and group.as_pointer() not in renamed_groups:
+            group.name = resolved.get(group.name, group.name)
+            renamed_groups.add(group.as_pointer())
+    return action
+
+
 def _play_clip(entity_id, payload):
     obj = object_by_id(entity_id)
     _assert_editable(obj)
-    action = bpy.data.actions.get(payload["clip"])
-    if action is None:
+    source = bpy.data.actions.get(payload["clip"])
+    if source is None:
         raise ValueError(f"Animation action '{payload['clip']}' was not found")
+    action = (
+        _retarget_action(obj, source, payload["retarget"])
+        if payload.get("retarget") is not None
+        else source
+    )
     animation = obj.animation_data_create()
     track = animation.nla_tracks.get("FaceLink") or animation.nla_tracks.new()
     track.name = "FaceLink"

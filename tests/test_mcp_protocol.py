@@ -17,6 +17,7 @@ async def test_stdio_server_lists_expected_tools():
     assert {
         "list_blender_instances",
         "scan_scene",
+        "validate_retarget_profile",
         "preview_shot",
         "stage_scene_patch",
         "get_staged_patch",
@@ -36,6 +37,10 @@ async def test_stdio_server_lists_expected_tools():
     assert "max_center_offset" in schema_text
     assert "SceneSnapshot" in schema_text
     assert "navigation_meshes" in schema_text
+    assert "ActionRetargetSpec" in schema_text
+    assert "rigs" in schema_text
+    assert "actions" in schema_text
+    assert "pose_bones" in schema_text
 
 
 @pytest.mark.asyncio
@@ -91,6 +96,15 @@ async def test_stdio_server_validates_and_previews_without_blender():
                 "preview_shot",
                 {"shot_spec": shot | {"unexpected": True}, "scene_snapshot": snapshot},
             )
+            profile = await session.call_tool(
+                "validate_retarget_profile",
+                {
+                    "profile": {
+                        "name": "MCP profile",
+                        "bone_map": {"source": "target"},
+                    }
+                },
+            )
     assert not validation.is_error
     assert validation.structured_content["valid"] is True
     assert not preview.is_error
@@ -100,6 +114,9 @@ async def test_stdio_server_validates_and_previews_without_blender():
     assert preview.structured_content["scene_fingerprint"].startswith("scene-")
     assert preview.structured_content["navigation_environment_fingerprint"].startswith("nav-")
     assert invalid.is_error
+    assert not profile.is_error
+    assert profile.structured_content["adapter"] == "rename_only"
+    assert profile.structured_content["strict"] is True
 
 
 @pytest.mark.asyncio

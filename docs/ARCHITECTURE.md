@@ -67,6 +67,20 @@ the same warnings into the review summary and execution receipt. Target transfor
 evaluated at the camera operation's declared start/end frames, then the user's current timeline
 frame and subframe are restored; camera execution uses the same frame contract.
 
+Protocol 1.5 adds bounded rig and Action inventories to Scene Snapshot 1.3. The extension
+exports armature bone names, parents and rest-space head/tail coordinates, plus Action frame
+ranges, pose-bone channels, data paths and a curve-content fingerprint. The deterministic
+compiler checks that a `play_clip` Action exists and that its channels resolve onto the target
+rig before it emits a patch. Scene Patch 1.3 carries one source-Action fingerprint per clip;
+Blender verifies it at stage and apply so edited or deleted source motion fails closed.
+
+The first adapter is `rename_only`. It copies the source Action, rewrites pose-bone FCurve
+paths and group names through an explicit JSON map, and assigns the copy to an ordinary NLA
+strip. Its deterministic name makes repeat application idempotent. Rollback restores the NLA
+state and removes a FaceLink-created Action when it has no remaining users. This adapter makes
+no claim about different rest poses, axes, proportions, control rigs or root-motion policy;
+those require a future transform-aware adapter with stronger geometric validation.
+
 Protocol 1.1 adds optimistic scene consistency. The compiler fingerprints scene timing and
 the world-space state of only the objects referenced by a patch. Blender checks that value
 both when staging and when applying, so an intervening transform, parent, lock or timing edit
@@ -92,12 +106,13 @@ versions are explicit so clients can negotiate future changes.
 - Object and camera locations are planned in world space and converted to editable local
   channels. Rotation or scale under sheared/non-uniform parent chains still needs a future
   full-matrix solver; armature pose bones are not yet part of this object transform path.
-- `play_clip` requires an existing Blender Action with a matching name; motion generation
-  and retargeting are out of scope for v0.1.
+- `play_clip` requires an existing Blender Action. `rename_only` can remap channel names for
+  otherwise compatible armatures, but motion generation and transform-aware character
+  retargeting remain out of scope.
 - Navigation planning is currently a single-level XY projection over explicitly marked static
   geometry. It does not yet solve stacked floors, moving obstacles, crowds or character gait.
 - Camera composition preflight is geometric and evaluates the current target bounds plus the
   initial camera state (and both dolly endpoints). It does not judge lighting, aesthetics,
-  partial-surface occlusion or future animated deformations. v0.3.1 supports perspective
+  partial-surface occlusion or future animated deformations. v0.3.2 supports perspective
   cameras without lens shift and explicitly declines unsupported projections; broader camera
   models and artistic judgment need a later render/vision evaluator.

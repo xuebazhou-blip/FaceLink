@@ -33,5 +33,17 @@ def scene_snapshot():
                     },
                 },
             ],
+            "actions": [
+                {
+                    "name": "Walk",
+                    "frame_start": 1,
+                    "frame_end": 11,
+                    "fcurve_count": 1,
+                    "keyframe_count": 2,
+                    "pose_bones": [],
+                    "data_paths": ["location"],
+                    "fingerprint": "action-000000000000000000000000",
+                }
+            ],
         }
     )

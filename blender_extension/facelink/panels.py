@@ -70,6 +70,8 @@ class FACELINK_PT_main(Panel):
                 review.label(text="Scene consistency check enabled", icon="LOCKED")
             if summary.get("navigation_guarded"):
                 review.label(text="Navigation environment guarded", icon="MOD_DYNAMICPAINT")
+            if summary.get("action_guarded"):
+                review.label(text="Action consistency check enabled", icon="ACTION")
             review.label(text=f"Operations: {summary['operation_count']}")
             names = ", ".join(item["name"] for item in summary["affected_entities"])
             if names:
@@ -87,6 +89,14 @@ class FACELINK_PT_main(Panel):
                         f"{warning_count} warning(s)"
                     ),
                     icon="CAMERA_DATA" if warning_count == 0 else "ERROR",
+                )
+            if summary.get("retargeted_action_count"):
+                review.label(
+                    text=(
+                        f"Retarget: {summary['retargeted_action_count']} action(s), "
+                        "rename-only"
+                    ),
+                    icon="ARMATURE_DATA",
                 )
             for warning in summary["warnings"][:2]:
                 review.label(text=warning[:80], icon="ERROR")

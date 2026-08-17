@@ -27,7 +27,7 @@ def test_compile_move_is_deterministic(scene_snapshot):
     first = compile_shot(shot, scene_snapshot)
     second = compile_shot(shot, scene_snapshot)
     assert first.patch_id == second.patch_id
-    assert first.schema_version == "1.2"
+    assert first.schema_version == "1.3"
     assert first.navigation_environment_fingerprint.startswith("nav-")
     assert first.scene_fingerprint.startswith("scene-")
     assert first.fingerprint_entities == ["actor", "marker"]
@@ -121,6 +121,9 @@ def test_all_supported_beats_and_camera_compile(scene_snapshot):
         "max_subject_height": 0.9,
         "max_center_offset": 0.2,
         "check_occlusion": True,
+    }
+    assert patch.action_fingerprints == {
+        "Walk": "action-000000000000000000000000"
     }
 
 

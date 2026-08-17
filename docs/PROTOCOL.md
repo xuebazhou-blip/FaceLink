@@ -1,4 +1,4 @@
-# Local bridge protocol 1.4
+# Local bridge protocol 1.5
 
 The Blender extension writes one JSON discovery record per running Blender process. The
 directory is `${FACELINK_INSTANCE_DIR}` when configured, otherwise
@@ -72,6 +72,42 @@ frame metrics and stable warning codes: `composition_target_unavailable`,
 it neither creates the proposed camera nor moves the target. `dolly_in` produces separate
 `start` and `end` samples with explicit frame and predicted camera-location fields. Animated
 targets are evaluated at those declared frames and the user's current frame is restored.
+
+## Rig and Action inventory
+
+Protocol 1.5 adds Scene Snapshot 1.3 `rigs` and `actions`. A rig record identifies its
+armature entity and contains at most 1,024 bones with parent, deform flag and local rest-space
+head/tail values. A snapshot contains at most 64 rigs. An Action record contains frame range,
+FCurve/keyframe counts, sorted pose-bone names, sorted data paths and an
+`action-<24 lowercase hex>` fingerprint. Snapshots contain at most 512 Actions, with bounded
+curve and keyframe counts.
+
+Compiler-generated Scene Patch 1.3 payloads include `action_fingerprints`. Its keys must
+exactly equal the Action names used by `play_clip` operations. Blender checks each current
+Action's full editable curve payload during stage and apply. Missing, renamed or modified
+Actions are rejected before mutation.
+
+A `play_clip` payload may contain:
+
+```json
+{
+  "retarget": {
+    "adapter": "rename_only",
+    "bone_map": {"sourceBone": "targetBone"},
+    "strict": true
+  }
+}
+```
+
+The adapter accepts only explicit non-empty mappings to unique target names. Strict mode
+requires every pose bone referenced by the Action to appear in the map. Every resolved bone
+must exist on the target armature and fallback mappings may not collide. Stage summaries add
+`action_guarded`, `retargeted_action_count` and `retargets`. Applying creates or reuses a
+deterministically named copied Action, rewrites only pose-bone FCurve paths/group names and
+places it in the existing editable FaceLink NLA track. Non-pose channels are preserved.
+
+Health advertises `rig_action_inventory`, `action_fingerprint` and `rename_only_retarget`.
+The adapter does not perform rest-pose, axis, scale, IK/FK or root-motion correction.
 
 ## Scene consistency and transform space
 

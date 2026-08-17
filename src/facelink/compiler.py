@@ -24,6 +24,7 @@ from .navigation import (
     navigation_environment_fingerprint,
     plan_move_path,
 )
+from .retargeting import analyze_retarget
 
 
 def _frame(seconds: float, fps: float, start: int) -> int:
@@ -119,6 +120,136 @@ def _navigation_issues(shot: ShotSpec, snapshot: SceneSnapshot) -> list[Validati
                     )
                 )
         current_locations[beat.actor] = target.model_copy(deep=True)
+    return issues
+
+
+def _rig_action_issues(shot: ShotSpec, snapshot: SceneSnapshot) -> list[ValidationIssue]:
+    issues = []
+    entities = snapshot.by_id()
+    actions = {action.name: action for action in snapshot.actions}
+    rigs = {rig.entity_id: rig for rig in snapshot.rigs}
+    has_inventory = snapshot.schema_version == "1.3"
+    for index, beat in enumerate(shot.beats):
+        if not isinstance(beat, PlayClipBeat):
+            continue
+        if not has_inventory:
+            if beat.retarget is not None:
+                issues.append(
+                    ValidationIssue(
+                        severity="error",
+                        code="retarget_inventory_unavailable",
+                        message="Retargeting requires a Scene Snapshot 1.3 rig/action inventory.",
+                        beat_index=index,
+                    )
+                )
+            continue
+        action = actions.get(beat.clip)
+        if action is None:
+            issues.append(
+                ValidationIssue(
+                    severity="error",
+                    code="unknown_action",
+                    message=f"Action '{beat.clip}' does not exist in the scene inventory.",
+                    beat_index=index,
+                )
+            )
+            continue
+        actor = entities.get(beat.actor)
+        needs_rig = bool(action.pose_bones or beat.retarget is not None)
+        if actor is None or not needs_rig:
+            continue
+        if actor.type != "ARMATURE":
+            issues.append(
+                ValidationIssue(
+                    severity="error",
+                    code="action_target_not_armature",
+                    message=(
+                        f"Action '{beat.clip}' has pose-bone channels but actor "
+                        f"'{actor.name}' is not an armature."
+                    ),
+                    beat_index=index,
+                )
+            )
+            continue
+        rig = rigs.get(actor.id)
+        if rig is None:
+            issues.append(
+                ValidationIssue(
+                    severity="error",
+                    code="rig_inventory_missing",
+                    message=f"Armature '{actor.name}' has no rig inventory.",
+                    beat_index=index,
+                )
+            )
+            continue
+        analysis = analyze_retarget(action, rig, beat.retarget)
+        if analysis.missing_sources:
+            issues.append(
+                ValidationIssue(
+                    severity="error",
+                    code="retarget_mapping_incomplete",
+                    message=(
+                        "Strict retarget mapping does not cover action bone(s): "
+                        + ", ".join(analysis.missing_sources)
+                    ),
+                    beat_index=index,
+                )
+            )
+        if analysis.missing_targets:
+            code = (
+                "retarget_target_bone_missing"
+                if beat.retarget is not None
+                else "action_incompatible_with_rig"
+            )
+            issues.append(
+                ValidationIssue(
+                    severity="error",
+                    code=code,
+                    message=(
+                        f"Target rig '{rig.name}' is missing bone(s): "
+                        + ", ".join(analysis.missing_targets)
+                    ),
+                    beat_index=index,
+                )
+            )
+        if analysis.duplicate_targets:
+            issues.append(
+                ValidationIssue(
+                    severity="error",
+                    code="retarget_target_collision",
+                    message=(
+                        "Multiple source bones resolve to target bone(s): "
+                        + ", ".join(analysis.duplicate_targets)
+                    ),
+                    beat_index=index,
+                )
+            )
+        if analysis.unused_sources:
+            issues.append(
+                ValidationIssue(
+                    severity="warning",
+                    code="unused_retarget_mapping",
+                    message=(
+                        "Retarget mapping contains source bone(s) unused by the action: "
+                        + ", ".join(analysis.unused_sources)
+                    ),
+                    beat_index=index,
+                )
+            )
+        if beat.retarget is not None and any(
+            not path.startswith('pose.bones["') for path in action.data_paths
+        ):
+            issues.append(
+                ValidationIssue(
+                    severity="warning",
+                    code="retarget_preserves_non_pose_channels",
+                    message=(
+                        f"Action '{beat.clip}' contains non-pose channels; rename_only "
+                        "preserves them unchanged."
+                    ),
+                    beat_index=index,
+                )
+            )
     return issues
 
 
@@ -220,6 +351,7 @@ def validate_shot(shot: ShotSpec, snapshot: SceneSnapshot) -> ValidationReport:
             )
         )
     issues.extend(_navigation_issues(shot, snapshot))
+    issues.extend(_rig_action_issues(shot, snapshot))
     return ValidationReport(
         valid=not any(issue.severity == "error" for issue in issues), issues=issues
     )
@@ -241,6 +373,13 @@ def compile_shot(shot: ShotSpec, snapshot: SceneSnapshot) -> ScenePatch:
         for entity_id, entity in entities.items()
     }
     navigation_fingerprint = navigation_environment_fingerprint(snapshot)
+    patch_schema = "1.3" if snapshot.schema_version == "1.3" else "1.2"
+    actions_by_name = (
+        {action.name: action for action in snapshot.actions}
+        if snapshot.schema_version == "1.3"
+        else {}
+    )
+    action_fingerprints: dict[str, str] = {}
     fingerprint_entities: set[str] = set()
     operations: list[PatchOperation] = [
         PatchOperation(
@@ -343,16 +482,21 @@ def compile_shot(shot: ShotSpec, snapshot: SceneSnapshot) -> ScenePatch:
             )
         elif isinstance(beat, PlayClipBeat):
             fingerprint_entities.add(beat.actor)
+            if beat.clip in actions_by_name:
+                action_fingerprints[beat.clip] = actions_by_name[beat.clip].fingerprint
+            payload = {
+                "clip": beat.clip,
+                "frame_start": start,
+                "frame_end": end,
+                "loop": beat.loop,
+            }
+            if beat.retarget is not None:
+                payload["retarget"] = beat.retarget.model_dump(mode="json")
             operations.append(
                 PatchOperation(
                     op="play_clip",
                     entity_id=beat.actor,
-                    payload={
-                        "clip": beat.clip,
-                        "frame_start": start,
-                        "frame_end": end,
-                        "loop": beat.loop,
-                    },
+                    payload=payload,
                 )
             )
 
@@ -380,6 +524,7 @@ def compile_shot(shot: ShotSpec, snapshot: SceneSnapshot) -> ScenePatch:
             "fingerprint_entities": fingerprint_ids,
             "fingerprint_frame": snapshot.frame_current,
             "navigation_environment_fingerprint": navigation_fingerprint,
+            "action_fingerprints": action_fingerprints,
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -388,7 +533,7 @@ def compile_shot(shot: ShotSpec, snapshot: SceneSnapshot) -> ScenePatch:
     patch_id = "patch-" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
     warnings = [issue.message for issue in report.issues if issue.severity == "warning"]
     return ScenePatch(
-        schema_version="1.2",
+        schema_version=patch_schema,
         patch_id=patch_id,
         source_title=shot.title,
         operations=operations,
@@ -397,4 +542,5 @@ def compile_shot(shot: ShotSpec, snapshot: SceneSnapshot) -> ScenePatch:
         fingerprint_entities=fingerprint_ids,
         fingerprint_frame=snapshot.frame_current,
         navigation_environment_fingerprint=navigation_fingerprint,
+        action_fingerprints=dict(sorted(action_fingerprints.items())),
     )
