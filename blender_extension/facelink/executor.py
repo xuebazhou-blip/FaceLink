@@ -6,7 +6,12 @@ import uuid
 import bpy
 from mathutils import Euler, Matrix, Vector
 
-from .snapshot import ensure_entity_id, object_by_id, scene_fingerprint
+from .snapshot import (
+    ensure_entity_id,
+    navigation_environment_fingerprint,
+    object_by_id,
+    scene_fingerprint,
+)
 
 ALLOWED_OPERATIONS = {
     "keyframe_transform",
@@ -292,7 +297,7 @@ def validate_patch(patch):
     """Validate a patch against the current scene without changing scene content."""
     if not isinstance(patch, dict):
         raise ValueError("Patch must be an object")
-    if patch.get("schema_version") not in {"1.0", "1.1"}:
+    if patch.get("schema_version") not in {"1.0", "1.1", "1.2"}:
         raise ValueError("Unsupported patch schema_version")
     operations = patch.get("operations")
     if not isinstance(operations, list):
@@ -328,6 +333,17 @@ def validate_patch(patch):
             )
     elif fingerprint_entities or fingerprint_frame is not None:
         raise ValueError("Patch fingerprint metadata is incomplete")
+    expected_navigation = patch.get("navigation_environment_fingerprint")
+    if expected_navigation is not None:
+        if not isinstance(expected_navigation, str) or not expected_navigation.startswith(
+            "nav-"
+        ):
+            raise ValueError("Patch navigation_environment_fingerprint is invalid")
+        if navigation_environment_fingerprint() != expected_navigation:
+            raise ValueError(
+                "The Blender navigation environment changed after this patch was planned; "
+                "scan and plan again"
+            )
     unknown = {item.get("op") for item in operations} - ALLOWED_OPERATIONS
     if unknown:
         raise ValueError(f"Patch contains unsupported operations: {sorted(unknown)}")
@@ -392,6 +408,7 @@ def summarize_patch(patch):
         "warnings": [str(item) for item in warnings],
         "timeline_warning_count": len(timeline_warnings),
         "scene_guarded": patch.get("scene_fingerprint") is not None,
+        "navigation_guarded": patch.get("navigation_environment_fingerprint") is not None,
     }
 
 

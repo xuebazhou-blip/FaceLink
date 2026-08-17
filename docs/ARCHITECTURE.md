@@ -49,6 +49,14 @@ transient GPU overlay from the patch: cyan world-space movement paths and orange
 camera frustums. Overlay geometry is kept outside Blender datablocks and is cleared with the
 staged patch, so previewing does not dirty or mutate the scene.
 
+Protocol 1.3 adds a deterministic navigation layer before patch generation. Explicitly marked
+Blender meshes are triangulated into a compact world-space graph. The core package finds
+connected polygon routes with A*, converts shared-edge portals into waypoints, allocates frames
+by traveled distance and emits the same whitelisted `keyframe_transform` operation used by
+direct motion. Obstacles use a conservative swept-AABB test with actor bounds and clearance.
+The complete marked environment has its own fingerprint, preventing new obstacles or mesh
+edits from bypassing the earlier entity-scoped scene guard.
+
 Protocol 1.1 adds optimistic scene consistency. The compiler fingerprints scene timing and
 the world-space state of only the objects referenced by a patch. Blender checks that value
 both when staging and when applying, so an intervening transform, parent, lock or timing edit
@@ -76,7 +84,7 @@ versions are explicit so clients can negotiate future changes.
   full-matrix solver; armature pose bones are not yet part of this object transform path.
 - `play_clip` requires an existing Blender Action with a matching name; motion generation
   and retargeting are out of scope for v0.1.
-- Motion paths are straight-line keyframe interpolation, not navigation-mesh or
-  collision-aware planning.
+- Navigation planning is currently a single-level XY projection over explicitly marked static
+  geometry. It does not yet solve stacked floors, moving obstacles, crowds or character gait.
 - A camera follow uses Blender constraints and remains artist-editable, but sophisticated
   composition and occlusion solving need a later visual evaluator.

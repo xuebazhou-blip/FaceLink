@@ -1,4 +1,4 @@
-# Local bridge protocol 1.2
+# Local bridge protocol 1.3
 
 The Blender extension writes one JSON discovery record per running Blender process. The
 directory is `${FACELINK_INSTANCE_DIR}` when configured, otherwise
@@ -37,9 +37,29 @@ FaceLink NLA strips fail preflight. Existing transform keyframes in the requeste
 are non-blocking warnings shown in the stage summary and copied into the eventual receipt and
 revision audit record.
 
+## Navigation snapshot and guard
+
+Protocol 1.3 adds Scene Snapshot 1.2 navigation data. Only Blender mesh objects explicitly
+marked `facelink_navmesh` are exported, triangulated in world space, and capped at 20,000
+vertices and 20,000 triangles per object, with at most 32 navigation meshes per snapshot.
+Objects marked `facelink_obstacle` contribute their world-space bounds and are capped at 2,000
+per scene. The Blender panel provides exclusive Navmesh, Obstacle and Clear actions so
+integrations do not need to manipulate custom properties directly.
+
+Compiler-generated Scene Patch 1.2 payloads include a `navigation_environment_fingerprint`.
+It hashes every marked navigation triangle and obstacle bound, including object additions and
+removals. Blender verifies the value during both stage and apply. Health capabilities expose
+`navigation_mesh_paths`, `collision_warnings` and `navigation_fingerprint`.
+
+`move_to.path_mode` remains `direct` by default. `navmesh` selects an explicitly named mesh
+or deterministically chooses a mesh containing both endpoints, runs polygon-adjacency A*, and
+emits multiple ordinary world-space location keys. Marked obstacle intersections are warnings;
+invalid topology, disconnected paths, endpoints outside the mesh and insufficient frames are
+errors.
+
 ## Scene consistency and transform space
 
-Protocol 1.1 snapshots declare `transform_space: "WORLD"` and include `frame_current`.
+Protocol 1.1+ snapshots declare `transform_space: "WORLD"` and include `frame_current`.
 Compiler-generated transform and camera operations also declare `space: "WORLD"`; Blender
 converts those values into the object's editable local channels at each keyframe.
 

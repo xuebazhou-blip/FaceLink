@@ -1,7 +1,7 @@
 import json
 
 import bpy
-from bpy.props import StringProperty
+from bpy.props import EnumProperty, StringProperty
 from bpy.types import Operator
 
 from . import overlay
@@ -112,6 +112,45 @@ class FACELINK_OT_copy_brief(Operator):
         return {"FINISHED"}
 
 
+class FACELINK_OT_set_navigation_role(Operator):
+    bl_idname = "facelink.set_navigation_role"
+    bl_label = "Set FaceLink Navigation Role"
+    bl_description = "Mark the active object as a navigation mesh, obstacle or neither"
+    bl_options = {"REGISTER", "UNDO"}
+
+    role: EnumProperty(
+        name="Role",
+        items=(
+            ("NAVMESH", "Navmesh", "Use this mesh as a walkable navigation surface"),
+            ("OBSTACLE", "Obstacle", "Include this object in movement collision checks"),
+            ("NONE", "None", "Remove FaceLink navigation markers"),
+        ),
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return context.active_object is not None
+
+    def execute(self, context):
+        obj = context.active_object
+        if self.role == "NAVMESH" and obj.type != "MESH":
+            self.report({"ERROR"}, "A FaceLink navigation mesh must be a mesh object")
+            return {"CANCELLED"}
+        for key in ("facelink_navmesh", "facelink_obstacle"):
+            if key in obj:
+                del obj[key]
+        if self.role == "NAVMESH":
+            obj["facelink_navmesh"] = True
+        elif self.role == "OBSTACLE":
+            obj["facelink_obstacle"] = True
+        label = self.role.lower() if self.role != "NONE" else "none"
+        context.window_manager.facelink.last_result = (
+            f"Navigation role for {obj.name}: {label}"
+        )
+        self.report({"INFO"}, context.window_manager.facelink.last_result)
+        return {"FINISHED"}
+
+
 class FACELINK_OT_apply_staged_patch(Operator):
     bl_idname = "facelink.apply_staged_patch"
     bl_label = "Apply Staged Patch"
@@ -207,6 +246,7 @@ CLASSES = (
     FACELINK_OT_scan_scene,
     FACELINK_OT_demo_patch,
     FACELINK_OT_copy_brief,
+    FACELINK_OT_set_navigation_role,
     FACELINK_OT_apply_staged_patch,
     FACELINK_OT_discard_staged_patch,
     FACELINK_OT_toggle_preview,

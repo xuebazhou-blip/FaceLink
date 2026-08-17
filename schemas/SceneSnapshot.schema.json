@@ -17,6 +17,50 @@
       "title": "Bounds",
       "type": "object"
     },
+    "NavigationMesh": {
+      "additionalProperties": false,
+      "properties": {
+        "entity_id": {
+          "minLength": 1,
+          "title": "Entity Id",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "vertices": {
+          "items": {
+            "$ref": "#/$defs/Vec3"
+          },
+          "maxItems": 20000,
+          "minItems": 3,
+          "title": "Vertices",
+          "type": "array"
+        },
+        "polygons": {
+          "items": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "maxItems": 20000,
+          "minItems": 1,
+          "title": "Polygons",
+          "type": "array"
+        }
+      },
+      "required": [
+        "entity_id",
+        "name",
+        "vertices",
+        "polygons"
+      ],
+      "title": "NavigationMesh",
+      "type": "object"
+    },
     "SceneEntity": {
       "additionalProperties": false,
       "properties": {
@@ -110,10 +154,11 @@
   "additionalProperties": false,
   "properties": {
     "schema_version": {
-      "default": "1.1",
+      "default": "1.2",
       "enum": [
         "1.0",
-        "1.1"
+        "1.1",
+        "1.2"
       ],
       "title": "Schema Version",
       "type": "string"
@@ -155,6 +200,26 @@
       },
       "title": "Entities",
       "type": "array"
+    },
+    "navigation_meshes": {
+      "items": {
+        "$ref": "#/$defs/NavigationMesh"
+      },
+      "maxItems": 32,
+      "title": "Navigation Meshes",
+      "type": "array"
+    },
+    "navigation_environment_fingerprint": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Navigation Environment Fingerprint"
     }
   },
   "required": [

@@ -131,21 +131,33 @@ def client_flow(result_box):
 
         health = request_json("GET", f"{base_url}/v1/health", token)
         assert {"timeline_diagnostics", "viewport_preview"} <= set(health["capabilities"])
+        assert {
+            "navigation_mesh_paths",
+            "collision_warnings",
+            "navigation_fingerprint",
+        } <= set(health["capabilities"])
+        assert health["protocol_version"] == "1.3"
         scan_ids = [submit(base_url, token, "scan_scene") for _ in range(3)]
         assert len(set(scan_ids)) == 3
         scans = [wait_job(base_url, token, job_id) for job_id in scan_ids]
         assert all(job["status"] == "succeeded" for job in scans)
         snapshot = scans[0]["result"]
+        assert snapshot["schema_version"] == "1.2"
+        assert snapshot["navigation_environment_fingerprint"].startswith("nav-")
+        assert len(snapshot["navigation_meshes"]) == 1
         actor = next(item for item in snapshot["entities"] if item["name"] == "Bridge Actor")
 
         fingerprint_entities = [actor["id"]]
         patch = {
-            "schema_version": "1.1",
+            "schema_version": "1.2",
             "patch_id": "bridge-acceptance",
             "source_title": "Bridge acceptance",
             "scene_fingerprint": fingerprint_snapshot(snapshot, fingerprint_entities),
             "fingerprint_entities": fingerprint_entities,
             "fingerprint_frame": snapshot["frame_current"],
+            "navigation_environment_fingerprint": snapshot[
+                "navigation_environment_fingerprint"
+            ],
             "operations": [
                 {
                     "op": "keyframe_transform",
@@ -274,6 +286,7 @@ def client_flow(result_box):
             staged_without_mutation=True,
             preview_via_bridge=True,
             timeline_warning_via_bridge=True,
+            navigation_snapshot_via_bridge=True,
             receipt=apply_job["result"]["receipt"],
             discarded_without_apply=True,
             persistent_history_entries=len(final_history["entries"]),
@@ -287,6 +300,18 @@ def client_flow(result_box):
 blender_addon.register()
 bpy.ops.mesh.primitive_cube_add(location=(0, 0, 0))
 bpy.context.active_object.name = "Bridge Actor"
+bpy.ops.mesh.primitive_cube_add(location=(10, 10, 0))
+bpy.context.active_object.name = "Bridge Obstacle"
+bpy.context.active_object["facelink_obstacle"] = True
+navigation_mesh = bpy.data.meshes.new("Bridge Navigation")
+navigation_mesh.from_pydata(
+    [(-2, -2, 0), (4, -2, 0), (4, 4, 0), (-2, 4, 0)],
+    [],
+    [(0, 1, 2), (0, 2, 3)],
+)
+navigation_object = bpy.data.objects.new("Bridge Navigation", navigation_mesh)
+bpy.context.scene.collection.objects.link(navigation_object)
+navigation_object["facelink_navmesh"] = True
 original_scan = bridge.scan_scene
 main_thread_checks = []
 

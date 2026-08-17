@@ -31,7 +31,9 @@ async def test_stdio_server_lists_expected_tools():
     schema_text = str(preview.input_schema)
     assert "ShotSpec" in schema_text
     assert "move_to" in schema_text
+    assert "path_mode" in schema_text
     assert "SceneSnapshot" in schema_text
+    assert "navigation_meshes" in schema_text
 
 
 @pytest.mark.asyncio
@@ -92,5 +94,109 @@ async def test_stdio_server_validates_and_previews_without_blender():
     assert not preview.is_error
     assert preview.structured_content["operations"][1]["op"] == "keyframe_transform"
     assert preview.structured_content["operations"][1]["payload"]["space"] == "WORLD"
+    assert preview.structured_content["schema_version"] == "1.2"
     assert preview.structured_content["scene_fingerprint"].startswith("scene-")
+    assert preview.structured_content["navigation_environment_fingerprint"].startswith("nav-")
     assert invalid.is_error
+
+
+@pytest.mark.asyncio
+async def test_stdio_server_compiles_navmesh_path_and_reports_outside_target():
+    executable = Path(sys.executable).with_name("facelink-mcp.exe")
+    server = StdioServerParameters(command=str(executable), cwd=str(Path.cwd()))
+    snapshot = {
+        "schema_version": "1.2",
+        "scene_name": "Navigation MCP",
+        "entities": [
+            {
+                "id": "actor",
+                "name": "Actor",
+                "type": "MESH",
+                "transform": {"location": {"x": 1, "y": 1, "z": 0}},
+            },
+            {
+                "id": "goal",
+                "name": "Goal",
+                "type": "EMPTY",
+                "transform": {"location": {"x": 5, "y": 5, "z": 0}},
+            },
+            {
+                "id": "nav",
+                "name": "L Corridor",
+                "type": "MESH",
+                "transform": {},
+                "metadata": {"navigation_role": "navmesh"},
+            },
+        ],
+        "navigation_meshes": [
+            {
+                "entity_id": "nav",
+                "name": "L Corridor",
+                "vertices": [
+                    {"x": 0, "y": 0, "z": 0},
+                    {"x": 2, "y": 0, "z": 0},
+                    {"x": 2, "y": 4, "z": 0},
+                    {"x": 0, "y": 4, "z": 0},
+                    {"x": 6, "y": 4, "z": 0},
+                    {"x": 6, "y": 6, "z": 0},
+                    {"x": 0, "y": 6, "z": 0},
+                    {"x": 2, "y": 6, "z": 0},
+                ],
+                "polygons": [
+                    [0, 1, 2],
+                    [0, 2, 3],
+                    [3, 2, 7],
+                    [3, 7, 6],
+                    [2, 4, 5],
+                    [2, 5, 7],
+                ],
+            }
+        ],
+    }
+    shot = {
+        "title": "MCP navigation",
+        "duration": 4,
+        "beats": [
+            {
+                "type": "move_to",
+                "actor": "actor",
+                "target_entity": "goal",
+                "duration": 4,
+                "path_mode": "navmesh",
+                "navigation_mesh": "nav",
+            }
+        ],
+    }
+    outside = {
+        **shot,
+        "beats": [
+            {
+                **shot["beats"][0],
+                "target_entity": None,
+                "target_position": {"x": 50, "y": 50, "z": 0},
+            }
+        ],
+    }
+    async with stdio_client(server) as (read_stream, write_stream):
+        async with ClientSession(read_stream, write_stream) as session:
+            await session.initialize()
+            preview = await session.call_tool(
+                "preview_shot",
+                {"shot_spec": shot, "scene_snapshot": snapshot},
+            )
+            validation = await session.call_tool(
+                "validate_shot_spec",
+                {"shot_spec": outside, "scene_snapshot": snapshot},
+            )
+    assert not preview.is_error
+    movement = preview.structured_content["operations"][1]
+    assert movement["payload"]["path_mode"] == "navmesh"
+    assert movement["payload"]["interpolation"] == "LINEAR"
+    assert len(movement["payload"]["frames"]) > 2
+    assert preview.structured_content["navigation_environment_fingerprint"].startswith("nav-")
+    assert not validation.is_error
+    assert validation.structured_content["valid"] is False
+    assert any(
+        issue["code"] == "point_outside_navigation_mesh"
+        for issue in validation.structured_content["issues"]
+    )

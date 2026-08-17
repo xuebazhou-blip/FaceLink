@@ -42,10 +42,11 @@
   "additionalProperties": false,
   "properties": {
     "schema_version": {
-      "default": "1.1",
+      "default": "1.2",
       "enum": [
         "1.0",
-        "1.1"
+        "1.1",
+        "1.2"
       ],
       "title": "Schema Version",
       "type": "string"
@@ -102,6 +103,18 @@
       ],
       "default": null,
       "title": "Fingerprint Frame"
+    },
+    "navigation_environment_fingerprint": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Navigation Environment Fingerprint"
     }
   },
   "required": [

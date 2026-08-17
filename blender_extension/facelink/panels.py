@@ -37,6 +37,27 @@ class FACELINK_PT_main(Panel):
         if state.last_result:
             scene.label(text=state.last_result[:80])
 
+        navigation = layout.box()
+        navigation.label(text="Navigation", icon="MOD_CURVE")
+        active = context.active_object
+        if active is None:
+            navigation.label(text="Select an object to set its role")
+        else:
+            if active.get("facelink_navmesh", False):
+                role = "Navmesh"
+            elif active.get("facelink_obstacle", False):
+                role = "Obstacle"
+            else:
+                role = "None"
+            navigation.label(text=f"Selected: {active.name[:42]} ({role})")
+            row = navigation.row(align=True)
+            operator = row.operator("facelink.set_navigation_role", text="Navmesh")
+            operator.role = "NAVMESH"
+            operator = row.operator("facelink.set_navigation_role", text="Obstacle")
+            operator.role = "OBSTACLE"
+            operator = row.operator("facelink.set_navigation_role", text="Clear")
+            operator.role = "NONE"
+
         review = layout.box()
         review.label(text="3. Review changes", icon="PREVIEW_RANGE")
         staged = get_staged_patch()
@@ -47,6 +68,8 @@ class FACELINK_PT_main(Panel):
             review.label(text=summary["source_title"][:64])
             if summary.get("scene_guarded"):
                 review.label(text="Scene consistency check enabled", icon="LOCKED")
+            if summary.get("navigation_guarded"):
+                review.label(text="Navigation environment guarded", icon="MOD_DYNAMICPAINT")
             review.label(text=f"Operations: {summary['operation_count']}")
             names = ", ".join(item["name"] for item in summary["affected_entities"])
             if names:

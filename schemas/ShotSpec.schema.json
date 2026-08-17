@@ -166,6 +166,35 @@
           ],
           "title": "Easing",
           "type": "string"
+        },
+        "path_mode": {
+          "default": "direct",
+          "enum": [
+            "direct",
+            "navmesh"
+          ],
+          "title": "Path Mode",
+          "type": "string"
+        },
+        "navigation_mesh": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Navigation Mesh"
+        },
+        "clearance": {
+          "default": 0.1,
+          "maximum": 100.0,
+          "minimum": 0.0,
+          "title": "Clearance",
+          "type": "number"
         }
       },
       "required": [

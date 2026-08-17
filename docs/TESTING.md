@@ -42,9 +42,14 @@ human-readable summary.
 - Preflight visualization acceptance must verify world/local path conversion, finite camera
   frustum geometry, overlay show/hide/cleanup, zero scene mutation while staged, internal
   timeline rejection, existing-keyframe warnings and existing FaceLink NLA collision safety.
+- Navigation acceptance must verify stable cross-runtime fingerprints, valid triangulation,
+  invalid/non-manifold topology rejection, deterministic connected paths, disconnected and
+  outside-mesh failures, distance-based unique frames, swept-bounds collision/height behavior,
+  Blender role operators, stale-environment rejection and editable multi-key execution.
 - Bridge acceptance must pass: localhost binding, bearer authentication, malformed requests,
   concurrent jobs, protocol 1.1 fingerprint agreement, main-thread dispatch, failed-job
-  reporting, protocol 1.2 history/rollback and preview diagnostics, Undo and discovery cleanup.
+  reporting, protocol 1.2 history/rollback, protocol 1.3 navigation snapshots and preview
+  diagnostics, Undo and discovery cleanup.
 - The built ZIP must install, enable and load from each Blender version's isolated portable
   extension repository.
 

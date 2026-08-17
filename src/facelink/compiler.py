@@ -18,6 +18,12 @@ from .models import (
     ValidationReport,
     Vec3,
 )
+from .navigation import (
+    NavigationError,
+    allocate_path_frames,
+    navigation_environment_fingerprint,
+    plan_move_path,
+)
 
 
 def _frame(seconds: float, fps: float, start: int) -> int:
@@ -34,6 +40,86 @@ def _target_position(
     if target_entity is not None and target_entity in locations:
         return locations[target_entity]
     return None
+
+
+def _navigation_issues(shot: ShotSpec, snapshot: SceneSnapshot) -> list[ValidationIssue]:
+    issues = []
+    entities = snapshot.by_id()
+    current_locations = {
+        entity_id: entity.transform.location.model_copy(deep=True)
+        for entity_id, entity in entities.items()
+    }
+    declared_fingerprint = snapshot.navigation_environment_fingerprint
+    actual_fingerprint = navigation_environment_fingerprint(snapshot)
+    if declared_fingerprint is not None and declared_fingerprint != actual_fingerprint:
+        issues.append(
+            ValidationIssue(
+                severity="error",
+                code="navigation_fingerprint_mismatch",
+                message="Scene navigation data does not match its declared fingerprint.",
+            )
+        )
+    for index, beat in sorted(enumerate(shot.beats), key=lambda item: (item[1].at, item[0])):
+        if not isinstance(beat, MoveToBeat):
+            continue
+        if beat.actor not in entities:
+            continue
+        target = _target_position(
+            beat.target_entity,
+            beat.target_position,
+            current_locations,
+        )
+        if target is None:
+            continue
+        try:
+            plan = plan_move_path(
+                snapshot,
+                entities[beat.actor],
+                current_locations[beat.actor],
+                target,
+                path_mode=beat.path_mode,
+                navigation_mesh=beat.navigation_mesh,
+                clearance=beat.clearance,
+                target_entity_id=beat.target_entity,
+            )
+            allocate_path_frames(
+                plan.points,
+                _frame(beat.at, shot.fps, snapshot.frame_start),
+                _frame(beat.at + beat.duration, shot.fps, snapshot.frame_start),
+            )
+        except NavigationError as exc:
+            issues.append(
+                ValidationIssue(
+                    severity="error",
+                    code=exc.code,
+                    message=str(exc),
+                    beat_index=index,
+                )
+            )
+        else:
+            for warning in plan.warnings:
+                issues.append(
+                    ValidationIssue(
+                        severity="warning",
+                        code=("path_collision" if plan.collision_ids else "navigation_warning"),
+                        message=warning,
+                        beat_index=index,
+                    )
+                )
+            if beat.path_mode == "navmesh" and beat.easing != "LINEAR":
+                issues.append(
+                    ValidationIssue(
+                        severity="warning",
+                        code="navmesh_requires_linear_interpolation",
+                        message=(
+                            f"Beat {index} uses LINEAR interpolation so the curve stays on "
+                            "its navigation path."
+                        ),
+                        beat_index=index,
+                    )
+                )
+        current_locations[beat.actor] = target.model_copy(deep=True)
+    return issues
 
 
 def validate_shot(shot: ShotSpec, snapshot: SceneSnapshot) -> ValidationReport:
@@ -133,6 +219,7 @@ def validate_shot(shot: ShotSpec, snapshot: SceneSnapshot) -> ValidationReport:
                 message=f"Shot changes scene FPS from {snapshot.fps:g} to {shot.fps:g}.",
             )
         )
+    issues.extend(_navigation_issues(shot, snapshot))
     return ValidationReport(
         valid=not any(issue.severity == "error" for issue in issues), issues=issues
     )
@@ -153,6 +240,7 @@ def compile_shot(shot: ShotSpec, snapshot: SceneSnapshot) -> ScenePatch:
         entity_id: entity.transform.rotation_euler.model_copy(deep=True)
         for entity_id, entity in entities.items()
     }
+    navigation_fingerprint = navigation_environment_fingerprint(snapshot)
     fingerprint_entities: set[str] = set()
     operations: list[PatchOperation] = [
         PatchOperation(
@@ -180,17 +268,35 @@ def compile_shot(shot: ShotSpec, snapshot: SceneSnapshot) -> ScenePatch:
                 current_locations,
             )
             assert target is not None
+            plan = plan_move_path(
+                snapshot,
+                entities[beat.actor],
+                origin,
+                target,
+                path_mode=beat.path_mode,
+                navigation_mesh=beat.navigation_mesh,
+                clearance=beat.clearance,
+                target_entity_id=beat.target_entity,
+            )
+            path_frames = allocate_path_frames(plan.points, start, end)
+            fingerprint_entities.update(plan.considered_obstacle_ids)
+            if plan.navigation_mesh_id:
+                fingerprint_entities.add(plan.navigation_mesh_id)
             operations.append(
                 PatchOperation(
                     op="keyframe_transform",
                     entity_id=beat.actor,
                     payload={
                         "frames": [
-                            {"frame": start, "location": origin.as_list()},
-                            {"frame": end, "location": target.as_list()},
+                            {"frame": frame, "location": point.as_list()}
+                            for frame, point in zip(path_frames, plan.points, strict=True)
                         ],
-                        "interpolation": beat.easing,
+                        "interpolation": (
+                            "LINEAR" if beat.path_mode == "navmesh" else beat.easing
+                        ),
                         "space": "WORLD",
+                        "path_mode": beat.path_mode,
+                        "navigation_mesh": plan.navigation_mesh_id,
                     },
                 )
             )
@@ -273,6 +379,7 @@ def compile_shot(shot: ShotSpec, snapshot: SceneSnapshot) -> ScenePatch:
             "scene_fingerprint": scene_fingerprint,
             "fingerprint_entities": fingerprint_ids,
             "fingerprint_frame": snapshot.frame_current,
+            "navigation_environment_fingerprint": navigation_fingerprint,
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -281,6 +388,7 @@ def compile_shot(shot: ShotSpec, snapshot: SceneSnapshot) -> ScenePatch:
     patch_id = "patch-" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
     warnings = [issue.message for issue in report.issues if issue.severity == "warning"]
     return ScenePatch(
+        schema_version="1.2",
         patch_id=patch_id,
         source_title=shot.title,
         operations=operations,
@@ -288,4 +396,5 @@ def compile_shot(shot: ShotSpec, snapshot: SceneSnapshot) -> ScenePatch:
         scene_fingerprint=scene_fingerprint,
         fingerprint_entities=fingerprint_ids,
         fingerprint_frame=snapshot.frame_current,
+        navigation_environment_fingerprint=navigation_fingerprint,
     )

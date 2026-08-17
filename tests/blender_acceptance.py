@@ -63,6 +63,15 @@ def empty(name, location=(0, 0, 0)):
     return obj
 
 
+def mesh_object(name, vertices, faces):
+    mesh = bpy.data.meshes.new(name)
+    mesh.from_pydata(vertices, [], faces)
+    mesh.update()
+    obj = bpy.data.objects.new(name, mesh)
+    bpy.context.scene.collection.objects.link(obj)
+    return obj
+
+
 def operation_patch(*operations, patch_id="acceptance"):
     return {
         "schema_version": "1.0",
@@ -116,6 +125,7 @@ def test_registration_surface():
     assert hasattr(bpy.ops.facelink, "apply_staged_patch")
     assert hasattr(bpy.ops.facelink, "discard_staged_patch")
     assert hasattr(bpy.ops.facelink, "toggle_preview")
+    assert hasattr(bpy.ops.facelink, "set_navigation_role")
     assert hasattr(bpy.ops.facelink, "rollback_revision")
 
 
@@ -167,7 +177,8 @@ def test_snapshot_identity_bounds_parent_and_lock():
     assert actor_first["id"] == actor_second["id"]
     assert actor_first["locked"] is True
     assert actor_first["metadata"]["parent"] == ensure_entity_id(parent)
-    assert first["schema_version"] == "1.1"
+    assert first["schema_version"] == "1.2"
+    assert first["navigation_environment_fingerprint"].startswith("nav-")
     assert first["transform_space"] == "WORLD"
     assert actor_first["transform"]["location"] == {"x": 11.0, "y": 2.0, "z": 3.0}
     assert actor_first["bounds"]["minimum"]["x"] == 10.0
@@ -364,6 +375,174 @@ def test_scene_fingerprint_rejects_changes_and_keeps_staging():
     assert bpy.context.scene.frame_current == 12
 
 
+def test_navigation_snapshot_guard_overlay_execution_and_stale_environment():
+    actor = cube("Navigation Actor", (1, 1, 0))
+    actor_id = ensure_entity_id(actor)
+    target = empty("Navigation Goal", (5, 5, 0))
+    ensure_entity_id(target)
+    obstacle = cube("Navigation Wall", (3, 3, 1))
+    obstacle.scale = (0.5, 0.5, 1)
+    obstacle["facelink_obstacle"] = True
+    obstacle["facelink_id"] = "wall"
+    navmesh = mesh_object(
+        "Navigation L Corridor",
+        [
+            (0, 0, 0),
+            (2, 0, 0),
+            (2, 4, 0),
+            (0, 4, 0),
+            (6, 4, 0),
+            (6, 6, 0),
+            (0, 6, 0),
+            (2, 6, 0),
+        ],
+        [
+            (0, 1, 2),
+            (0, 2, 3),
+            (3, 2, 7),
+            (3, 7, 6),
+            (2, 4, 5),
+            (2, 5, 7),
+        ],
+    )
+    navmesh["facelink_navmesh"] = True
+    navmesh["facelink_id"] = "nav-l"
+    bpy.context.view_layer.update()
+    snapshot = scan_scene()
+    navigation = snapshot["navigation_meshes"]
+    obstacle_snapshot = next(
+        item for item in snapshot["entities"] if item["name"] == "Navigation Wall"
+    )
+    navmesh_snapshot = next(
+        item for item in snapshot["entities"] if item["name"] == "Navigation L Corridor"
+    )
+
+    assert snapshot["schema_version"] == "1.2"
+    assert snapshot["navigation_environment_fingerprint"] == (
+        "nav-63fb67061dd69bff488050e7"
+    )
+    assert len(navigation) == 1
+    assert navigation[0]["entity_id"] == navmesh_snapshot["id"]
+    assert len(navigation[0]["vertices"]) == 8
+    assert len(navigation[0]["polygons"]) == 6
+    assert obstacle_snapshot["metadata"]["navigation_role"] == "obstacle"
+    assert navmesh_snapshot["metadata"]["navigation_role"] == "navmesh"
+
+    patch = operation_patch(
+        {
+            "op": "keyframe_transform",
+            "entity_id": actor_id,
+            "payload": {
+                "space": "WORLD",
+                "path_mode": "navmesh",
+                "navigation_mesh": navmesh_snapshot["id"],
+                "interpolation": "LINEAR",
+                "frames": [
+                    {"frame": 1, "location": [1, 1, 0]},
+                    {"frame": 25, "location": [1, 4, 0]},
+                    {"frame": 49, "location": [5, 5, 0]},
+                ],
+            },
+        },
+        patch_id="navigation-path",
+    )
+    patch["schema_version"] = "1.2"
+    patch["navigation_environment_fingerprint"] = snapshot[
+        "navigation_environment_fingerprint"
+    ]
+    staged = bridge.stage_patch(patch)
+    assert staged["summary"]["navigation_guarded"] is True
+    assert staged["summary"]["preview"]["path_count"] == 1
+    assert staged["summary"]["preview"]["segment_count"] == 2
+    assert actor.animation_data is None
+    result = bridge.apply_staged_patch()
+    assert result["receipt"]["patch_id"] == "navigation-path"
+    frames = {
+        point.co.x for curve in action_fcurves(actor) for point in curve.keyframe_points
+    }
+    assert frames == {1.0, 25.0, 49.0}
+    bpy.context.scene.frame_set(49)
+    assert tuple(round(value, 4) for value in actor.matrix_world.translation) == (5.0, 5.0, 0.0)
+    undo_last_patch()
+
+    bridge.stage_patch(patch)
+    new_obstacle = cube("New Untracked Obstacle", (1, 4, 0))
+    new_obstacle["facelink_obstacle"] = True
+    try:
+        bridge.apply_staged_patch()
+    except ValueError as exc:
+        assert "navigation environment changed" in str(exc).lower()
+    else:
+        raise AssertionError("A stale navigation patch was applied after adding an obstacle")
+    assert bridge.get_staged_patch()["staged"] is True
+    bridge.discard_staged_patch()
+    assert overlay.preview_status()["path_count"] == 0
+
+
+def test_navigation_markers_reject_ambiguous_and_non_mesh_objects():
+    invalid = empty("Invalid Navigation")
+    invalid["facelink_navmesh"] = True
+    try:
+        scan_scene()
+    except ValueError as exc:
+        assert "must be a mesh" in str(exc).lower()
+    else:
+        raise AssertionError("A non-mesh navigation object was scanned")
+
+    del invalid["facelink_navmesh"]
+    ambiguous = cube("Ambiguous Navigation")
+    ambiguous["facelink_navmesh"] = True
+    ambiguous["facelink_obstacle"] = True
+    try:
+        scan_scene()
+    except ValueError as exc:
+        assert "both navmesh and obstacle" in str(exc).lower()
+    else:
+        raise AssertionError("An ambiguous navigation role was scanned")
+
+    del ambiguous["facelink_navmesh"]
+    del ambiguous["facelink_obstacle"]
+    degenerate = mesh_object(
+        "Degenerate Navigation",
+        [(0, 0, 0), (1, 0, 0), (2, 0, 0)],
+        [(0, 1, 2)],
+    )
+    degenerate["facelink_navmesh"] = True
+    try:
+        scan_scene()
+    except ValueError as exc:
+        assert "degenerate xy triangle" in str(exc).lower()
+    else:
+        raise AssertionError("A degenerate navigation triangle was scanned")
+
+
+def test_navigation_role_operators_are_exclusive_and_validate_object_type():
+    actor = cube("Navigation Role Actor")
+    bpy.context.view_layer.objects.active = actor
+    actor.select_set(True)
+    assert bpy.ops.facelink.set_navigation_role(role="OBSTACLE") == {"FINISHED"}
+    assert actor.get("facelink_obstacle") is True
+    assert actor.get("facelink_navmesh") is None
+    assert bpy.ops.facelink.set_navigation_role(role="NAVMESH") == {"FINISHED"}
+    assert actor.get("facelink_navmesh") is True
+    assert actor.get("facelink_obstacle") is None
+    assert bpy.ops.facelink.set_navigation_role(role="NONE") == {"FINISHED"}
+    assert actor.get("facelink_navmesh") is None
+    assert actor.get("facelink_obstacle") is None
+
+    invalid = empty("Navigation Role Empty")
+    bpy.context.view_layer.objects.active = invalid
+    actor.select_set(False)
+    invalid.select_set(True)
+    try:
+        bpy.ops.facelink.set_navigation_role(role="NAVMESH")
+    except RuntimeError as exc:
+        assert "must be a mesh object" in str(exc).lower()
+    else:
+        raise AssertionError("A non-mesh object was marked as a navigation mesh")
+    assert invalid.get("facelink_navmesh") is None
+
+
 def test_look_at_and_camera_are_idempotent():
     actor = cube("Actor")
     target = empty("Target", (2, 3, 0))
@@ -495,6 +674,17 @@ def test_locked_objects_and_unknown_operations_fail_closed():
         assert "warnings" in str(exc).lower()
     else:
         raise AssertionError("Invalid patch metadata was staged")
+    assert bridge.get_staged_patch()["staged"] is False
+
+    invalid_navigation_guard = operation_patch(patch_id="invalid-navigation-guard")
+    invalid_navigation_guard["schema_version"] = "1.2"
+    invalid_navigation_guard["navigation_environment_fingerprint"] = "invalid"
+    try:
+        bridge.stage_patch(invalid_navigation_guard)
+    except ValueError as exc:
+        assert "navigation_environment_fingerprint is invalid" in str(exc)
+    else:
+        raise AssertionError("An invalid navigation fingerprint was staged")
     assert bridge.get_staged_patch()["staged"] is False
 
     actor["facelink_locked"] = False
@@ -1079,6 +1269,18 @@ CASES = [
     ("world_space_parented_camera", test_world_space_camera_location_converts_through_parent),
     ("world_space_zero_parent_fail_closed", test_world_space_zero_scale_parent_fails_closed),
     ("scene_fingerprint_stale_guard", test_scene_fingerprint_rejects_changes_and_keeps_staging),
+    (
+        "navigation_snapshot_guard_execution",
+        test_navigation_snapshot_guard_overlay_execution_and_stale_environment,
+    ),
+    (
+        "navigation_marker_validation",
+        test_navigation_markers_reject_ambiguous_and_non_mesh_objects,
+    ),
+    (
+        "navigation_role_operators",
+        test_navigation_role_operators_are_exclusive_and_validate_object_type,
+    ),
     ("look_at_camera_idempotency", test_look_at_and_camera_are_idempotent),
     ("dolly_camera_keyframes", test_dolly_camera_creates_editable_keyframes),
     ("play_clip_nla_idempotency", test_play_clip_creates_one_reusable_nla_strip),

@@ -39,7 +39,7 @@ def facelink_health(instance_id: str | None = None) -> dict[str, Any]:
 
 @mcp.tool()
 def scan_scene(instance_id: str | None = None) -> dict[str, Any]:
-    """Read the active Blender scene as a compact, stable-ID snapshot."""
+    """Read stable scene IDs, bounds, obstacles and explicitly marked navigation meshes."""
     return BridgeClient(select_instance(instance_id)).run_job("scan_scene")
 
 
@@ -52,7 +52,7 @@ def validate_shot_spec(shot_spec: ShotSpec, scene_snapshot: SceneSnapshot) -> di
 
 @mcp.tool()
 def preview_shot(shot_spec: ShotSpec, scene_snapshot: SceneSnapshot) -> dict[str, Any]:
-    """Compile a shot into a reviewable Blender patch without applying it."""
+    """Compile a shot, including deterministic navmesh paths, without applying it."""
     patch = compile_shot(shot_spec, scene_snapshot)
     return patch.model_dump(mode="json")
 

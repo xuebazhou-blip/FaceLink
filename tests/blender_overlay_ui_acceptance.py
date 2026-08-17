@@ -65,6 +65,7 @@ try:
                         "space": "WORLD",
                         "frames": [
                             {"frame": 1, "location": [0, 0, 0]},
+                            {"frame": 13, "location": [0.5, 1, 0]},
                             {"frame": 25, "location": [2, 1, 0]},
                         ],
                     },
@@ -85,6 +86,7 @@ try:
     )
     assert staged["summary"]["preview"]["path_count"] == 1
     assert staged["summary"]["preview"]["frustum_count"] == 1
+    assert staged["summary"]["preview"]["segment_count"] == 10
 except Exception as exc:
     fail(str(exc))
 
@@ -104,6 +106,7 @@ def finish_after_draw():
             "path_count": overlay.preview_status()["path_count"],
             "frustum_count": overlay.preview_status()["frustum_count"],
             "draw_call_count": diagnostics["draw_call_count"],
+            "segment_count": overlay.preview_status()["segment_count"],
             "scene_mutated_while_staged": (
                 actor.animation_data is not None
                 or bpy.data.objects.get("Overlay UI Camera") is not None

@@ -6,6 +6,11 @@ import uuid
 import bpy
 from mathutils import Vector
 
+MAX_NAVIGATION_VERTICES = 20_000
+MAX_NAVIGATION_POLYGONS = 20_000
+MAX_NAVIGATION_MESHES = 32
+MAX_NAVIGATION_OBSTACLES = 2_000
+
 
 def ensure_entity_id(obj):
     entity_id = obj.get("facelink_id")
@@ -34,6 +39,117 @@ def _bounds(obj):
 def _number(value):
     rounded = round(float(value), 6)
     return 0.0 if rounded == 0.0 else rounded
+
+
+def _navigation_role(obj):
+    is_navmesh = bool(obj.get("facelink_navmesh", False))
+    is_obstacle = bool(obj.get("facelink_obstacle", False))
+    if is_navmesh and is_obstacle:
+        raise ValueError(f"Object '{obj.name}' cannot be both navmesh and obstacle")
+    if is_navmesh:
+        if obj.type != "MESH":
+            raise ValueError(f"Navigation object '{obj.name}' must be a mesh")
+        return "navmesh"
+    return "obstacle" if is_obstacle else None
+
+
+def _navigation_mesh(obj, entity_id):
+    mesh = obj.data
+    mesh.calc_loop_triangles()
+    if len(mesh.vertices) > MAX_NAVIGATION_VERTICES:
+        raise ValueError(
+            f"Navigation mesh '{obj.name}' exceeds {MAX_NAVIGATION_VERTICES} vertices"
+        )
+    if len(mesh.loop_triangles) > MAX_NAVIGATION_POLYGONS:
+        raise ValueError(
+            f"Navigation mesh '{obj.name}' exceeds {MAX_NAVIGATION_POLYGONS} triangles"
+        )
+    vertices = [_vec3(obj.matrix_world @ vertex.co) for vertex in mesh.vertices]
+    polygons = [list(triangle.vertices) for triangle in mesh.loop_triangles]
+    edge_owners = {}
+    for index, polygon in enumerate(polygons):
+        area = 0.0
+        for position, vertex_index in enumerate(polygon):
+            first = vertices[vertex_index]
+            second_index = polygon[(position + 1) % len(polygon)]
+            second = vertices[second_index]
+            area += first["x"] * second["y"] - second["x"] * first["y"]
+            edge = tuple(sorted((vertex_index, second_index)))
+            edge_owners[edge] = edge_owners.get(edge, 0) + 1
+        if abs(area) <= 1e-9:
+            raise ValueError(
+                f"Navigation mesh '{obj.name}' has a degenerate XY triangle at index {index}"
+            )
+    if any(count > 2 for count in edge_owners.values()):
+        raise ValueError(f"Navigation mesh '{obj.name}' has a non-manifold edge")
+    return {
+        "entity_id": entity_id,
+        "name": obj.name,
+        "vertices": vertices,
+        "polygons": polygons,
+    }
+
+
+def _navigation_payload(*, assign_ids):
+    navigation_meshes = []
+    obstacles = []
+    for obj in sorted(bpy.context.scene.objects, key=lambda item: item.name):
+        role = _navigation_role(obj)
+        if role is None:
+            continue
+        entity_id = obj.get("facelink_id")
+        if not entity_id and assign_ids:
+            entity_id = ensure_entity_id(obj)
+        entity_id = str(entity_id) if entity_id else f"untracked:{obj.name}"
+        if role == "navmesh":
+            navigation_meshes.append(_navigation_mesh(obj, entity_id))
+        else:
+            obstacles.append({"entity_id": entity_id, "bounds": _bounds(obj)})
+    if len(navigation_meshes) > MAX_NAVIGATION_MESHES:
+        raise ValueError(f"A scene may contain at most {MAX_NAVIGATION_MESHES} navigation meshes")
+    if len(obstacles) > MAX_NAVIGATION_OBSTACLES:
+        raise ValueError(f"A scene may contain at most {MAX_NAVIGATION_OBSTACLES} obstacles")
+    return navigation_meshes, obstacles
+
+
+def _navigation_fingerprint(navigation_meshes, obstacles):
+    canonical = {
+        "navigation_meshes": [
+            {
+                "entity_id": item["entity_id"],
+                "vertices": [
+                    [_number(vertex[axis]) for axis in "xyz"] for vertex in item["vertices"]
+                ],
+                "polygons": item["polygons"],
+            }
+            for item in sorted(navigation_meshes, key=lambda value: value["entity_id"])
+        ],
+        "obstacles": [
+            {
+                "entity_id": item["entity_id"],
+                "bounds": (
+                    {
+                        "minimum": [
+                            _number(item["bounds"]["minimum"][axis]) for axis in "xyz"
+                        ],
+                        "maximum": [
+                            _number(item["bounds"]["maximum"][axis]) for axis in "xyz"
+                        ],
+                    }
+                    if item["bounds"]
+                    else None
+                ),
+            }
+            for item in sorted(obstacles, key=lambda value: value["entity_id"])
+        ],
+    }
+    encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return "nav-" + hashlib.sha256(encoded).hexdigest()[:24]
+
+
+def navigation_environment_fingerprint():
+    navigation_meshes, obstacles = _navigation_payload(assign_ids=False)
+    return _navigation_fingerprint(navigation_meshes, obstacles)
 
 
 def _world_transform(obj):
@@ -102,6 +218,7 @@ def scan_scene():
     entities = []
     for obj in sorted(scene.objects, key=lambda item: item.name):
         entity_id = ensure_entity_id(obj)
+        navigation_role = _navigation_role(obj)
         entities.append(
             {
                 "id": entity_id,
@@ -113,11 +230,13 @@ def scan_scene():
                 "metadata": {
                     "parent": ensure_entity_id(obj.parent) if obj.parent else None,
                     "collection": obj.users_collection[0].name if obj.users_collection else None,
+                    "navigation_role": navigation_role,
                 },
             }
         )
+    navigation_meshes, obstacles = _navigation_payload(assign_ids=True)
     return {
-        "schema_version": "1.1",
+        "schema_version": "1.2",
         "transform_space": "WORLD",
         "scene_name": scene.name,
         "fps": float(scene.render.fps) / float(scene.render.fps_base),
@@ -125,6 +244,10 @@ def scan_scene():
         "frame_end": int(scene.frame_end),
         "frame_current": float(scene.frame_current) + float(scene.frame_subframe),
         "entities": entities,
+        "navigation_meshes": navigation_meshes,
+        "navigation_environment_fingerprint": _navigation_fingerprint(
+            navigation_meshes, obstacles
+        ),
     }
 
 

@@ -24,6 +24,10 @@ the scene only after the artist presses **Apply Staged Patch**.
   existing keyframes and rejects colliding FaceLink NLA clips;
 - previews staged world-space motion paths and predicted camera frustums directly in the
   Blender viewport without creating scene datablocks;
+- scans explicitly marked navigation meshes and obstacles, plans deterministic multi-segment
+  locomotion paths, and warns when an actor's swept bounds intersect a marked obstacle;
+- fingerprints the complete navigation environment so a newly added obstacle or edited
+  navigation mesh invalidates an already staged plan;
 - rejects a staged plan when a referenced transform, parent link, lock or scene timing value
   changed after the scene scan.
 
@@ -63,7 +67,7 @@ $env:FACELINK_BLENDER_EXE='C:\path\to\Blender\blender.exe' # optional if on PATH
 ```
 
 Then in Blender 4.5: **Edit → Preferences → Get Extensions → Install from Disk**, choose
-`dist/facelink-0.2.3.zip`, enable FaceLink, and open the **FaceLink** tab in the 3D Viewport
+`dist/facelink-0.3.0.zip`, enable FaceLink, and open the **FaceLink** tab in the 3D Viewport
 sidebar. Press **Start Bridge**.
 
 Run the MCP server:
@@ -133,6 +137,19 @@ An API key is optional when an MCP client performs the language-model planning i
 ChatGPT subscriptions and OpenAI API billing are separate; a ChatGPT membership is not an
 API key. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the trust boundary.
 
+## Navigation workflow
+
+Select a walkable mesh and use **FaceLink → Navigation → Navmesh**. Select walls, props or
+other blocking objects and mark them as **Obstacle**. A `move_to` beat keeps the legacy
+straight line by default; set `path_mode` to `navmesh` to route through connected navigation
+triangles. The compiler distributes ordinary editable location keyframes by path distance
+and forces linear interpolation so curved handles cannot leave the walkable corridor.
+
+Navigation is deliberately explicit. FaceLink does not guess from object names or silently
+treat every mesh as an obstacle. Current v0.3.0 planning is projected onto XY and is intended
+for single-level previs floors; stacked floors, live moving obstacles and crowd routing are
+not yet supported. See [examples/navmesh_walk_shot.json](examples/navmesh_walk_shot.json).
+
 ## Repository map
 
 ```text
@@ -147,9 +164,10 @@ docs/                  Architecture, protocol and development notes
 
 ## Project status
 
-Version 0.2.3 is a creator-review alpha, not yet a production animation system. Character rig
-retargeting, collision-aware path planning, multi-shot sequencing and visual diff overlays
-are intentionally listed as follow-up work rather than hidden behind unreliable prompts.
+Version 0.3.0 is a creator-review alpha, not yet a production animation system. Character rig
+retargeting, multi-level and dynamic-obstacle navigation, multi-shot sequencing and visual
+diff overlays are intentionally listed as follow-up work rather than hidden behind unreliable
+prompts.
 
 Before publishing your fork, replace the placeholder GitHub URLs in `pyproject.toml`, add a
 short screen recording to this README, and enable GitHub's private vulnerability reporting.

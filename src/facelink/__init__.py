@@ -1,7 +1,17 @@
 """FaceLink public API."""
 
 from .compiler import compile_shot, validate_shot
-from .models import ScenePatch, SceneSnapshot, ShotSpec
+from .models import NavigationMesh, ScenePatch, SceneSnapshot, ShotSpec
+from .navigation import navigation_environment_fingerprint, plan_move_path
 
-__all__ = ["ScenePatch", "SceneSnapshot", "ShotSpec", "compile_shot", "validate_shot"]
-__version__ = "0.2.3"
+__all__ = [
+    "NavigationMesh",
+    "ScenePatch",
+    "SceneSnapshot",
+    "ShotSpec",
+    "compile_shot",
+    "navigation_environment_fingerprint",
+    "plan_move_path",
+    "validate_shot",
+]
+__version__ = "0.3.0"

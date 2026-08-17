@@ -391,7 +391,10 @@ def main() -> int:
             ),
             "Interactive viewport clicking and visual quality of camera composition; the GPU "
             "overlay draw callback itself is smoke-tested in a hidden Blender UI.",
-            "Large production rigs, retargeting, collision avoidance and multi-shot editing.",
+            (
+                "Large production rigs, retargeting, multi-level or dynamic-obstacle "
+                "navigation and multi-shot editing."
+            ),
             "Linux and macOS Blender builds; this run covers Windows x64 only.",
         ],
     }

@@ -30,7 +30,7 @@
 - Safe rollback-to that reverses the target and every newer FaceLink revision
 - Explicit separation between persistent metadata and session-only executable snapshots
 
-## v0.2.3 — current preflight-visualization release
+## v0.2.3 — completed preflight-visualization release
 
 - Positive-duration and frame-quantization invariants for motion/action beats
 - Fail-closed internal timeline and FaceLink NLA overlap checks
@@ -38,9 +38,16 @@
 - Non-mutating viewport overlay for staged paths and predicted camera frustums
 - Overlay visibility control and automatic cleanup on apply, discard, file load and unload
 
-## v0.3 — useful intelligence
+## v0.3.0 — current navigation-intelligence release
 
-- Navmesh-aware locomotion paths and collision warnings
+- Explicit Blender UI roles for navmeshes and obstacles
+- Scene Snapshot 1.2 world-space navigation triangles and global navigation fingerprint
+- Deterministic polygon-adjacency A* with distance-timed editable keyframes
+- Swept actor-bounds collision warnings for marked static obstacles
+- Fail-closed topology, disconnected path, outside-mesh and stale-environment checks
+
+## v0.3.x — remaining useful intelligence
+
 - Camera composition evaluator using viewport renders
 - Rig/action inventory plus open retargeting adapters
 - Reusable shot templates and multi-shot sequencing

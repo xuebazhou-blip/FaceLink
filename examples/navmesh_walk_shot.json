@@ -1,0 +1,19 @@
+{
+  "schema_version": "1.0",
+  "title": "Walk around a marked obstacle",
+  "fps": 24,
+  "duration": 4,
+  "beats": [
+    {
+      "type": "move_to",
+      "actor": "replace-with-actor-id",
+      "target_entity": "replace-with-target-id",
+      "at": 0,
+      "duration": 4,
+      "path_mode": "navmesh",
+      "navigation_mesh": "replace-with-navmesh-id",
+      "clearance": 0.1,
+      "easing": "LINEAR"
+    }
+  ]
+}

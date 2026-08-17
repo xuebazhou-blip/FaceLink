@@ -39,8 +39,44 @@ class SceneEntity(StrictModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class NavigationMesh(StrictModel):
+    entity_id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    vertices: list[Vec3] = Field(min_length=3, max_length=20_000)
+    polygons: list[list[int]] = Field(min_length=1, max_length=20_000)
+
+    @model_validator(mode="after")
+    def valid_polygon_indices(self) -> NavigationMesh:
+        vertex_count = len(self.vertices)
+        seen_polygons = set()
+        edge_owners: dict[tuple[int, int], int] = {}
+        for index, polygon in enumerate(self.polygons):
+            if len(polygon) != 3 or len(set(polygon)) != 3:
+                raise ValueError(
+                    f"navigation polygon {index} must contain exactly three unique vertices"
+                )
+            if any(vertex < 0 or vertex >= vertex_count for vertex in polygon):
+                raise ValueError(f"navigation polygon {index} has an invalid vertex index")
+            canonical = tuple(sorted(polygon))
+            if canonical in seen_polygons:
+                raise ValueError(f"navigation polygon {index} duplicates another polygon")
+            seen_polygons.add(canonical)
+            area = 0.0
+            for position, vertex_index in enumerate(polygon):
+                first = self.vertices[vertex_index]
+                second = self.vertices[polygon[(position + 1) % len(polygon)]]
+                area += first.x * second.y - second.x * first.y
+                edge = tuple(sorted((vertex_index, polygon[(position + 1) % len(polygon)])))
+                edge_owners[edge] = edge_owners.get(edge, 0) + 1
+            if abs(area) <= 1e-9:
+                raise ValueError(f"navigation polygon {index} is degenerate in the XY plane")
+        if any(count > 2 for count in edge_owners.values()):
+            raise ValueError("navigation mesh has a non-manifold edge shared by over two polygons")
+        return self
+
+
 class SceneSnapshot(StrictModel):
-    schema_version: Literal["1.0", "1.1"] = "1.1"
+    schema_version: Literal["1.0", "1.1", "1.2"] = "1.2"
     transform_space: Literal["WORLD"] = "WORLD"
     scene_name: str
     fps: float = Field(default=24.0, gt=0)
@@ -48,9 +84,23 @@ class SceneSnapshot(StrictModel):
     frame_end: int = 250
     frame_current: float = 1.0
     entities: list[SceneEntity] = Field(default_factory=list)
+    navigation_meshes: list[NavigationMesh] = Field(default_factory=list, max_length=32)
+    navigation_environment_fingerprint: str | None = None
 
     def by_id(self) -> dict[str, SceneEntity]:
         return {entity.id: entity for entity in self.entities}
+
+    @model_validator(mode="after")
+    def navigation_meshes_reference_scene_entities(self) -> SceneSnapshot:
+        entity_ids = [entity.id for entity in self.entities]
+        if len(set(entity_ids)) != len(entity_ids):
+            raise ValueError("scene entity IDs must be unique")
+        missing = [
+            mesh.entity_id for mesh in self.navigation_meshes if mesh.entity_id not in entity_ids
+        ]
+        if missing:
+            raise ValueError(f"navigation meshes reference missing entities: {missing}")
+        return self
 
 
 class BeatBase(StrictModel):
@@ -65,11 +115,16 @@ class MoveToBeat(BeatBase):
     target_entity: str | None = Field(default=None, min_length=1)
     target_position: Vec3 | None = None
     easing: Literal["LINEAR", "BEZIER", "CONSTANT"] = "BEZIER"
+    path_mode: Literal["direct", "navmesh"] = "direct"
+    navigation_mesh: str | None = Field(default=None, min_length=1)
+    clearance: float = Field(default=0.1, ge=0.0, le=100.0)
 
     @model_validator(mode="after")
     def exactly_one_target(self) -> MoveToBeat:
         if (self.target_entity is None) == (self.target_position is None):
             raise ValueError("move_to requires exactly one target_entity or target_position")
+        if self.path_mode == "direct" and self.navigation_mesh is not None:
+            raise ValueError("navigation_mesh requires path_mode='navmesh'")
         return self
 
 
@@ -152,7 +207,7 @@ class PatchOperation(StrictModel):
 
 
 class ScenePatch(StrictModel):
-    schema_version: Literal["1.0", "1.1"] = "1.1"
+    schema_version: Literal["1.0", "1.1", "1.2"] = "1.2"
     patch_id: str
     source_title: str
     operations: list[PatchOperation]
@@ -160,6 +215,7 @@ class ScenePatch(StrictModel):
     scene_fingerprint: str | None = None
     fingerprint_entities: list[str] = Field(default_factory=list)
     fingerprint_frame: float | None = None
+    navigation_environment_fingerprint: str | None = None
 
 
 class ValidationIssue(StrictModel):
