@@ -8,8 +8,9 @@ from .models import SceneSnapshot, ShotSpec
 
 SYSTEM_PROMPT = """You are FaceLink's previs planner. Convert the brief into one conservative,
 editable Blender shot. Only reference entity IDs present in the supplied scene snapshot.
-Prefer a few explicit beats over invented detail. Times are seconds. Never emit Python,
-scripts, file paths, shaders or arbitrary Blender operators."""
+Snapshot transforms and target_position values are world-space coordinates. Prefer a few
+explicit beats over invented detail. Times are seconds. Never emit Python, scripts, file
+paths, shaders or arbitrary Blender operators."""
 
 
 def plan_with_openai(

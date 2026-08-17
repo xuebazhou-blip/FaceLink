@@ -10,7 +10,7 @@ PROJECT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT / "blender_extension"))
 
 from facelink.executor import apply_patch, clear_revisions, undo_last_patch  # noqa: E402
-from facelink.snapshot import ensure_entity_id, scan_scene  # noqa: E402
+from facelink.snapshot import ensure_entity_id, scan_scene, scene_fingerprint  # noqa: E402
 
 import facelink as blender_addon  # noqa: E402
 from facelink import bridge  # noqa: E402
@@ -32,6 +32,7 @@ def reset_scene():
     scene = bpy.context.scene
     scene.frame_start = 1
     scene.frame_end = 250
+    scene.frame_set(1)
     scene.render.fps = 24
     scene.render.fps_base = 1.0
 
@@ -143,6 +144,9 @@ def test_snapshot_identity_bounds_parent_and_lock():
     assert actor_first["id"] == actor_second["id"]
     assert actor_first["locked"] is True
     assert actor_first["metadata"]["parent"] == ensure_entity_id(parent)
+    assert first["schema_version"] == "1.1"
+    assert first["transform_space"] == "WORLD"
+    assert actor_first["transform"]["location"] == {"x": 11.0, "y": 2.0, "z": 3.0}
     assert actor_first["bounds"]["minimum"]["x"] == 10.0
     assert actor_first["bounds"]["maximum"]["x"] == 12.0
 
@@ -177,6 +181,163 @@ def test_transform_keyframes_interpolation_and_frame_range():
     points = [point for curve in action_fcurves(actor) for point in curve.keyframe_points]
     assert {point.co.x for point in points} == {1.0, 25.0}
     assert all(point.interpolation == "LINEAR" for point in points)
+
+
+def test_world_space_keyframes_convert_through_parent_transform():
+    parent = empty("Moving Parent", (10, 0, 0))
+    parent.rotation_euler.z = 1.5707963267948966
+    parent.scale = (2, 2, 2)
+    actor = cube("World Child", (1, 0, 0))
+    actor.parent = parent
+    actor_id = ensure_entity_id(actor)
+    ensure_entity_id(parent)
+    bpy.context.view_layer.update()
+    original_world = tuple(round(value, 4) for value in actor.matrix_world.translation)
+    assert original_world == (10.0, 2.0, 0.0)
+
+    apply_patch(
+        {
+            "schema_version": "1.1",
+            "patch_id": "world-parent",
+            "source_title": "World parent conversion",
+            "operations": [
+                {
+                    "op": "keyframe_transform",
+                    "entity_id": actor_id,
+                    "payload": {
+                        "space": "WORLD",
+                        "frames": [
+                            {"frame": 1, "location": [10, 2, 0]},
+                            {"frame": 25, "location": [14, 4, 0]},
+                        ],
+                        "interpolation": "LINEAR",
+                    },
+                }
+            ],
+        }
+    )
+    bpy.context.scene.frame_set(25)
+    assert tuple(round(value, 4) for value in actor.matrix_world.translation) == (14.0, 4.0, 0.0)
+    assert tuple(round(value, 4) for value in actor.location) == (2.0, -2.0, 0.0)
+    undo_last_patch()
+    assert tuple(round(value, 4) for value in actor.matrix_world.translation) == original_world
+
+
+def test_world_space_camera_location_converts_through_parent():
+    parent = empty("Camera Parent", (10, 0, 0))
+    parent.rotation_euler.z = 1.5707963267948966
+    parent.scale = (2, 2, 2)
+    data = bpy.data.cameras.new("Parented Camera")
+    camera = bpy.data.objects.new("Parented Camera", data)
+    bpy.context.scene.collection.objects.link(camera)
+    camera.parent = parent
+    ensure_entity_id(parent)
+    ensure_entity_id(camera)
+    bpy.context.view_layer.update()
+    original_world = tuple(round(value, 4) for value in camera.matrix_world.translation)
+    original_lens = camera.data.lens
+
+    apply_patch(
+        operation_patch(
+            {
+                "op": "ensure_camera",
+                "payload": {
+                    "name": "Parented Camera",
+                    "mode": "static",
+                    "space": "WORLD",
+                    "location": {"x": 14, "y": 4, "z": 3},
+                    "lens_mm": 40,
+                },
+            },
+            patch_id="world-camera",
+        )
+    )
+    assert tuple(round(value, 4) for value in camera.matrix_world.translation) == (14.0, 4.0, 3.0)
+    assert camera.data.lens == 40
+    undo_last_patch()
+    assert tuple(round(value, 4) for value in camera.matrix_world.translation) == original_world
+    assert camera.data.lens == original_lens
+
+
+def test_world_space_zero_scale_parent_fails_closed():
+    parent = empty("Zero Parent")
+    parent.scale = (0, 1, 1)
+    actor = cube("Zero Child", (1, 0, 0))
+    actor.parent = parent
+    actor_id = ensure_entity_id(actor)
+    bpy.context.view_layer.update()
+    try:
+        apply_patch(
+            {
+                "schema_version": "1.1",
+                "patch_id": "zero-parent",
+                "source_title": "Impossible conversion",
+                "operations": [
+                    {
+                        "op": "keyframe_transform",
+                        "entity_id": actor_id,
+                        "payload": {
+                            "space": "WORLD",
+                            "frames": [{"frame": 1, "location": [2, 0, 0]}],
+                        },
+                    }
+                ],
+            }
+        )
+    except ValueError as exc:
+        assert "zero-scale parent" in str(exc)
+    else:
+        raise AssertionError("A non-invertible parent transform was accepted")
+    assert actor.animation_data is None
+
+
+def test_scene_fingerprint_rejects_changes_and_keeps_staging():
+    actor = cube("Guarded Actor")
+    actor_id = ensure_entity_id(actor)
+    frame = float(bpy.context.scene.frame_current)
+    fingerprint = scene_fingerprint([actor_id], frame)
+    patch = {
+        "schema_version": "1.1",
+        "patch_id": "guarded",
+        "source_title": "Guarded patch",
+        "scene_fingerprint": fingerprint,
+        "fingerprint_entities": [actor_id],
+        "fingerprint_frame": frame,
+        "operations": [
+            {
+                "op": "keyframe_transform",
+                "entity_id": actor_id,
+                "payload": {
+                    "space": "WORLD",
+                    "frames": [
+                        {"frame": 1, "location": [0, 0, 0]},
+                        {"frame": 25, "location": [3, 0, 0]},
+                    ],
+                },
+            }
+        ],
+    }
+    staged = bridge.stage_patch(patch)
+    assert staged["summary"]["scene_guarded"] is True
+
+    actor.location.x = 1
+    bpy.context.view_layer.update()
+    try:
+        bridge.apply_staged_patch()
+    except ValueError as exc:
+        assert "scene changed" in str(exc).lower()
+    else:
+        raise AssertionError("A stale staged patch was applied")
+    assert bridge.get_staged_patch()["staged"] is True
+    assert actor.animation_data is None
+
+    actor.location.x = 0
+    bpy.context.view_layer.update()
+    bpy.context.scene.frame_set(12)
+    receipt = bridge.apply_staged_patch()
+    assert receipt["receipt"]["patch_id"] == "guarded"
+    assert bridge.get_staged_patch()["staged"] is False
+    assert bpy.context.scene.frame_current == 12
 
 
 def test_look_at_and_camera_are_idempotent():
@@ -432,6 +593,10 @@ CASES = [
         "transform_keyframes_interpolation_frame_range",
         test_transform_keyframes_interpolation_and_frame_range,
     ),
+    ("world_space_parent_conversion", test_world_space_keyframes_convert_through_parent_transform),
+    ("world_space_parented_camera", test_world_space_camera_location_converts_through_parent),
+    ("world_space_zero_parent_fail_closed", test_world_space_zero_scale_parent_fails_closed),
+    ("scene_fingerprint_stale_guard", test_scene_fingerprint_rejects_changes_and_keeps_staging),
     ("look_at_camera_idempotency", test_look_at_and_camera_are_idempotent),
     ("dolly_camera_keyframes", test_dolly_camera_creates_editable_keyframes),
     ("play_clip_nla_idempotency", test_play_clip_creates_one_reusable_nla_strip),

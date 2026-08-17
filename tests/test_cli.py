@@ -119,6 +119,8 @@ def test_cli_workflow_scans_plans_and_stages_without_applying(
             if job_type == "scan_scene":
                 return scene_snapshot.model_dump(mode="json")
             assert job_type == "stage_patch"
+            assert payload["patch"]["schema_version"] == "1.1"
+            assert payload["patch"]["scene_fingerprint"].startswith("scene-")
             return {
                 "staged": True,
                 "summary": {"patch_id": payload["patch"]["patch_id"]},

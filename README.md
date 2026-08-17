@@ -14,10 +14,13 @@ the scene only after the artist presses **Apply Staged Patch**.
 - scans the open Blender scene and gives objects stable FaceLink IDs;
 - compiles `move_to`, `turn_to`, `look_at`, `wait` and `play_clip` beats;
 - creates/updates editable transforms, keyframes, cameras and tracking constraints;
+- plans transforms in world space and converts them for parented Blender objects;
 - exposes the workflow through an MCP server for Codex/ChatGPT-compatible MCP clients;
 - supports OpenAI API-key planning with Structured Outputs;
 - runs a localhost-only authenticated bridge between the MCP process and Blender;
 - supports Blender-side stage/review/apply/discard and an in-memory revision undo stack.
+- rejects a staged plan when a referenced transform, parent link, lock or scene timing value
+  changed after the scene scan.
 
 ## Supported Blender versions
 
@@ -55,7 +58,7 @@ $env:FACELINK_BLENDER_EXE='C:\path\to\Blender\blender.exe' # optional if on PATH
 ```
 
 Then in Blender 4.5: **Edit → Preferences → Get Extensions → Install from Disk**, choose
-`dist/facelink-0.2.0.zip`, enable FaceLink, and open the **FaceLink** tab in the 3D Viewport
+`dist/facelink-0.2.1.zip`, enable FaceLink, and open the **FaceLink** tab in the 3D Viewport
 sidebar. Press **Start Bridge**.
 
 Run the MCP server:
@@ -128,7 +131,7 @@ docs/                  Architecture, protocol and development notes
 
 ## Project status
 
-Version 0.2 is a creator-review alpha, not yet a production animation system. Character rig
+Version 0.2.1 is a creator-review alpha, not yet a production animation system. Character rig
 retargeting, collision-aware path planning, multi-shot sequencing and visual diff overlays
 are intentionally listed as follow-up work rather than hidden behind unreliable prompts.
 

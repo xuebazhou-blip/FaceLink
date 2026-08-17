@@ -30,10 +30,12 @@ human-readable summary.
 - All Python tests must pass with at least 85% line/branch-aware aggregate coverage.
 - The extension must build and validate on every supplied Blender version.
 - Source-level Blender acceptance must pass: registration, stable identity, bounds, locks,
-  transform keyframes, interpolation, frame rate, constraints, cameras, NLA clips,
-  idempotency, fail-closed behavior and transaction rollback.
+  world/local parent conversion, stale-scene rejection, transform keyframes, interpolation,
+  frame rate, constraints, cameras, NLA clips, idempotency, fail-closed behavior and
+  transaction rollback.
 - Bridge acceptance must pass: localhost binding, bearer authentication, malformed requests,
-  concurrent jobs, main-thread dispatch, failed-job reporting, Undo and discovery cleanup.
+  concurrent jobs, protocol 1.1 fingerprint agreement, main-thread dispatch, failed-job
+  reporting, Undo and discovery cleanup.
 - The built ZIP must install, enable and load from each Blender version's isolated portable
   extension repository.
 
@@ -47,4 +49,3 @@ The harness deliberately reports live provider calls, visual composition quality
 production rigs and non-Windows platforms as unverified. Passing acceptance means the
 implemented editing/control surface behaves as specified; it does not mean FaceLink already
 solves motion generation, rig retargeting or cinematic judgment.
-

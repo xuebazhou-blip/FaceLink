@@ -41,7 +41,7 @@ try {
     }
     & (Join-Path $PSScriptRoot 'build_extension.ps1') -BlenderExe $blender
     if ($LASTEXITCODE -ne 0) { throw "Extension build failed with exit code $LASTEXITCODE" }
-    & $blender --command extension validate (Join-Path $projectRoot 'dist\facelink-0.2.0.zip')
+    & $blender --command extension validate (Join-Path $projectRoot 'dist\facelink-0.2.1.zip')
     if ($LASTEXITCODE -ne 0) { throw "Extension validation failed with exit code $LASTEXITCODE" }
 } finally {
     Pop-Location

@@ -89,4 +89,6 @@ async def test_stdio_server_validates_and_previews_without_blender():
     assert validation.structured_content["valid"] is True
     assert not preview.is_error
     assert preview.structured_content["operations"][1]["op"] == "keyframe_transform"
+    assert preview.structured_content["operations"][1]["payload"]["space"] == "WORLD"
+    assert preview.structured_content["scene_fingerprint"].startswith("scene-")
     assert invalid.is_error

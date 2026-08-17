@@ -43,6 +43,8 @@ class FACELINK_PT_main(Panel):
         else:
             summary = staged["summary"]
             review.label(text=summary["source_title"][:64])
+            if summary.get("scene_guarded"):
+                review.label(text="Scene consistency check enabled", icon="LOCKED")
             review.label(text=f"Operations: {summary['operation_count']}")
             names = ", ".join(item["name"] for item in summary["affected_entities"])
             if names:

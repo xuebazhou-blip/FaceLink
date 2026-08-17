@@ -39,6 +39,11 @@ patch, Blender displays its operation count, affected objects, frame span and wa
 only an explicit apply action mutates the scene. This review gate is provider-independent,
 so an MCP client can use its existing model subscription while BYOK users use the CLI.
 
+Protocol 1.1 adds optimistic scene consistency. The compiler fingerprints scene timing and
+the world-space state of only the objects referenced by a patch. Blender checks that value
+both when staging and when applying, so an intervening transform, parent, lock or timing edit
+cannot be silently overwritten. Unrelated scene edits do not invalidate the patch.
+
 ## Why three layers
 
 1. **Core Python package** owns schemas, validation and deterministic compilation. It is
@@ -56,8 +61,9 @@ versions are explicit so clients can negotiate future changes.
 
 ## Known MVP constraints
 
-- Entity transform animation is local-space. Parented rigs need a future world/local-space
-  conversion layer.
+- Object and camera locations are planned in world space and converted to editable local
+  channels. Rotation or scale under sheared/non-uniform parent chains still needs a future
+  full-matrix solver; armature pose bones are not yet part of this object transform path.
 - `play_clip` requires an existing Blender Action with a matching name; motion generation
   and retargeting are out of scope for v0.1.
 - Motion paths are straight-line keyframe interpolation, not navigation-mesh or

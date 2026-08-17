@@ -42,8 +42,11 @@
   "additionalProperties": false,
   "properties": {
     "schema_version": {
-      "const": "1.0",
-      "default": "1.0",
+      "default": "1.1",
+      "enum": [
+        "1.0",
+        "1.1"
+      ],
       "title": "Schema Version",
       "type": "string"
     },
@@ -68,6 +71,37 @@
       },
       "title": "Warnings",
       "type": "array"
+    },
+    "scene_fingerprint": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Scene Fingerprint"
+    },
+    "fingerprint_entities": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Fingerprint Entities",
+      "type": "array"
+    },
+    "fingerprint_frame": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Fingerprint Frame"
     }
   },
   "required": [

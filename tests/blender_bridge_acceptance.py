@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import sys
@@ -64,6 +65,41 @@ def submit(base_url, token, job_type, payload=None):
     )["job_id"]
 
 
+def fingerprint_snapshot(snapshot, entity_ids):
+    def number(value):
+        rounded = round(float(value), 6)
+        return 0.0 if rounded == 0.0 else rounded
+
+    entities = {item["id"]: item for item in snapshot["entities"]}
+    selected = []
+    for entity_id in sorted(set(entity_ids)):
+        entity = entities[entity_id]
+        transform = entity["transform"]
+        selected.append(
+            {
+                "id": entity_id,
+                "type": entity["type"],
+                "location": [number(transform["location"][axis]) for axis in "xyz"],
+                "rotation_euler": [
+                    number(transform["rotation_euler"][axis]) for axis in "xyz"
+                ],
+                "scale": [number(transform["scale"][axis]) for axis in "xyz"],
+                "locked": entity["locked"],
+                "parent": entity["metadata"]["parent"],
+            }
+        )
+    canonical = {
+        "scene_name": snapshot["scene_name"],
+        "fps": number(snapshot["fps"]),
+        "frame_start": snapshot["frame_start"],
+        "frame_end": snapshot["frame_end"],
+        "frame_current": number(snapshot["frame_current"]),
+        "entities": selected,
+    }
+    encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return "scene-" + hashlib.sha256(encoded).hexdigest()[:24]
+
+
 def client_flow(result_box):
     try:
         record_path = Path(bridge.Runtime.instance_file)
@@ -101,10 +137,14 @@ def client_flow(result_box):
         snapshot = scans[0]["result"]
         actor = next(item for item in snapshot["entities"] if item["name"] == "Bridge Actor")
 
+        fingerprint_entities = [actor["id"]]
         patch = {
-            "schema_version": "1.0",
+            "schema_version": "1.1",
             "patch_id": "bridge-acceptance",
             "source_title": "Bridge acceptance",
+            "scene_fingerprint": fingerprint_snapshot(snapshot, fingerprint_entities),
+            "fingerprint_entities": fingerprint_entities,
+            "fingerprint_frame": snapshot["frame_current"],
             "operations": [
                 {
                     "op": "keyframe_transform",
@@ -115,6 +155,7 @@ def client_flow(result_box):
                             {"frame": 13, "location": [1, 2, 0]},
                         ],
                         "interpolation": "LINEAR",
+                        "space": "WORLD",
                     },
                 }
             ],

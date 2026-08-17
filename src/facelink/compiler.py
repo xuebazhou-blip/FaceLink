@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 
+from .fingerprint import fingerprint_snapshot
 from .models import (
     LookAtBeat,
     MoveToBeat,
@@ -139,6 +140,7 @@ def compile_shot(shot: ShotSpec, snapshot: SceneSnapshot) -> ScenePatch:
         entity_id: entity.transform.rotation_euler.model_copy(deep=True)
         for entity_id, entity in entities.items()
     }
+    fingerprint_entities: set[str] = set()
     operations: list[PatchOperation] = [
         PatchOperation(
             op="set_frame_range",
@@ -155,6 +157,9 @@ def compile_shot(shot: ShotSpec, snapshot: SceneSnapshot) -> ScenePatch:
         start = _frame(beat.at, shot.fps, snapshot.frame_start)
         end = _frame(beat.at + beat.duration, shot.fps, snapshot.frame_start)
         if isinstance(beat, MoveToBeat):
+            fingerprint_entities.add(beat.actor)
+            if beat.target_entity:
+                fingerprint_entities.add(beat.target_entity)
             origin = current_locations[beat.actor]
             target = _target_position(
                 beat.target_entity,
@@ -172,11 +177,15 @@ def compile_shot(shot: ShotSpec, snapshot: SceneSnapshot) -> ScenePatch:
                             {"frame": end, "location": target.as_list()},
                         ],
                         "interpolation": beat.easing,
+                        "space": "WORLD",
                     },
                 )
             )
             current_locations[beat.actor] = target.model_copy(deep=True)
         elif isinstance(beat, TurnToBeat):
+            fingerprint_entities.add(beat.actor)
+            if beat.target_entity:
+                fingerprint_entities.add(beat.target_entity)
             target = _target_position(
                 beat.target_entity,
                 beat.target_position,
@@ -197,6 +206,7 @@ def compile_shot(shot: ShotSpec, snapshot: SceneSnapshot) -> ScenePatch:
                             {"frame": end, "rotation_euler": end_rotation},
                         ],
                         "interpolation": beat.easing,
+                        "space": "WORLD",
                     },
                 )
             )
@@ -204,6 +214,7 @@ def compile_shot(shot: ShotSpec, snapshot: SceneSnapshot) -> ScenePatch:
                 x=end_rotation[0], y=end_rotation[1], z=end_rotation[2]
             )
         elif isinstance(beat, LookAtBeat):
+            fingerprint_entities.update((beat.actor, beat.target))
             operations.append(
                 PatchOperation(
                     op="look_at",
@@ -212,6 +223,7 @@ def compile_shot(shot: ShotSpec, snapshot: SceneSnapshot) -> ScenePatch:
                 )
             )
         elif isinstance(beat, PlayClipBeat):
+            fingerprint_entities.add(beat.actor)
             operations.append(
                 PatchOperation(
                     op="play_clip",
@@ -226,15 +238,28 @@ def compile_shot(shot: ShotSpec, snapshot: SceneSnapshot) -> ScenePatch:
             )
 
     if shot.camera:
+        if shot.camera.target:
+            fingerprint_entities.add(shot.camera.target)
+        existing_camera = next(
+            (entity for entity in entities.values() if entity.name == shot.camera.name), None
+        )
+        if existing_camera:
+            fingerprint_entities.add(existing_camera.id)
         payload = shot.camera.model_dump(exclude_none=True)
+        payload["space"] = "WORLD"
         payload["frame_start"] = snapshot.frame_start
         payload["frame_end"] = _frame(shot.duration, shot.fps, snapshot.frame_start)
         operations.append(PatchOperation(op="ensure_camera", payload=payload))
 
+    fingerprint_ids = sorted(fingerprint_entities)
+    scene_fingerprint = fingerprint_snapshot(snapshot, fingerprint_ids)
     canonical = json.dumps(
         {
             "shot": shot.model_dump(mode="json", exclude_none=True),
             "operations": [operation.model_dump(mode="json") for operation in operations],
+            "scene_fingerprint": scene_fingerprint,
+            "fingerprint_entities": fingerprint_ids,
+            "fingerprint_frame": snapshot.frame_current,
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -247,4 +272,7 @@ def compile_shot(shot: ShotSpec, snapshot: SceneSnapshot) -> ScenePatch:
         source_title=shot.title,
         operations=operations,
         warnings=warnings,
+        scene_fingerprint=scene_fingerprint,
+        fingerprint_entities=fingerprint_ids,
+        fingerprint_frame=snapshot.frame_current,
     )

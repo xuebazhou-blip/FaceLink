@@ -40,11 +40,13 @@ class SceneEntity(StrictModel):
 
 
 class SceneSnapshot(StrictModel):
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["1.0", "1.1"] = "1.1"
+    transform_space: Literal["WORLD"] = "WORLD"
     scene_name: str
     fps: float = Field(default=24.0, gt=0)
     frame_start: int = 1
     frame_end: int = 250
+    frame_current: float = 1.0
     entities: list[SceneEntity] = Field(default_factory=list)
 
     def by_id(self) -> dict[str, SceneEntity]:
@@ -140,11 +142,14 @@ class PatchOperation(StrictModel):
 
 
 class ScenePatch(StrictModel):
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["1.0", "1.1"] = "1.1"
     patch_id: str
     source_title: str
     operations: list[PatchOperation]
     warnings: list[str] = Field(default_factory=list)
+    scene_fingerprint: str | None = None
+    fingerprint_entities: list[str] = Field(default_factory=list)
+    fingerprint_frame: float | None = None
 
 
 class ValidationIssue(StrictModel):

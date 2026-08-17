@@ -5,7 +5,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from facelink.compiler import compile_shot, validate_shot
-from facelink.models import ShotSpec
+from facelink.models import SceneSnapshot, ShotSpec
 
 
 def test_compile_move_is_deterministic(scene_snapshot):
@@ -27,6 +27,11 @@ def test_compile_move_is_deterministic(scene_snapshot):
     first = compile_shot(shot, scene_snapshot)
     second = compile_shot(shot, scene_snapshot)
     assert first.patch_id == second.patch_id
+    assert first.schema_version == "1.1"
+    assert first.scene_fingerprint.startswith("scene-")
+    assert first.fingerprint_entities == ["actor", "marker"]
+    assert first.fingerprint_frame == scene_snapshot.frame_current
+    assert first.operations[1].payload["space"] == "WORLD"
     assert first.operations[1].payload["frames"][1] == {
         "frame": 49,
         "location": [4.0, 2.0, 0.0],
@@ -107,6 +112,7 @@ def test_all_supported_beats_and_camera_compile(scene_snapshot):
     assert turn_end["frame"] == 49
     assert turn_end["rotation_euler"][2] == pytest.approx(math.atan2(-3, 0))
     assert patch.operations[-1].payload["mode"] == "follow"
+    assert patch.operations[-1].payload["space"] == "WORLD"
 
 
 def test_sequential_moves_start_from_previous_destination(scene_snapshot):
@@ -182,6 +188,42 @@ def test_patch_id_changes_when_compiled_scene_state_changes(scene_snapshot):
     assert (
         compile_shot(shot, scene_snapshot).patch_id != compile_shot(shot, moved_snapshot).patch_id
     )
+
+
+def test_scene_fingerprint_is_scoped_to_referenced_entities(scene_snapshot):
+    shot = ShotSpec.model_validate(
+        {
+            "duration": 2,
+            "beats": [
+                {
+                    "type": "move_to",
+                    "actor": "actor",
+                    "target_position": {"x": 2},
+                    "duration": 1,
+                }
+            ],
+        }
+    )
+    extended_payload = scene_snapshot.model_dump(mode="json")
+    extended_payload["entities"].append(
+        {
+            "id": "unrelated",
+            "name": "Unrelated",
+            "type": "MESH",
+            "transform": {
+                "location": {"x": 10, "y": 0, "z": 0},
+                "rotation_euler": {"x": 0, "y": 0, "z": 0},
+                "scale": {"x": 1, "y": 1, "z": 1},
+            },
+        }
+    )
+    extended = SceneSnapshot.model_validate(extended_payload)
+    moved_unrelated = extended.model_copy(deep=True)
+    moved_unrelated.entities[-1].transform.location.x = 999
+    first = compile_shot(shot, extended)
+    second = compile_shot(shot, moved_unrelated)
+    assert first.scene_fingerprint == second.scene_fingerprint
+    assert first.patch_id == second.patch_id
 
 
 def test_validation_reports_all_high_value_failures(scene_snapshot):

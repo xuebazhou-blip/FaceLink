@@ -110,9 +110,18 @@
   "additionalProperties": false,
   "properties": {
     "schema_version": {
-      "const": "1.0",
-      "default": "1.0",
+      "default": "1.1",
+      "enum": [
+        "1.0",
+        "1.1"
+      ],
       "title": "Schema Version",
+      "type": "string"
+    },
+    "transform_space": {
+      "const": "WORLD",
+      "default": "WORLD",
+      "title": "Transform Space",
       "type": "string"
     },
     "scene_name": {
@@ -134,6 +143,11 @@
       "default": 250,
       "title": "Frame End",
       "type": "integer"
+    },
+    "frame_current": {
+      "default": 1.0,
+      "title": "Frame Current",
+      "type": "number"
     },
     "entities": {
       "items": {

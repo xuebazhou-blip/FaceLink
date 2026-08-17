@@ -1,7 +1,7 @@
 import bpy
-from mathutils import Vector
+from mathutils import Euler, Matrix, Vector
 
-from .snapshot import ensure_entity_id, object_by_id
+from .snapshot import ensure_entity_id, object_by_id, scene_fingerprint
 
 ALLOWED_OPERATIONS = {
     "keyframe_transform",
@@ -70,6 +70,8 @@ def _preflight_operations(operations):
             frames = payload.get("frames")
             if not isinstance(frames, list) or not frames:
                 raise ValueError("keyframe_transform requires at least one frame")
+            if payload.get("space", "LOCAL") not in {"LOCAL", "WORLD"}:
+                raise ValueError("Transform space must be LOCAL or WORLD")
             if payload.get("interpolation", "BEZIER") not in INTERPOLATIONS:
                 raise ValueError("Unsupported keyframe interpolation")
             for item in frames:
@@ -104,13 +106,15 @@ def _preflight_operations(operations):
             lens = float(payload.get("lens_mm", 50.0))
             if lens < 1.0 or lens > 300.0:
                 raise ValueError("Camera lens must be between 1 and 300 mm")
+            if payload.get("space", "LOCAL") not in {"LOCAL", "WORLD"}:
+                raise ValueError("Camera space must be LOCAL or WORLD")
 
 
 def validate_patch(patch):
     """Validate a patch against the current scene without changing scene content."""
     if not isinstance(patch, dict):
         raise ValueError("Patch must be an object")
-    if patch.get("schema_version") != "1.0":
+    if patch.get("schema_version") not in {"1.0", "1.1"}:
         raise ValueError("Unsupported patch schema_version")
     operations = patch.get("operations")
     if not isinstance(operations, list):
@@ -125,6 +129,27 @@ def validate_patch(patch):
     warnings = patch.get("warnings", [])
     if not isinstance(warnings, list) or not all(isinstance(item, str) for item in warnings):
         raise ValueError("Patch warnings must be a list of strings")
+    expected_fingerprint = patch.get("scene_fingerprint")
+    fingerprint_entities = patch.get("fingerprint_entities", [])
+    fingerprint_frame = patch.get("fingerprint_frame")
+    if expected_fingerprint is not None:
+        if not isinstance(expected_fingerprint, str) or not expected_fingerprint.startswith(
+            "scene-"
+        ):
+            raise ValueError("Patch scene_fingerprint is invalid")
+        if not isinstance(fingerprint_entities, list) or not all(
+            isinstance(item, str) for item in fingerprint_entities
+        ):
+            raise ValueError("Patch fingerprint_entities must be a list of strings")
+        if fingerprint_frame is None:
+            raise ValueError("A guarded patch requires fingerprint_frame")
+        actual_fingerprint = scene_fingerprint(fingerprint_entities, fingerprint_frame)
+        if actual_fingerprint != expected_fingerprint:
+            raise ValueError(
+                "The Blender scene changed after this patch was planned; scan and plan again"
+            )
+    elif fingerprint_entities or fingerprint_frame is not None:
+        raise ValueError("Patch fingerprint metadata is incomplete")
     unknown = {item.get("op") for item in operations} - ALLOWED_OPERATIONS
     if unknown:
         raise ValueError(f"Patch contains unsupported operations: {sorted(unknown)}")
@@ -181,6 +206,7 @@ def summarize_patch(patch):
         "frame_start": min(frames) if frames else None,
         "frame_end": max(frames) if frames else None,
         "warnings": [str(item) for item in patch.get("warnings", [])],
+        "scene_guarded": patch.get("scene_fingerprint") is not None,
     }
 
 
@@ -227,6 +253,7 @@ def _capture_object(obj):
         "rotation_euler": list(obj.rotation_euler),
         "rotation_mode": obj.rotation_mode,
         "scale": list(obj.scale),
+        "camera_lens": float(obj.data.lens) if obj.type == "CAMERA" else None,
         "had_animation_data": animation is not None,
         "action": animation.action if animation else None,
         "nla": _capture_nla(obj),
@@ -331,6 +358,8 @@ def _restore_object(state):
     obj.rotation_mode = state["rotation_mode"]
     obj.rotation_euler = state["rotation_euler"]
     obj.scale = state["scale"]
+    if state["camera_lens"] is not None:
+        obj.data.lens = state["camera_lens"]
     current_action = obj.animation_data.action if obj.animation_data else None
     if state["had_animation_data"]:
         obj.animation_data_create().action = state["action"]
@@ -393,22 +422,73 @@ def _set_interpolation(obj, frames, interpolation):
                 point.interpolation = interpolation
 
 
+def _parent_space_matrix(obj):
+    if obj.parent:
+        return obj.parent.matrix_world @ obj.matrix_parent_inverse
+    return Matrix.Identity(4)
+
+
+def _set_world_location(obj, location):
+    parent_space = _parent_space_matrix(obj)
+    if abs(parent_space.determinant()) < 1e-12:
+        raise ValueError("Cannot convert world transform through a zero-scale parent")
+    obj.location = parent_space.inverted() @ Vector(location)
+    bpy.context.view_layer.update()
+
+
 def _keyframe_transform(entity_id, payload):
     obj = object_by_id(entity_id)
     _assert_editable(obj)
     frames = payload.get("frames", [])
-    for item in frames:
-        frame = int(item["frame"])
-        if "location" in item:
-            obj.location = item["location"]
-            obj.keyframe_insert(data_path="location", frame=frame, group="FaceLink")
-        if "rotation_euler" in item:
-            obj.rotation_mode = "XYZ"
-            obj.rotation_euler = item["rotation_euler"]
-            obj.keyframe_insert(data_path="rotation_euler", frame=frame, group="FaceLink")
-        if "scale" in item:
-            obj.scale = item["scale"]
-            obj.keyframe_insert(data_path="scale", frame=frame, group="FaceLink")
+    space = payload.get("space", "LOCAL")
+    if space not in {"LOCAL", "WORLD"}:
+        raise ValueError("Transform space must be LOCAL or WORLD")
+    scene = bpy.context.scene
+    original_frame = scene.frame_current
+    original_subframe = scene.frame_subframe
+    try:
+        for item in frames:
+            frame = int(item["frame"])
+            if space == "WORLD":
+                scene.frame_set(frame)
+                parent_space = _parent_space_matrix(obj)
+                if abs(parent_space.determinant()) < 1e-12:
+                    raise ValueError("Cannot convert world transform through a zero-scale parent")
+                if "location" in item:
+                    _set_world_location(obj, item["location"])
+                if "rotation_euler" in item:
+                    parent_rotation = parent_space.to_quaternion()
+                    desired_rotation = Euler(item["rotation_euler"], "XYZ").to_quaternion()
+                    obj.rotation_mode = "XYZ"
+                    obj.rotation_euler = (parent_rotation.inverted() @ desired_rotation).to_euler(
+                        "XYZ"
+                    )
+                if "scale" in item:
+                    parent_scale = parent_space.to_scale()
+                    if any(abs(value) < 1e-8 for value in parent_scale):
+                        raise ValueError("Cannot convert world scale through a zero-scale parent")
+                    obj.scale = [
+                        float(item["scale"][index]) / float(parent_scale[index])
+                        for index in range(3)
+                    ]
+            else:
+                if "location" in item:
+                    obj.location = item["location"]
+                if "rotation_euler" in item:
+                    obj.rotation_mode = "XYZ"
+                    obj.rotation_euler = item["rotation_euler"]
+                if "scale" in item:
+                    obj.scale = item["scale"]
+            if "location" in item:
+                obj.keyframe_insert(data_path="location", frame=frame, group="FaceLink")
+            if "rotation_euler" in item:
+                obj.keyframe_insert(data_path="rotation_euler", frame=frame, group="FaceLink")
+            if "scale" in item:
+                obj.keyframe_insert(data_path="scale", frame=frame, group="FaceLink")
+    finally:
+        if space == "WORLD":
+            scene.frame_set(original_frame, subframe=original_subframe)
+            bpy.context.view_layer.update()
     _set_interpolation(obj, frames, payload.get("interpolation", "BEZIER"))
     return obj
 
@@ -471,15 +551,25 @@ def _ensure_camera(payload):
     ensure_entity_id(camera)
     camera.data.lens = float(payload.get("lens_mm", 50.0))
     target = object_by_id(payload["target"]) if payload.get("target") else None
+    space = payload.get("space", "LOCAL")
     if payload.get("location"):
         location = payload["location"]
-        camera.location = [location[axis] for axis in ("x", "y", "z")]
+        values = [location[axis] for axis in ("x", "y", "z")]
+        if space == "WORLD":
+            _set_world_location(camera, values)
+        else:
+            camera.location = values
     elif target:
-        camera.location = [
-            target.location.x,
-            target.location.y - float(payload.get("distance", 6.0)),
-            target.location.z + float(payload.get("height", 2.0)),
+        target_location = target.matrix_world.translation if space == "WORLD" else target.location
+        location = [
+            target_location.x,
+            target_location.y - float(payload.get("distance", 6.0)),
+            target_location.z + float(payload.get("height", 2.0)),
         ]
+        if space == "WORLD":
+            _set_world_location(camera, location)
+        else:
+            camera.location = location
     if target and payload.get("mode") in {"look_at", "follow", "dolly_in"}:
         _camera_target(camera, target)
     if target and payload.get("mode") == "follow":
@@ -493,11 +583,20 @@ def _ensure_camera(payload):
         start = int(payload["frame_start"])
         end = int(payload["frame_end"])
         camera.keyframe_insert(data_path="location", frame=start, group="FaceLink")
-        direction = Vector(target.location) - camera.location
+        if space == "WORLD":
+            camera_location = camera.matrix_world.translation.copy()
+            direction = target.matrix_world.translation - camera_location
+        else:
+            camera_location = camera.location.copy()
+            direction = Vector(target.location) - camera_location
         if direction.length > 0.001:
-            camera.location += direction.normalized() * min(
+            destination = camera_location + direction.normalized() * min(
                 direction.length * 0.5, float(payload.get("distance", 6.0)) * 0.5
             )
+            if space == "WORLD":
+                _set_world_location(camera, destination)
+            else:
+                camera.location = destination
         camera.keyframe_insert(data_path="location", frame=end, group="FaceLink")
     bpy.context.scene.camera = camera
     return camera
