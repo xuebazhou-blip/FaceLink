@@ -58,8 +58,34 @@ def preview_shot(shot_spec: ShotSpec, scene_snapshot: SceneSnapshot) -> dict[str
 
 
 @mcp.tool()
+def stage_scene_patch(patch: ScenePatch, instance_id: str | None = None) -> dict[str, Any]:
+    """Stage a patch in Blender for visible human review without changing the scene."""
+    return BridgeClient(select_instance(instance_id)).run_job(
+        "stage_patch", {"patch": patch.model_dump(mode="json")}
+    )
+
+
+@mcp.tool()
+def get_staged_patch(instance_id: str | None = None) -> dict[str, Any]:
+    """Read the patch and artist-facing summary currently waiting for approval."""
+    return BridgeClient(select_instance(instance_id)).run_job("get_staged_patch")
+
+
+@mcp.tool()
+def apply_staged_patch(instance_id: str | None = None) -> dict[str, Any]:
+    """Apply the patch that a human has reviewed in Blender."""
+    return BridgeClient(select_instance(instance_id)).run_job("apply_staged_patch")
+
+
+@mcp.tool()
+def discard_staged_patch(instance_id: str | None = None) -> dict[str, Any]:
+    """Discard the staged patch without changing Blender."""
+    return BridgeClient(select_instance(instance_id)).run_job("discard_staged_patch")
+
+
+@mcp.tool()
 def apply_scene_patch(patch: ScenePatch, instance_id: str | None = None) -> dict[str, Any]:
-    """Apply a previously previewed, white-listed patch to Blender."""
+    """Power-user escape hatch: apply a white-listed patch without Blender review staging."""
     return BridgeClient(select_instance(instance_id)).run_job(
         "apply_patch", {"patch": patch.model_dump(mode="json")}
     )

@@ -90,3 +90,62 @@ def test_cli_plan_uses_provider_and_writes_shot(monkeypatch, tmp_path, scene_sna
     )
     cli.main()
     assert json.loads(output_path.read_text(encoding="utf-8"))["title"] == "Planned"
+
+
+def test_cli_workflow_scans_plans_and_stages_without_applying(
+    monkeypatch, tmp_path, scene_snapshot
+):
+    output_path = tmp_path / "workflow.json"
+    planned = ShotSpec(
+        title="Review me",
+        duration=1,
+        beats=[
+            {
+                "type": "move_to",
+                "actor": "actor",
+                "target_entity": "marker",
+                "duration": 1,
+            }
+        ],
+    )
+    calls = []
+
+    class FakeClient:
+        def __init__(self, instance):
+            assert instance.instance_id == "blender-7"
+
+        def run_job(self, job_type, payload=None):
+            calls.append((job_type, payload))
+            if job_type == "scan_scene":
+                return scene_snapshot.model_dump(mode="json")
+            assert job_type == "stage_patch"
+            return {
+                "staged": True,
+                "summary": {"patch_id": payload["patch"]["patch_id"]},
+            }
+
+    monkeypatch.setattr(
+        cli, "select_instance", lambda _instance_id: SimpleNamespace(instance_id="blender-7")
+    )
+    monkeypatch.setattr(cli, "BridgeClient", FakeClient)
+    monkeypatch.setattr(cli, "plan_with_openai", lambda *args, **kwargs: planned)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "facelink",
+            "workflow",
+            "--brief",
+            "Actor moves to Marker",
+            "--out",
+            str(output_path),
+        ],
+    )
+
+    cli.main()
+
+    result = json.loads(output_path.read_text(encoding="utf-8"))
+    assert [call[0] for call in calls] == ["scan_scene", "stage_patch"]
+    assert result["review"]["staged"] is True
+    assert result["patch"]["operations"][1]["op"] == "keyframe_transform"
+    assert "Apply or Discard" in result["next_step"]

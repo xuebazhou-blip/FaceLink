@@ -6,8 +6,8 @@ objects with ordinary keyframes, so artists can drag, retime and override the re
 
 FaceLink is not a text-to-video generator and does not give an LLM unrestricted Python
 execution. The model produces a typed `ShotSpec`; FaceLink validates it, compiles it into a
-small whitelist of patch operations, previews the changes, then lets Blender apply them on
-its main thread.
+small whitelist of patch operations, stages a human-readable review in Blender, and changes
+the scene only after the artist presses **Apply Staged Patch**.
 
 ## Current MVP
 
@@ -17,7 +17,7 @@ its main thread.
 - exposes the workflow through an MCP server for Codex/ChatGPT-compatible MCP clients;
 - supports OpenAI API-key planning with Structured Outputs;
 - runs a localhost-only authenticated bridge between the MCP process and Blender;
-- supports preview-before-apply and an in-memory FaceLink revision undo stack.
+- supports Blender-side stage/review/apply/discard and an in-memory revision undo stack.
 
 ## Supported Blender versions
 
@@ -55,7 +55,7 @@ $env:FACELINK_BLENDER_EXE='C:\path\to\Blender\blender.exe' # optional if on PATH
 ```
 
 Then in Blender 4.5: **Edit → Preferences → Get Extensions → Install from Disk**, choose
-`dist/facelink-0.1.0.zip`, enable FaceLink, and open the **FaceLink** tab in the 3D Viewport
+`dist/facelink-0.2.0.zip`, enable FaceLink, and open the **FaceLink** tab in the 3D Viewport
 sidebar. Press **Start Bridge**.
 
 Run the MCP server:
@@ -82,6 +82,16 @@ Example MCP configuration:
 The same `FACELINK_INSTANCE_DIR` must be set before launching Blender. If it is omitted,
 FaceLink uses the current user's temporary directory.
 
+With an MCP client, the safe default sequence is:
+
+1. `scan_scene`
+2. turn the user's natural-language request into a typed shot and call `preview_shot`
+3. call `stage_scene_patch`
+4. let the user inspect the summary in Blender and press **Apply Staged Patch** or **Discard**
+
+This path uses the model already available in the MCP client; FaceLink itself needs no API
+key. `apply_scene_patch` remains available as an explicit power-user bypass.
+
 ## BYOK planning
 
 ```powershell
@@ -89,6 +99,16 @@ $env:OPENAI_API_KEY='your-key'
 uv run facelink plan --brief "Cube walks to Marker in 2 seconds, camera follows Cube" `
   --snapshot scene.json --out shot.json
 ```
+
+Or scan the running Blender scene, plan, compile and stage the result in one command:
+
+```powershell
+$env:OPENAI_API_KEY='your-key'
+uv run facelink workflow `
+  --brief "Cube walks to Marker in 2 seconds, camera follows Cube"
+```
+
+The command does not apply anything. Review and approve the staged result in Blender.
 
 An API key is optional when an MCP client performs the language-model planning itself.
 ChatGPT subscriptions and OpenAI API billing are separate; a ChatGPT membership is not an
@@ -108,7 +128,7 @@ docs/                  Architecture, protocol and development notes
 
 ## Project status
 
-This is a functional alpha/MVP, not yet a production animation system. Character rig
+Version 0.2 is a creator-review alpha, not yet a production animation system. Character rig
 retargeting, collision-aware path planning, multi-shot sequencing and visual diff overlays
 are intentionally listed as follow-up work rather than hidden behind unreliable prompts.
 

@@ -47,6 +47,15 @@ def _parser() -> argparse.ArgumentParser:
     plan.add_argument("--model", default="gpt-5-mini")
     plan.add_argument("--base-url")
     plan.add_argument("--out")
+
+    workflow = commands.add_parser(
+        "workflow", help="Plan a natural-language shot and stage it in Blender for approval"
+    )
+    workflow.add_argument("--brief", required=True)
+    workflow.add_argument("--instance")
+    workflow.add_argument("--model", default="gpt-5-mini")
+    workflow.add_argument("--base-url")
+    workflow.add_argument("--out")
     return parser
 
 
@@ -81,6 +90,24 @@ def main() -> None:
         snapshot = SceneSnapshot.model_validate(_read_json(args.snapshot))
         shot = plan_with_openai(args.brief, snapshot, model=args.model, base_url=args.base_url)
         _write_json(shot.model_dump(mode="json"), args.out)
+    elif args.command == "workflow":
+        instance = select_instance(args.instance)
+        client = BridgeClient(instance)
+        snapshot = SceneSnapshot.model_validate(client.run_job("scan_scene"))
+        shot = plan_with_openai(args.brief, snapshot, model=args.model, base_url=args.base_url)
+        patch = compile_shot(shot, snapshot)
+        staged = client.run_job("stage_patch", {"patch": patch.model_dump(mode="json")})
+        _write_json(
+            {
+                "instance_id": instance.instance_id,
+                "brief": args.brief,
+                "shot_spec": shot.model_dump(mode="json"),
+                "patch": patch.model_dump(mode="json"),
+                "review": staged,
+                "next_step": "Review the staged patch in Blender, then Apply or Discard it.",
+            },
+            args.out,
+        )
 
 
 if __name__ == "__main__":

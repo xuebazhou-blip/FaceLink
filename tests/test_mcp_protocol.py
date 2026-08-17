@@ -18,6 +18,10 @@ async def test_stdio_server_lists_expected_tools():
         "list_blender_instances",
         "scan_scene",
         "preview_shot",
+        "stage_scene_patch",
+        "get_staged_patch",
+        "apply_staged_patch",
+        "discard_staged_patch",
         "apply_scene_patch",
         "undo_last_apply",
     } <= names

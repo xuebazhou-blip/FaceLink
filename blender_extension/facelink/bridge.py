@@ -1,3 +1,4 @@
+import copy
 import hmac
 import json
 import os
@@ -13,7 +14,7 @@ from pathlib import Path
 
 import bpy
 
-from .executor import apply_patch, undo_last_patch
+from .executor import apply_patch, summarize_patch, undo_last_patch
 from .snapshot import scan_scene
 
 
@@ -27,6 +28,8 @@ class Runtime:
     lock = threading.Lock()
     pending = queue.Queue()
     static_health = {}
+    staged_patch = None
+    staged_summary = None
 
 
 def _instance_directory():
@@ -88,7 +91,15 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("invalid request size")
             request = json.loads(self.rfile.read(length).decode("utf-8"))
             job_type = request.get("type")
-            if job_type not in {"scan_scene", "apply_patch", "undo"}:
+            if job_type not in {
+                "scan_scene",
+                "stage_patch",
+                "get_staged_patch",
+                "apply_staged_patch",
+                "discard_staged_patch",
+                "apply_patch",
+                "undo",
+            }:
                 raise ValueError("unsupported job type")
             job_id = "job-" + uuid.uuid4().hex[:16]
             with Runtime.lock:
@@ -115,6 +126,14 @@ def _process_jobs():
         try:
             if job_type == "scan_scene":
                 result = scan_scene()
+            elif job_type == "stage_patch":
+                result = stage_patch(payload["patch"])
+            elif job_type == "get_staged_patch":
+                result = get_staged_patch()
+            elif job_type == "apply_staged_patch":
+                result = apply_staged_patch()
+            elif job_type == "discard_staged_patch":
+                result = discard_staged_patch()
             elif job_type == "apply_patch":
                 result = apply_patch(payload["patch"])
             elif job_type == "undo":
@@ -133,6 +152,49 @@ def _process_jobs():
 
 def is_running():
     return Runtime.server is not None
+
+
+def stage_patch(patch):
+    summary = summarize_patch(patch)
+    previous = Runtime.staged_summary
+    Runtime.staged_patch = copy.deepcopy(patch)
+    Runtime.staged_summary = copy.deepcopy(summary)
+    return {
+        "staged": True,
+        "replaced_patch_id": previous["patch_id"] if previous else None,
+        "summary": copy.deepcopy(summary),
+    }
+
+
+def get_staged_patch():
+    return {
+        "staged": Runtime.staged_patch is not None,
+        "patch": copy.deepcopy(Runtime.staged_patch),
+        "summary": copy.deepcopy(Runtime.staged_summary),
+    }
+
+
+def apply_staged_patch():
+    if Runtime.staged_patch is None:
+        raise ValueError("No FaceLink patch is staged for review")
+    patch = Runtime.staged_patch
+    summary = Runtime.staged_summary
+    receipt = apply_patch(patch)
+    clear_staged_patch()
+    return {"staged": False, "summary": summary, "receipt": receipt}
+
+
+def discard_staged_patch():
+    if Runtime.staged_patch is None:
+        raise ValueError("No FaceLink patch is staged for review")
+    patch_id = Runtime.staged_summary["patch_id"]
+    clear_staged_patch()
+    return {"staged": False, "discarded": True, "patch_id": patch_id}
+
+
+def clear_staged_patch():
+    Runtime.staged_patch = None
+    Runtime.staged_summary = None
 
 
 def connection_info():
@@ -159,6 +221,10 @@ def start_bridge():
         "blender_version": bpy.app.version_string,
         "capabilities": [
             "scan_scene",
+            "stage_patch",
+            "review_staged_patch",
+            "apply_staged_patch",
+            "discard_staged_patch",
             "keyframe_transform",
             "look_at",
             "play_clip",

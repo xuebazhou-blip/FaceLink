@@ -119,12 +119,42 @@ def client_flow(result_box):
                 }
             ],
         }
-        apply_job = wait_job(
+        stage_job = wait_job(
             base_url,
             token,
-            submit(base_url, token, "apply_patch", {"patch": patch}),
+            submit(base_url, token, "stage_patch", {"patch": patch}),
         )
+        assert stage_job["status"] == "succeeded"
+        assert stage_job["result"]["summary"]["operation_count"] == 1
+        staged_job = wait_job(base_url, token, submit(base_url, token, "get_staged_patch"))
+        assert staged_job["result"]["staged"] is True
+        assert staged_job["result"]["patch"]["patch_id"] == "bridge-acceptance"
+
+        unchanged_job = wait_job(base_url, token, submit(base_url, token, "scan_scene"))
+        unchanged_actor = next(
+            item for item in unchanged_job["result"]["entities"] if item["name"] == "Bridge Actor"
+        )
+        assert unchanged_actor["transform"]["location"] == {"x": 0.0, "y": 0.0, "z": 0.0}
+
+        apply_job = wait_job(base_url, token, submit(base_url, token, "apply_staged_patch"))
         assert apply_job["status"] == "succeeded"
+        assert apply_job["result"]["receipt"]["applied_operations"] == 1
+        assert (
+            wait_job(base_url, token, submit(base_url, token, "get_staged_patch"))["result"][
+                "staged"
+            ]
+            is False
+        )
+
+        restage_job = wait_job(
+            base_url,
+            token,
+            submit(base_url, token, "stage_patch", {"patch": patch | {"patch_id": "discard-me"}}),
+        )
+        assert restage_job["status"] == "succeeded"
+        discard_job = wait_job(base_url, token, submit(base_url, token, "discard_staged_patch"))
+        assert discard_job["result"]["patch_id"] == "discard-me"
+        assert discard_job["result"]["discarded"] is True
 
         bad_patch = patch | {
             "patch_id": "bad-entity",
@@ -139,7 +169,7 @@ def client_flow(result_box):
         failed_job = wait_job(
             base_url,
             token,
-            submit(base_url, token, "apply_patch", {"patch": bad_patch}),
+            submit(base_url, token, "stage_patch", {"patch": bad_patch}),
         )
         assert failed_job["status"] == "failed"
         assert "no longer exists" in failed_job["error"]
@@ -150,7 +180,9 @@ def client_flow(result_box):
             status="passed",
             health=health,
             scan_jobs=len(scans),
-            receipt=apply_job["result"],
+            staged_without_mutation=True,
+            receipt=apply_job["result"]["receipt"],
+            discarded_without_apply=True,
             failed_job_error=failed_job["error"],
         )
     except Exception as exc:

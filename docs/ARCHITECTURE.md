@@ -13,7 +13,9 @@ flowchart LR
     V --> R["Reviewable ScenePatch"]
     R --> M["MCP server / CLI"]
     M --> H["Authenticated localhost bridge"]
-    H --> Q["Blender main-thread job queue"]
+    H --> G["Blender review gate"]
+    G -->|"Apply"| Q["Blender main-thread job queue"]
+    G -->|"Discard"| X["No scene mutation"]
     Q --> E["Editable objects, constraints and keyframes"]
 ```
 
@@ -31,6 +33,11 @@ is not reliable for background or remote bridge jobs.
 Revisions are cleared when a different `.blend` file loads. Undo is intended to happen
 immediately; manual edits made after a FaceLink patch can be overwritten by its revision
 restore and are therefore an explicit alpha limitation.
+
+The default v0.2 path has a second safety boundary: the bridge preflights and stages one
+patch, Blender displays its operation count, affected objects, frame span and warnings, and
+only an explicit apply action mutates the scene. This review gate is provider-independent,
+so an MCP client can use its existing model subscription while BYOK users use the CLI.
 
 ## Why three layers
 

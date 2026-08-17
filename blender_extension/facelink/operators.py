@@ -3,8 +3,15 @@ import json
 import bpy
 from bpy.types import Operator
 
-from .bridge import start_bridge, stop_bridge
-from .executor import REVISION_STACK, apply_patch, undo_last_patch
+from .bridge import (
+    apply_staged_patch,
+    discard_staged_patch,
+    get_staged_patch,
+    stage_patch,
+    start_bridge,
+    stop_bridge,
+)
+from .executor import REVISION_STACK, undo_last_patch
 from .snapshot import ensure_entity_id, scan_scene
 
 
@@ -48,8 +55,8 @@ class FACELINK_OT_scan_scene(Operator):
 
 class FACELINK_OT_demo_patch(Operator):
     bl_idname = "facelink.demo_patch"
-    bl_label = "Apply Demo to Selected"
-    bl_description = "Add an editable two-key movement to the selected object"
+    bl_label = "Stage Demo for Selected"
+    bl_description = "Prepare a two-key movement without changing the scene"
 
     @classmethod
     def poll(cls, context):
@@ -80,9 +87,59 @@ class FACELINK_OT_demo_patch(Operator):
                 }
             ],
         }
-        receipt = apply_patch(patch)
-        context.window_manager.facelink.last_result = json.dumps(receipt, ensure_ascii=False)
-        self.report({"INFO"}, "Demo keyframes applied; use Ctrl+Z to undo")
+        result = stage_patch(patch)
+        context.window_manager.facelink.last_result = json.dumps(
+            result["summary"], ensure_ascii=False
+        )
+        self.report({"INFO"}, "Demo patch staged; review it before applying")
+        return {"FINISHED"}
+
+
+class FACELINK_OT_copy_brief(Operator):
+    bl_idname = "facelink.copy_brief"
+    bl_label = "Copy Brief"
+    bl_description = "Copy the shot brief for use in an MCP client"
+
+    @classmethod
+    def poll(cls, context):
+        return bool(context.window_manager.facelink.brief.strip())
+
+    def execute(self, context):
+        context.window_manager.clipboard = context.window_manager.facelink.brief
+        self.report({"INFO"}, "Shot brief copied")
+        return {"FINISHED"}
+
+
+class FACELINK_OT_apply_staged_patch(Operator):
+    bl_idname = "facelink.apply_staged_patch"
+    bl_label = "Apply Staged Patch"
+    bl_description = "Apply the patch currently shown in the review panel"
+
+    @classmethod
+    def poll(cls, _context):
+        return get_staged_patch()["staged"]
+
+    def execute(self, context):
+        result = apply_staged_patch()
+        patch_id = result["receipt"]["patch_id"]
+        context.window_manager.facelink.last_result = f"Applied {patch_id}"
+        self.report({"INFO"}, context.window_manager.facelink.last_result)
+        return {"FINISHED"}
+
+
+class FACELINK_OT_discard_staged_patch(Operator):
+    bl_idname = "facelink.discard_staged_patch"
+    bl_label = "Discard Staged Patch"
+    bl_description = "Discard the reviewed patch without changing the scene"
+
+    @classmethod
+    def poll(cls, _context):
+        return get_staged_patch()["staged"]
+
+    def execute(self, context):
+        result = discard_staged_patch()
+        context.window_manager.facelink.last_result = f"Discarded {result['patch_id']}"
+        self.report({"INFO"}, context.window_manager.facelink.last_result)
         return {"FINISHED"}
 
 
@@ -107,6 +164,9 @@ CLASSES = (
     FACELINK_OT_stop_bridge,
     FACELINK_OT_scan_scene,
     FACELINK_OT_demo_patch,
+    FACELINK_OT_copy_brief,
+    FACELINK_OT_apply_staged_patch,
+    FACELINK_OT_discard_staged_patch,
     FACELINK_OT_undo_patch,
 )
 

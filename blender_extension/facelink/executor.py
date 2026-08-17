@@ -106,6 +106,84 @@ def _preflight_operations(operations):
                 raise ValueError("Camera lens must be between 1 and 300 mm")
 
 
+def validate_patch(patch):
+    """Validate a patch against the current scene without changing scene content."""
+    if not isinstance(patch, dict):
+        raise ValueError("Patch must be an object")
+    if patch.get("schema_version") != "1.0":
+        raise ValueError("Unsupported patch schema_version")
+    operations = patch.get("operations")
+    if not isinstance(operations, list):
+        raise ValueError("Patch operations must be a list")
+    if not all(isinstance(item, dict) for item in operations):
+        raise ValueError("Every patch operation must be an object")
+    if not all(isinstance(item.get("op"), str) for item in operations):
+        raise ValueError("Every patch operation must have a string op")
+    for field in ("patch_id", "source_title"):
+        if field in patch and not isinstance(patch[field], str):
+            raise ValueError(f"Patch {field} must be a string")
+    warnings = patch.get("warnings", [])
+    if not isinstance(warnings, list) or not all(isinstance(item, str) for item in warnings):
+        raise ValueError("Patch warnings must be a list of strings")
+    unknown = {item.get("op") for item in operations} - ALLOWED_OPERATIONS
+    if unknown:
+        raise ValueError(f"Patch contains unsupported operations: {sorted(unknown)}")
+    _preflight_operations(operations)
+    return operations
+
+
+def summarize_patch(patch):
+    """Return a compact artist-facing description after a read-only preflight."""
+    operations = validate_patch(patch)
+    affected = {}
+    operation_types = {}
+    frames = []
+
+    for operation in operations:
+        op = operation["op"]
+        payload = operation.get("payload", {})
+        operation_types[op] = operation_types.get(op, 0) + 1
+
+        entity_id = operation.get("entity_id")
+        if entity_id:
+            obj = object_by_id(entity_id)
+            affected[obj.name] = {
+                "id": entity_id,
+                "name": obj.name,
+                "type": obj.type,
+                "will_create": False,
+            }
+
+        if op == "set_frame_range":
+            frames.extend((int(payload["frame_start"]), int(payload["frame_end"])))
+        elif op == "keyframe_transform":
+            frames.extend(int(item["frame"]) for item in payload["frames"])
+        elif op == "play_clip":
+            frames.extend((int(payload["frame_start"]), int(payload["frame_end"])))
+        elif op == "ensure_camera":
+            name = payload.get("name", "FaceLink Camera")
+            camera = bpy.data.objects.get(name)
+            affected[name] = {
+                "id": camera.get("facelink_id") if camera else None,
+                "name": name,
+                "type": "CAMERA",
+                "will_create": camera is None,
+            }
+            if payload.get("mode") == "dolly_in":
+                frames.extend((int(payload["frame_start"]), int(payload["frame_end"])))
+
+    return {
+        "patch_id": patch.get("patch_id", "unknown"),
+        "source_title": patch.get("source_title", "Untitled patch"),
+        "operation_count": len(operations),
+        "operation_types": dict(sorted(operation_types.items())),
+        "affected_entities": [affected[name] for name in sorted(affected)],
+        "frame_start": min(frames) if frames else None,
+        "frame_end": max(frames) if frames else None,
+        "warnings": [str(item) for item in patch.get("warnings", [])],
+    }
+
+
 def _capture_constraints(obj):
     states = []
     for constraint in obj.constraints:
@@ -426,17 +504,7 @@ def _ensure_camera(payload):
 
 
 def apply_patch(patch):
-    if patch.get("schema_version") != "1.0":
-        raise ValueError("Unsupported patch schema_version")
-    operations = patch.get("operations")
-    if not isinstance(operations, list):
-        raise ValueError("Patch operations must be a list")
-    if not all(isinstance(item, dict) for item in operations):
-        raise ValueError("Every patch operation must be an object")
-    unknown = {item.get("op") for item in operations} - ALLOWED_OPERATIONS
-    if unknown:
-        raise ValueError(f"Patch contains unsupported operations: {sorted(unknown)}")
-    _preflight_operations(operations)
+    operations = validate_patch(patch)
 
     revision = _capture_revision(patch, operations)
     _prepare_animation_edits(operations)

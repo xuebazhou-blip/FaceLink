@@ -220,7 +220,7 @@ def main() -> int:
 
     dist = RUN_DIR / "dist"
     dist.mkdir(exist_ok=True)
-    package = dist / "facelink-0.1.0.zip"
+    package = dist / "facelink-0.2.0.zip"
     build_result = run_command(
         "extension-build",
         [

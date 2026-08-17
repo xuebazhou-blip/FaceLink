@@ -9,15 +9,18 @@ import bpy
 PROJECT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT / "blender_extension"))
 
-from facelink.executor import apply_patch, undo_last_patch  # noqa: E402
+from facelink.executor import apply_patch, clear_revisions, undo_last_patch  # noqa: E402
 from facelink.snapshot import ensure_entity_id, scan_scene  # noqa: E402
 
 import facelink as blender_addon  # noqa: E402
+from facelink import bridge  # noqa: E402
 
 RESULTS = []
 
 
 def reset_scene():
+    bridge.clear_staged_patch()
+    clear_revisions()
     if bpy.context.mode != "OBJECT":
         bpy.ops.object.mode_set(mode="OBJECT")
     bpy.ops.object.select_all(action="SELECT")
@@ -97,6 +100,35 @@ def test_registration_surface():
     assert hasattr(bpy.types, "FACELINK_PT_main")
     assert hasattr(bpy.types.WindowManager, "facelink")
     assert hasattr(bpy.ops.facelink, "start_bridge")
+    assert hasattr(bpy.ops.facelink, "apply_staged_patch")
+    assert hasattr(bpy.ops.facelink, "discard_staged_patch")
+
+
+def test_panel_stages_before_apply_and_can_discard():
+    actor = cube("Review Actor")
+    bpy.context.view_layer.objects.active = actor
+    actor.select_set(True)
+
+    assert bpy.ops.facelink.demo_patch() == {"FINISHED"}
+    staged = bridge.get_staged_patch()
+    assert staged["staged"] is True
+    assert staged["summary"]["operation_count"] == 1
+    assert staged["summary"]["affected_entities"][0]["name"] == "Review Actor"
+    assert tuple(actor.location) == (0.0, 0.0, 0.0)
+    assert actor.animation_data is None
+
+    assert bpy.ops.facelink.apply_staged_patch() == {"FINISHED"}
+    assert bridge.get_staged_patch()["staged"] is False
+    bpy.context.scene.frame_set(staged["summary"]["frame_end"])
+    assert tuple(actor.location) == (2.0, 0.0, 0.0)
+    assert actor.animation_data is not None
+
+    assert bpy.ops.facelink.undo_patch() == {"FINISHED"}
+    assert tuple(actor.location) == (0.0, 0.0, 0.0)
+    assert bpy.ops.facelink.demo_patch() == {"FINISHED"}
+    assert bpy.ops.facelink.discard_staged_patch() == {"FINISHED"}
+    assert bridge.get_staged_patch()["staged"] is False
+    assert tuple(actor.location) == (0.0, 0.0, 0.0)
 
 
 def test_snapshot_identity_bounds_parent_and_lock():
@@ -264,6 +296,22 @@ def test_locked_objects_and_unknown_operations_fail_closed():
     else:
         raise AssertionError("An unsupported operation was accepted")
 
+    invalid_metadata = operation_patch(
+        {
+            "op": "keyframe_transform",
+            "entity_id": actor_id,
+            "payload": {"frames": [{"frame": 1, "location": [99, 0, 0]}]},
+        }
+    )
+    invalid_metadata["warnings"] = None
+    try:
+        bridge.stage_patch(invalid_metadata)
+    except ValueError as exc:
+        assert "warnings" in str(exc).lower()
+    else:
+        raise AssertionError("Invalid patch metadata was staged")
+    assert bridge.get_staged_patch()["staged"] is False
+
 
 def test_missing_entity_fails_with_clear_error():
     patch = operation_patch(
@@ -378,6 +426,7 @@ def test_revision_undo_restores_animation_constraints_camera_and_nla():
 blender_addon.register()
 CASES = [
     ("registration_surface", test_registration_surface),
+    ("panel_stage_review_apply_discard", test_panel_stages_before_apply_and_can_discard),
     ("snapshot_identity_bounds_parent_lock", test_snapshot_identity_bounds_parent_and_lock),
     (
         "transform_keyframes_interpolation_frame_range",
