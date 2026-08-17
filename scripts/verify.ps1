@@ -31,13 +31,13 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Ruff failed with exit code $LASTEXITCODE" }
     uv run pytest
     if ($LASTEXITCODE -ne 0) { throw "Pytest failed with exit code $LASTEXITCODE" }
-    & $blender --background --factory-startup --python (Join-Path $projectRoot 'tests\blender_smoke.py')
+    & $blender --background --factory-startup --python-exit-code 1 --python (Join-Path $projectRoot 'tests\blender_acceptance.py')
     if ($LASTEXITCODE -ne 0) {
-        throw "Blender smoke test failed with exit code $LASTEXITCODE"
+        throw "Blender acceptance test failed with exit code $LASTEXITCODE"
     }
-    & $blender --background --factory-startup --python (Join-Path $projectRoot 'tests\blender_bridge_smoke.py')
+    & $blender --background --factory-startup --python-exit-code 1 --python (Join-Path $projectRoot 'tests\blender_bridge_acceptance.py')
     if ($LASTEXITCODE -ne 0) {
-        throw "Blender bridge smoke test failed with exit code $LASTEXITCODE"
+        throw "Blender bridge acceptance test failed with exit code $LASTEXITCODE"
     }
     & (Join-Path $PSScriptRoot 'build_extension.ps1') -BlenderExe $blender
     if ($LASTEXITCODE -ne 0) { throw "Extension build failed with exit code $LASTEXITCODE" }

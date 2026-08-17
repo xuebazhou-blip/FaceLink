@@ -13,7 +13,7 @@ from pathlib import Path
 
 import bpy
 
-from .executor import apply_patch
+from .executor import apply_patch, undo_last_patch
 from .snapshot import scan_scene
 
 
@@ -118,10 +118,12 @@ def _process_jobs():
             elif job_type == "apply_patch":
                 result = apply_patch(payload["patch"])
             elif job_type == "undo":
-                bpy.ops.ed.undo()
-                result = {"undone": True}
+                result = undo_last_patch()
             with Runtime.lock:
                 Runtime.jobs[job_id].update(status="succeeded", result=result)
+        except (KeyError, TypeError, ValueError) as exc:
+            with Runtime.lock:
+                Runtime.jobs[job_id].update(status="failed", error=str(exc))
         except Exception as exc:
             traceback.print_exc()
             with Runtime.lock:
@@ -199,4 +201,3 @@ def stop_bridge():
     Runtime.instance_id = None
     with Runtime.lock:
         Runtime.jobs.clear()
-

@@ -31,8 +31,7 @@ def plan_with_openai(
             {
                 "role": "user",
                 "content": (
-                    f"Scene snapshot:\n{snapshot.model_dump_json(indent=2)}\n\n"
-                    f"Shot brief:\n{brief}"
+                    f"Scene snapshot:\n{snapshot.model_dump_json(indent=2)}\n\nShot brief:\n{brief}"
                 ),
             },
         ],

@@ -17,7 +17,7 @@ its main thread.
 - exposes the workflow through an MCP server for Codex/ChatGPT-compatible MCP clients;
 - supports OpenAI API-key planning with Structured Outputs;
 - runs a localhost-only authenticated bridge between the MCP process and Blender;
-- supports preview-before-apply and Blender Undo.
+- supports preview-before-apply and an in-memory FaceLink revision undo stack.
 
 ## Supported Blender versions
 
@@ -37,6 +37,15 @@ $env:UV_CACHE_DIR='E:\CodexData\Work\FaceLink\uv-cache'
 uv sync --extra dev
 uv run pytest
 ```
+
+For the reproducible multi-version acceptance matrix, including real extension installation:
+
+```powershell
+./scripts/run_acceptance.ps1
+```
+
+The harness writes JUnit, coverage, per-Blender JSON and command logs below `artifacts/`.
+See [docs/TESTING.md](docs/TESTING.md) for the exact gates and known exclusions.
 
 Build the Blender extension:
 
@@ -105,4 +114,3 @@ are intentionally listed as follow-up work rather than hidden behind unreliable 
 
 Before publishing your fork, replace the placeholder GitHub URLs in `pyproject.toml`, add a
 short screen recording to this README, and enable GitHub's private vulnerability reporting.
-

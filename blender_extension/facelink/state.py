@@ -26,4 +26,3 @@ def unregister():
         del bpy.types.WindowManager.facelink
     for cls in reversed(CLASSES):
         bpy.utils.unregister_class(cls)
-

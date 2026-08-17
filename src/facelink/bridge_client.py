@@ -118,4 +118,3 @@ def select_instance(instance_id: str | None = None) -> BlenderInstance:
         if instance.instance_id == instance_id:
             return instance
     raise RuntimeError(f"Blender instance '{instance_id}' was not found.")
-

@@ -47,9 +47,7 @@ def client_flow(result_box):
     base_url = f"http://127.0.0.1:{record['port']}"
     token = record["token"]
     health = request_json("GET", f"{base_url}/v1/health", token)
-    scan = request_json(
-        "POST", f"{base_url}/v1/jobs", token, {"type": "scan_scene", "payload": {}}
-    )
+    scan = request_json("POST", f"{base_url}/v1/jobs", token, {"type": "scan_scene", "payload": {}})
     snapshot = wait_job(base_url, token, scan["job_id"])
     cube = next(item for item in snapshot["entities"] if item["name"] == "Bridge Cube")
     patch = {

@@ -79,9 +79,7 @@ def main() -> None:
         _write_json(result, None)
     elif args.command == "plan":
         snapshot = SceneSnapshot.model_validate(_read_json(args.snapshot))
-        shot = plan_with_openai(
-            args.brief, snapshot, model=args.model, base_url=args.base_url
-        )
+        shot = plan_with_openai(args.brief, snapshot, model=args.model, base_url=args.base_url)
         _write_json(shot.model_dump(mode="json"), args.out)
 
 

@@ -1,0 +1,212 @@
+import json
+import os
+import sys
+import threading
+import time
+import traceback
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+import bpy
+
+PROJECT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT / "blender_extension"))
+instance_root = PROJECT / ".cache" / "bridge-instances" / str(os.getpid())
+os.environ["FACELINK_INSTANCE_DIR"] = str(instance_root)
+
+import facelink as blender_addon  # noqa: E402
+from facelink import bridge  # noqa: E402
+
+
+def request_json(method, url, token, payload=None, raw_data=None):
+    data = raw_data
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=data,
+        method=method,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=3) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def expect_http_error(status, function):
+    try:
+        function()
+    except urllib.error.HTTPError as exc:
+        assert exc.code == status, f"Expected HTTP {status}, got {exc.code}"
+    else:
+        raise AssertionError(f"Expected HTTP {status}")
+
+
+def wait_job(base_url, token, job_id):
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        job = request_json("GET", f"{base_url}/v1/jobs/{job_id}", token)
+        if job["status"] in {"succeeded", "failed"}:
+            return job
+        time.sleep(0.01)
+    raise TimeoutError(job_id)
+
+
+def submit(base_url, token, job_type, payload=None):
+    return request_json(
+        "POST",
+        f"{base_url}/v1/jobs",
+        token,
+        {"type": job_type, "payload": payload or {}},
+    )["job_id"]
+
+
+def client_flow(result_box):
+    try:
+        record_path = Path(bridge.Runtime.instance_file)
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        base_url = f"http://127.0.0.1:{record['port']}"
+        token = record["token"]
+
+        expect_http_error(
+            401,
+            lambda: request_json("GET", f"{base_url}/v1/health", "wrong-token"),
+        )
+        expect_http_error(
+            404,
+            lambda: request_json("GET", f"{base_url}/v1/jobs/not-found", token),
+        )
+        expect_http_error(
+            400,
+            lambda: request_json(
+                "POST",
+                f"{base_url}/v1/jobs",
+                token,
+                {"type": "run_python", "payload": {}},
+            ),
+        )
+        expect_http_error(
+            400,
+            lambda: request_json("POST", f"{base_url}/v1/jobs", token, raw_data=b"not-json"),
+        )
+
+        health = request_json("GET", f"{base_url}/v1/health", token)
+        scan_ids = [submit(base_url, token, "scan_scene") for _ in range(3)]
+        assert len(set(scan_ids)) == 3
+        scans = [wait_job(base_url, token, job_id) for job_id in scan_ids]
+        assert all(job["status"] == "succeeded" for job in scans)
+        snapshot = scans[0]["result"]
+        actor = next(item for item in snapshot["entities"] if item["name"] == "Bridge Actor")
+
+        patch = {
+            "schema_version": "1.0",
+            "patch_id": "bridge-acceptance",
+            "source_title": "Bridge acceptance",
+            "operations": [
+                {
+                    "op": "keyframe_transform",
+                    "entity_id": actor["id"],
+                    "payload": {
+                        "frames": [
+                            {"frame": 1, "location": [0, 0, 0]},
+                            {"frame": 13, "location": [1, 2, 0]},
+                        ],
+                        "interpolation": "LINEAR",
+                    },
+                }
+            ],
+        }
+        apply_job = wait_job(
+            base_url,
+            token,
+            submit(base_url, token, "apply_patch", {"patch": patch}),
+        )
+        assert apply_job["status"] == "succeeded"
+
+        bad_patch = patch | {
+            "patch_id": "bad-entity",
+            "operations": [
+                {
+                    "op": "keyframe_transform",
+                    "entity_id": "missing",
+                    "payload": {"frames": [{"frame": 1, "location": [5, 0, 0]}]},
+                }
+            ],
+        }
+        failed_job = wait_job(
+            base_url,
+            token,
+            submit(base_url, token, "apply_patch", {"patch": bad_patch}),
+        )
+        assert failed_job["status"] == "failed"
+        assert "no longer exists" in failed_job["error"]
+
+        undo_job = wait_job(base_url, token, submit(base_url, token, "undo"))
+        assert undo_job["status"] == "succeeded"
+        result_box.update(
+            status="passed",
+            health=health,
+            scan_jobs=len(scans),
+            receipt=apply_job["result"],
+            failed_job_error=failed_job["error"],
+        )
+    except Exception as exc:
+        result_box.update(status="failed", error=str(exc), traceback=traceback.format_exc())
+
+
+blender_addon.register()
+bpy.ops.mesh.primitive_cube_add(location=(0, 0, 0))
+bpy.context.active_object.name = "Bridge Actor"
+original_scan = bridge.scan_scene
+main_thread_checks = []
+
+
+def checked_scan():
+    main_thread_checks.append(threading.current_thread() is threading.main_thread())
+    return original_scan()
+
+
+bridge.scan_scene = checked_scan
+first_info = bridge.start_bridge()
+second_info = bridge.start_bridge()
+assert first_info == second_info
+assert bridge.Runtime.server.server_address[0] == "127.0.0.1"
+instance_file = Path(bridge.Runtime.instance_file)
+assert instance_file.exists()
+assert len(bridge.Runtime.token) >= 32
+
+result = {}
+client_thread = threading.Thread(target=client_flow, args=(result,), daemon=True)
+client_thread.start()
+deadline = time.monotonic() + 15
+while client_thread.is_alive() and time.monotonic() < deadline:
+    bridge._process_jobs()
+    time.sleep(0.005)
+client_thread.join(timeout=0.5)
+
+assert not client_thread.is_alive(), "Bridge acceptance client timed out"
+assert result.get("status") == "passed", result.get("traceback", result)
+assert main_thread_checks and all(main_thread_checks)
+actor_after_undo = bpy.data.objects.get("Bridge Actor")
+assert actor_after_undo is not None
+assert tuple(round(value, 4) for value in actor_after_undo.location) == (0.0, 0.0, 0.0)
+
+bridge.stop_bridge()
+assert not instance_file.exists()
+assert bridge.is_running() is False
+result.update(
+    suite="blender_bridge_acceptance",
+    blender_version=bpy.app.version_string,
+    main_thread_dispatch=True,
+    undo_restored_location=True,
+    discovery_record_cleaned=True,
+)
+report_path = os.environ.get("FACELINK_TEST_REPORT")
+if report_path:
+    Path(report_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(report_path).write_text(json.dumps(result, indent=2), encoding="utf-8")
+print("FACELINK_BRIDGE_ACCEPTANCE=" + json.dumps(result, sort_keys=True))
+blender_addon.unregister()

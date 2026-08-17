@@ -3,4 +3,3 @@ def test_mcp_server_imports_with_installed_sdk():
 
     assert mcp is not None
     assert mcp.name == "FaceLink"
-

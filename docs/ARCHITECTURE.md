@@ -25,6 +25,13 @@ generic Blender operator name. The bridge binds to `127.0.0.1`, uses a random be
 limits request bodies to 4 MiB, and routes every `bpy` mutation through a Blender timer on
 the main thread.
 
+Successful patches retain up to 50 in-memory FaceLink revisions. MCP and the Blender panel
+use this revision stack instead of relying on `bpy.ops.ed.undo()`, whose UI-context polling
+is not reliable for background or remote bridge jobs.
+Revisions are cleared when a different `.blend` file loads. Undo is intended to happen
+immediately; manual edits made after a FaceLink patch can be overwritten by its revision
+restore and are therefore an explicit alpha limitation.
+
 ## Why three layers
 
 1. **Core Python package** owns schemas, validation and deterministic compilation. It is
@@ -50,4 +57,3 @@ versions are explicit so clients can negotiate future changes.
   collision-aware planning.
 - A camera follow uses Blender constraints and remains artist-editable, but sophisticated
   composition and occlusion solving need a later visual evaluator.
-

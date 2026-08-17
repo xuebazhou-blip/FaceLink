@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 
 from .models import (
@@ -23,18 +24,21 @@ def _frame(seconds: float, fps: float, start: int) -> int:
 
 
 def _target_position(
-    target_entity: str | None, target_position: Vec3 | None, snapshot: SceneSnapshot
+    target_entity: str | None,
+    target_position: Vec3 | None,
+    locations: dict[str, Vec3],
 ) -> Vec3 | None:
     if target_position is not None:
         return target_position
-    if target_entity is not None and target_entity in snapshot.by_id():
-        return snapshot.by_id()[target_entity].transform.location
+    if target_entity is not None and target_entity in locations:
+        return locations[target_entity]
     return None
 
 
 def validate_shot(shot: ShotSpec, snapshot: SceneSnapshot) -> ValidationReport:
     issues: list[ValidationIssue] = []
     entities = snapshot.by_id()
+    occupied_channels: dict[tuple[str, str], list[tuple[float, float, int]]] = {}
     for index, beat in enumerate(shot.beats):
         actor = getattr(beat, "actor", None)
         if actor and actor not in entities:
@@ -75,6 +79,30 @@ def validate_shot(shot: ShotSpec, snapshot: SceneSnapshot) -> ValidationReport:
                     beat_index=index,
                 )
             )
+        channel = None
+        if isinstance(beat, MoveToBeat):
+            channel = "location"
+        elif isinstance(beat, TurnToBeat):
+            channel = "rotation"
+        elif isinstance(beat, PlayClipBeat):
+            channel = "action"
+        if actor and channel and beat.duration > 0:
+            key = (actor, channel)
+            start, end = beat.at, beat.at + beat.duration
+            for previous_start, previous_end, previous_index in occupied_channels.get(key, []):
+                if start < previous_end and end > previous_start:
+                    issues.append(
+                        ValidationIssue(
+                            severity="error",
+                            code="overlapping_channel",
+                            message=(
+                                f"Beat {index} overlaps beat {previous_index} on "
+                                f"'{actor}' {channel}."
+                            ),
+                            beat_index=index,
+                        )
+                    )
+            occupied_channels.setdefault(key, []).append((start, end, index))
     if shot.camera and shot.camera.target and shot.camera.target not in entities:
         issues.append(
             ValidationIssue(
@@ -103,6 +131,14 @@ def compile_shot(shot: ShotSpec, snapshot: SceneSnapshot) -> ScenePatch:
         raise ValueError("Shot validation failed: " + "; ".join(errors))
 
     entities = snapshot.by_id()
+    current_locations = {
+        entity_id: entity.transform.location.model_copy(deep=True)
+        for entity_id, entity in entities.items()
+    }
+    current_rotations = {
+        entity_id: entity.transform.rotation_euler.model_copy(deep=True)
+        for entity_id, entity in entities.items()
+    }
     operations: list[PatchOperation] = [
         PatchOperation(
             op="set_frame_range",
@@ -114,12 +150,17 @@ def compile_shot(shot: ShotSpec, snapshot: SceneSnapshot) -> ScenePatch:
         )
     ]
 
-    for beat in shot.beats:
+    indexed_beats = sorted(enumerate(shot.beats), key=lambda item: (item[1].at, item[0]))
+    for _, beat in indexed_beats:
         start = _frame(beat.at, shot.fps, snapshot.frame_start)
         end = _frame(beat.at + beat.duration, shot.fps, snapshot.frame_start)
         if isinstance(beat, MoveToBeat):
-            actor = entities[beat.actor]
-            target = _target_position(beat.target_entity, beat.target_position, snapshot)
+            origin = current_locations[beat.actor]
+            target = _target_position(
+                beat.target_entity,
+                beat.target_position,
+                current_locations,
+            )
             assert target is not None
             operations.append(
                 PatchOperation(
@@ -127,20 +168,24 @@ def compile_shot(shot: ShotSpec, snapshot: SceneSnapshot) -> ScenePatch:
                     entity_id=beat.actor,
                     payload={
                         "frames": [
-                            {"frame": start, "location": actor.transform.location.as_list()},
+                            {"frame": start, "location": origin.as_list()},
                             {"frame": end, "location": target.as_list()},
                         ],
                         "interpolation": beat.easing,
                     },
                 )
             )
+            current_locations[beat.actor] = target.model_copy(deep=True)
         elif isinstance(beat, TurnToBeat):
-            actor = entities[beat.actor]
-            target = _target_position(beat.target_entity, beat.target_position, snapshot)
+            target = _target_position(
+                beat.target_entity,
+                beat.target_position,
+                current_locations,
+            )
             assert target is not None
-            origin = actor.transform.location
+            origin = current_locations[beat.actor]
             yaw = math.atan2(-(target.x - origin.x), target.y - origin.y)
-            start_rotation = actor.transform.rotation_euler.as_list()
+            start_rotation = current_rotations[beat.actor].as_list()
             end_rotation = [start_rotation[0], start_rotation[1], yaw]
             operations.append(
                 PatchOperation(
@@ -154,6 +199,9 @@ def compile_shot(shot: ShotSpec, snapshot: SceneSnapshot) -> ScenePatch:
                         "interpolation": beat.easing,
                     },
                 )
+            )
+            current_rotations[beat.actor] = Vec3(
+                x=end_rotation[0], y=end_rotation[1], z=end_rotation[2]
             )
         elif isinstance(beat, LookAtBeat):
             operations.append(
@@ -183,7 +231,15 @@ def compile_shot(shot: ShotSpec, snapshot: SceneSnapshot) -> ScenePatch:
         payload["frame_end"] = _frame(shot.duration, shot.fps, snapshot.frame_start)
         operations.append(PatchOperation(op="ensure_camera", payload=payload))
 
-    canonical = shot.model_dump_json(exclude_none=True)
+    canonical = json.dumps(
+        {
+            "shot": shot.model_dump(mode="json", exclude_none=True),
+            "operations": [operation.model_dump(mode="json") for operation in operations],
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     patch_id = "patch-" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
     warnings = [issue.message for issue in report.issues if issue.severity == "warning"]
     return ScenePatch(
@@ -192,4 +248,3 @@ def compile_shot(shot: ShotSpec, snapshot: SceneSnapshot) -> ScenePatch:
         operations=operations,
         warnings=warnings,
     )
-

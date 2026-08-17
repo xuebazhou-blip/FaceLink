@@ -44,9 +44,7 @@ def scan_scene(instance_id: str | None = None) -> dict[str, Any]:
 
 
 @mcp.tool()
-def validate_shot_spec(
-    shot_spec: dict[str, Any], scene_snapshot: dict[str, Any]
-) -> dict[str, Any]:
+def validate_shot_spec(shot_spec: dict[str, Any], scene_snapshot: dict[str, Any]) -> dict[str, Any]:
     """Validate a typed shot without changing Blender."""
     report = validate_shot(
         ShotSpec.model_validate(shot_spec),
@@ -56,9 +54,7 @@ def validate_shot_spec(
 
 
 @mcp.tool()
-def preview_shot(
-    shot_spec: dict[str, Any], scene_snapshot: dict[str, Any]
-) -> dict[str, Any]:
+def preview_shot(shot_spec: dict[str, Any], scene_snapshot: dict[str, Any]) -> dict[str, Any]:
     """Compile a shot into a reviewable Blender patch without applying it."""
     patch = compile_shot(
         ShotSpec.model_validate(shot_spec),
@@ -68,9 +64,7 @@ def preview_shot(
 
 
 @mcp.tool()
-def apply_scene_patch(
-    patch: dict[str, Any], instance_id: str | None = None
-) -> dict[str, Any]:
+def apply_scene_patch(patch: dict[str, Any], instance_id: str | None = None) -> dict[str, Any]:
     """Apply a previously previewed, white-listed patch to Blender."""
     checked = ScenePatch.model_validate(patch)
     return BridgeClient(select_instance(instance_id)).run_job(

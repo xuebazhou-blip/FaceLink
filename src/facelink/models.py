@@ -164,4 +164,3 @@ class ExecutionReceipt(StrictModel):
     applied_operations: int
     changed_entities: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
-

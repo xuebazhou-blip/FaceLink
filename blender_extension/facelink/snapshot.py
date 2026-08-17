@@ -30,6 +30,7 @@ def _bounds(obj):
 
 def scan_scene():
     scene = bpy.context.scene
+    bpy.context.view_layer.update()
     entities = []
     for obj in sorted(scene.objects, key=lambda item: item.name):
         entity_id = ensure_entity_id(obj)
@@ -66,4 +67,3 @@ def object_by_id(entity_id):
         if str(obj.get("facelink_id", "")) == str(entity_id):
             return obj
     raise ValueError(f"FaceLink entity '{entity_id}' no longer exists in this scene")
-

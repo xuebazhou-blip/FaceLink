@@ -4,7 +4,7 @@ import bpy
 from bpy.types import Operator
 
 from .bridge import start_bridge, stop_bridge
-from .executor import apply_patch
+from .executor import REVISION_STACK, apply_patch, undo_last_patch
 from .snapshot import ensure_entity_id, scan_scene
 
 
@@ -86,11 +86,28 @@ class FACELINK_OT_demo_patch(Operator):
         return {"FINISHED"}
 
 
+class FACELINK_OT_undo_patch(Operator):
+    bl_idname = "facelink.undo_patch"
+    bl_label = "Undo Last FaceLink Patch"
+    bl_description = "Restore the scene state captured before the latest FaceLink patch"
+
+    @classmethod
+    def poll(cls, context):
+        return bool(REVISION_STACK)
+
+    def execute(self, context):
+        result = undo_last_patch()
+        context.window_manager.facelink.last_result = f"Undid {result['patch_id']}"
+        self.report({"INFO"}, context.window_manager.facelink.last_result)
+        return {"FINISHED"}
+
+
 CLASSES = (
     FACELINK_OT_start_bridge,
     FACELINK_OT_stop_bridge,
     FACELINK_OT_scan_scene,
     FACELINK_OT_demo_patch,
+    FACELINK_OT_undo_patch,
 )
 
 
@@ -102,4 +119,3 @@ def register():
 def unregister():
     for cls in reversed(CLASSES):
         bpy.utils.unregister_class(cls)
-

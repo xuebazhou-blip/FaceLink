@@ -27,6 +27,7 @@ class FACELINK_PT_main(Panel):
         scene.label(text="Scene", icon="SCENE_DATA")
         scene.operator("facelink.scan_scene", icon="VIEWZOOM")
         scene.operator("facelink.demo_patch", icon="KEY_HLT")
+        scene.operator("facelink.undo_patch", icon="LOOP_BACK")
         if state.last_result:
             scene.label(text=state.last_result[:80])
 
@@ -48,4 +49,3 @@ def register():
 def unregister():
     for cls in reversed(CLASSES):
         bpy.utils.unregister_class(cls)
-
