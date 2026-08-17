@@ -21,6 +21,11 @@ async def test_stdio_server_lists_expected_tools():
         "apply_scene_patch",
         "undo_last_apply",
     } <= names
+    preview = next(tool for tool in result.tools if tool.name == "preview_shot")
+    schema_text = str(preview.input_schema)
+    assert "ShotSpec" in schema_text
+    assert "move_to" in schema_text
+    assert "SceneSnapshot" in schema_text
 
 
 @pytest.mark.asyncio

@@ -44,31 +44,24 @@ def scan_scene(instance_id: str | None = None) -> dict[str, Any]:
 
 
 @mcp.tool()
-def validate_shot_spec(shot_spec: dict[str, Any], scene_snapshot: dict[str, Any]) -> dict[str, Any]:
+def validate_shot_spec(shot_spec: ShotSpec, scene_snapshot: SceneSnapshot) -> dict[str, Any]:
     """Validate a typed shot without changing Blender."""
-    report = validate_shot(
-        ShotSpec.model_validate(shot_spec),
-        SceneSnapshot.model_validate(scene_snapshot),
-    )
+    report = validate_shot(shot_spec, scene_snapshot)
     return report.model_dump(mode="json")
 
 
 @mcp.tool()
-def preview_shot(shot_spec: dict[str, Any], scene_snapshot: dict[str, Any]) -> dict[str, Any]:
+def preview_shot(shot_spec: ShotSpec, scene_snapshot: SceneSnapshot) -> dict[str, Any]:
     """Compile a shot into a reviewable Blender patch without applying it."""
-    patch = compile_shot(
-        ShotSpec.model_validate(shot_spec),
-        SceneSnapshot.model_validate(scene_snapshot),
-    )
+    patch = compile_shot(shot_spec, scene_snapshot)
     return patch.model_dump(mode="json")
 
 
 @mcp.tool()
-def apply_scene_patch(patch: dict[str, Any], instance_id: str | None = None) -> dict[str, Any]:
+def apply_scene_patch(patch: ScenePatch, instance_id: str | None = None) -> dict[str, Any]:
     """Apply a previously previewed, white-listed patch to Blender."""
-    checked = ScenePatch.model_validate(patch)
     return BridgeClient(select_instance(instance_id)).run_job(
-        "apply_patch", {"patch": checked.model_dump(mode="json")}
+        "apply_patch", {"patch": patch.model_dump(mode="json")}
     )
 
 
