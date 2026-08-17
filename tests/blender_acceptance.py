@@ -10,6 +10,9 @@ PROJECT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT / "blender_extension"))
 
 from facelink.executor import (  # noqa: E402
+    AUDIT_LOG_KEY,
+    MAX_AUDIT_ENTRIES,
+    MAX_REVISIONS,
     apply_patch,
     clear_revision_history,
     clear_revisions,
@@ -126,19 +129,24 @@ def test_panel_stages_before_apply_and_can_discard():
     assert staged["summary"]["affected_entities"][0]["name"] == "Review Actor"
     assert tuple(actor.location) == (0.0, 0.0, 0.0)
     assert actor.animation_data is None
+    assert list_revision_history()["entries"] == []
 
     assert bpy.ops.facelink.apply_staged_patch() == {"FINISHED"}
     assert bridge.get_staged_patch()["staged"] is False
+    assert len(list_revision_history()["entries"]) == 1
     bpy.context.scene.frame_set(staged["summary"]["frame_end"])
     assert tuple(actor.location) == (2.0, 0.0, 0.0)
     assert actor.animation_data is not None
 
     assert bpy.ops.facelink.undo_patch() == {"FINISHED"}
     assert tuple(actor.location) == (0.0, 0.0, 0.0)
+    history_before_discard = list_revision_history()
+    assert history_before_discard["entries"][0]["status"] == "reverted"
     assert bpy.ops.facelink.demo_patch() == {"FINISHED"}
     assert bpy.ops.facelink.discard_staged_patch() == {"FINISHED"}
     assert bridge.get_staged_patch()["staged"] is False
     assert tuple(actor.location) == (0.0, 0.0, 0.0)
+    assert list_revision_history() == history_before_discard
 
 
 def test_snapshot_identity_bounds_parent_and_lock():
@@ -645,6 +653,124 @@ def test_revision_history_and_safe_rollback_to_target():
     assert tuple(actor.location) == (0.0, 0.0, 0.0)
 
 
+def test_duplicate_patch_ids_still_get_unique_revision_ids():
+    actor = cube("Duplicate Patch Actor")
+    actor_id = ensure_entity_id(actor)
+    receipts = []
+    for location in (1, 2):
+        receipts.append(
+            apply_patch(
+                operation_patch(
+                    {
+                        "op": "keyframe_transform",
+                        "entity_id": actor_id,
+                        "payload": {
+                            "frames": [{"frame": 1, "location": [location, 0, 0]}]
+                        },
+                    },
+                    patch_id="duplicate-patch-id",
+                )
+            )
+        )
+
+    assert receipts[0]["patch_id"] == receipts[1]["patch_id"]
+    assert receipts[0]["revision_id"] != receipts[1]["revision_id"]
+    history = list_revision_history()
+    assert [entry["patch_id"] for entry in history["entries"]] == [
+        "duplicate-patch-id",
+        "duplicate-patch-id",
+    ]
+    assert len({entry["revision_id"] for entry in history["entries"]}) == 2
+
+    rollback_to_revision(receipts[0]["revision_id"])
+    assert tuple(actor.location) == (0.0, 0.0, 0.0)
+
+
+def test_unknown_revision_rollback_does_not_change_scene_or_history():
+    actor = cube("Unknown Revision Actor")
+    actor_id = ensure_entity_id(actor)
+    apply_patch(
+        operation_patch(
+            {
+                "op": "keyframe_transform",
+                "entity_id": actor_id,
+                "payload": {"frames": [{"frame": 1, "location": [4, 0, 0]}]},
+            },
+            patch_id="known-revision",
+        )
+    )
+    history_before = list_revision_history()
+
+    try:
+        rollback_to_revision("revision-does-not-exist")
+    except ValueError as exc:
+        assert "not available" in str(exc).lower()
+    else:
+        raise AssertionError("An unknown revision unexpectedly rolled back the scene")
+
+    assert tuple(actor.location) == (4.0, 0.0, 0.0)
+    assert list_revision_history() == history_before
+    undo_last_patch()
+
+
+def test_corrupt_audit_log_recovers_on_next_successful_patch():
+    bpy.context.scene[AUDIT_LOG_KEY] = "{malformed-json"
+    assert list_revision_history()["entries"] == []
+
+    actor = cube("Audit Recovery Actor")
+    actor_id = ensure_entity_id(actor)
+    receipt = apply_patch(
+        operation_patch(
+            {
+                "op": "keyframe_transform",
+                "entity_id": actor_id,
+                "payload": {"frames": [{"frame": 1, "location": [3, 0, 0]}]},
+            },
+            patch_id="audit-recovery",
+        )
+    )
+
+    history = list_revision_history()
+    assert history["available_count"] == 1
+    assert len(history["entries"]) == 1
+    assert history["entries"][0]["revision_id"] == receipt["revision_id"]
+    assert history["entries"][0]["rollback_available"] is True
+    assert isinstance(json.loads(bpy.context.scene[AUDIT_LOG_KEY]), list)
+    undo_last_patch()
+
+
+def test_revision_snapshot_and_audit_capacity_limits():
+    total_revisions = MAX_AUDIT_ENTRIES + 5
+    for index in range(total_revisions):
+        apply_patch(
+            operation_patch(
+                {
+                    "op": "set_frame_range",
+                    "payload": {
+                        "fps": 24,
+                        "frame_start": 1,
+                        "frame_end": 250 + index,
+                    },
+                },
+                patch_id=f"capacity-{index}",
+            )
+        )
+
+    history = list_revision_history()
+    assert len(history["entries"]) == MAX_AUDIT_ENTRIES
+    assert history["entries"][0]["patch_id"] == "capacity-5"
+    assert history["entries"][-1]["patch_id"] == "capacity-104"
+    assert history["available_count"] == MAX_REVISIONS
+    available_entries = [
+        entry for entry in history["entries"] if entry["rollback_available"]
+    ]
+    assert len(available_entries) == MAX_REVISIONS
+    assert available_entries[0]["patch_id"] == "capacity-55"
+    assert available_entries[-1]["patch_id"] == "capacity-104"
+    assert history["entries"][49]["rollback_available"] is False
+    assert history["entries"][50]["rollback_available"] is True
+
+
 def test_revision_audit_survives_blend_reload_without_unsafe_rollback():
     actor = cube("Persistent History Actor")
     actor_id = ensure_entity_id(actor)
@@ -702,6 +828,13 @@ CASES = [
         test_revision_undo_restores_animation_constraints_camera_and_nla,
     ),
     ("revision_history_safe_rollback", test_revision_history_and_safe_rollback_to_target),
+    ("duplicate_patch_revision_identity", test_duplicate_patch_ids_still_get_unique_revision_ids),
+    (
+        "unknown_revision_rollback_fail_closed",
+        test_unknown_revision_rollback_does_not_change_scene_or_history,
+    ),
+    ("corrupt_audit_log_recovery", test_corrupt_audit_log_recovers_on_next_successful_patch),
+    ("revision_capacity_limits", test_revision_snapshot_and_audit_capacity_limits),
     (
         "revision_audit_blend_persistence",
         test_revision_audit_survives_blend_reload_without_unsafe_rollback,

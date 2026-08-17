@@ -32,7 +32,10 @@ human-readable summary.
 - Source-level Blender acceptance must pass: registration, stable identity, bounds, locks,
   world/local parent conversion, stale-scene rejection, transform keyframes, interpolation,
   frame rate, constraints, cameras, NLA clips, idempotency, fail-closed behavior and
-  transaction rollback, multi-revision rollback and real `.blend` audit persistence.
+  transaction rollback, multi-revision rollback and real `.blend` audit persistence. Revision
+  boundary coverage also verifies unique revision IDs for repeated patch IDs, unknown-target
+  rollback safety, malformed audit-log recovery, the 100-entry audit/50-snapshot limits, and
+  that staging or discarding a patch never creates a false history entry.
 - Bridge acceptance must pass: localhost binding, bearer authentication, malformed requests,
   concurrent jobs, protocol 1.1 fingerprint agreement, main-thread dispatch, failed-job
   reporting, protocol 1.2 history/rollback, Undo and discovery cleanup.

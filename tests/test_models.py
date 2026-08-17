@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from facelink.models import CameraSpec, ScenePatch, ShotSpec, Vec3
+from facelink.models import CameraSpec, ExecutionReceipt, ScenePatch, ShotSpec, Vec3
 
 
 @pytest.mark.parametrize("beat_type", ["move_to", "turn_to"])
@@ -47,3 +47,16 @@ def test_scene_patch_rejects_arbitrary_operation_name():
 def test_discriminated_union_rejects_unknown_beat():
     with pytest.raises(ValidationError, match="union_tag_invalid"):
         ShotSpec.model_validate({"duration": 1, "beats": [{"type": "teleport", "actor": "actor"}]})
+
+
+def test_execution_receipt_preserves_revision_identity_and_legacy_compatibility():
+    receipt = ExecutionReceipt(
+        patch_id="patch-1",
+        revision_id="revision-1",
+        applied_operations=2,
+        changed_entities=["actor"],
+    )
+    assert receipt.model_dump()["revision_id"] == "revision-1"
+
+    legacy_receipt = ExecutionReceipt(patch_id="legacy", applied_operations=0)
+    assert legacy_receipt.revision_id is None
