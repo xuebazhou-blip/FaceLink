@@ -215,8 +215,55 @@ def client_flow(result_box):
         assert failed_job["status"] == "failed"
         assert "no longer exists" in failed_job["error"]
 
+        second_patch = patch | {
+            "patch_id": "bridge-second",
+            "source_title": "Bridge second revision",
+            "operations": [
+                {
+                    "op": "keyframe_transform",
+                    "entity_id": actor["id"],
+                    "payload": {
+                        "frames": [
+                            {"frame": 1, "location": [0, 0, 0]},
+                            {"frame": 13, "location": [2, 0, 0]},
+                        ],
+                        "space": "WORLD",
+                    },
+                }
+            ],
+        }
+        second_job = wait_job(
+            base_url,
+            token,
+            submit(base_url, token, "apply_patch", {"patch": second_patch}),
+        )
+        assert second_job["status"] == "succeeded"
         undo_job = wait_job(base_url, token, submit(base_url, token, "undo"))
         assert undo_job["status"] == "succeeded"
+        assert undo_job["result"]["patch_id"] == "bridge-second"
+
+        history_job = wait_job(base_url, token, submit(base_url, token, "list_revisions"))
+        history = history_job["result"]
+        assert history["available_count"] == 1
+        assert [entry["status"] for entry in history["entries"]] == ["applied", "reverted"]
+        first_revision_id = apply_job["result"]["receipt"]["revision_id"]
+        rollback_job = wait_job(
+            base_url,
+            token,
+            submit(
+                base_url,
+                token,
+                "rollback_revision",
+                {"revision_id": first_revision_id},
+            ),
+        )
+        assert rollback_job["status"] == "succeeded"
+        assert rollback_job["result"]["rolled_back_count"] == 1
+        final_history = wait_job(
+            base_url, token, submit(base_url, token, "list_revisions")
+        )["result"]
+        assert final_history["available_count"] == 0
+        assert all(entry["status"] == "reverted" for entry in final_history["entries"])
         result_box.update(
             status="passed",
             health=health,
@@ -224,6 +271,8 @@ def client_flow(result_box):
             staged_without_mutation=True,
             receipt=apply_job["result"]["receipt"],
             discarded_without_apply=True,
+            persistent_history_entries=len(final_history["entries"]),
+            rollback_via_bridge=True,
             failed_job_error=failed_job["error"],
         )
     except Exception as exc:

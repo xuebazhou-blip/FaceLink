@@ -14,7 +14,13 @@ from pathlib import Path
 
 import bpy
 
-from .executor import apply_patch, summarize_patch, undo_last_patch
+from .executor import (
+    apply_patch,
+    list_revision_history,
+    rollback_to_revision,
+    summarize_patch,
+    undo_last_patch,
+)
 from .snapshot import scan_scene
 
 
@@ -46,7 +52,7 @@ def _safe_job(job_id):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "FaceLink/0.2.1"
+    server_version = "FaceLink/0.2.2"
 
     def log_message(self, format, *args):
         return
@@ -99,6 +105,8 @@ class Handler(BaseHTTPRequestHandler):
                 "discard_staged_patch",
                 "apply_patch",
                 "undo",
+                "list_revisions",
+                "rollback_revision",
             }:
                 raise ValueError("unsupported job type")
             job_id = "job-" + uuid.uuid4().hex[:16]
@@ -138,6 +146,10 @@ def _process_jobs():
                 result = apply_patch(payload["patch"])
             elif job_type == "undo":
                 result = undo_last_patch()
+            elif job_type == "list_revisions":
+                result = list_revision_history()
+            elif job_type == "rollback_revision":
+                result = rollback_to_revision(payload["revision_id"])
             with Runtime.lock:
                 Runtime.jobs[job_id].update(status="succeeded", result=result)
         except (KeyError, TypeError, ValueError) as exc:
@@ -216,7 +228,7 @@ def start_bridge():
     Runtime.server.daemon_threads = True
     Runtime.static_health = {
         "ok": True,
-        "protocol_version": "1.1",
+        "protocol_version": "1.2",
         "instance_id": Runtime.instance_id,
         "blender_version": bpy.app.version_string,
         "capabilities": [
@@ -227,6 +239,8 @@ def start_bridge():
             "discard_staged_patch",
             "world_space_transforms",
             "scene_fingerprint",
+            "revision_history",
+            "rollback_revision",
             "keyframe_transform",
             "look_at",
             "play_clip",

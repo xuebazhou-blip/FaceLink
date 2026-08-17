@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "facelink"
-version = "0.2.1"
+version = "0.2.2"
 description = "A safe natural-language control plane for editable Blender previs and animation."
 readme = "README.md"
 requires-python = ">=3.11"

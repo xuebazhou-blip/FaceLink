@@ -18,7 +18,8 @@ the scene only after the artist presses **Apply Staged Patch**.
 - exposes the workflow through an MCP server for Codex/ChatGPT-compatible MCP clients;
 - supports OpenAI API-key planning with Structured Outputs;
 - runs a localhost-only authenticated bridge between the MCP process and Blender;
-- supports Blender-side stage/review/apply/discard and an in-memory revision undo stack.
+- supports Blender-side stage/review/apply/discard, persistent audit history and safe
+  rollback to a selected current-session revision.
 - rejects a staged plan when a referenced transform, parent link, lock or scene timing value
   changed after the scene scan.
 
@@ -58,7 +59,7 @@ $env:FACELINK_BLENDER_EXE='C:\path\to\Blender\blender.exe' # optional if on PATH
 ```
 
 Then in Blender 4.5: **Edit → Preferences → Get Extensions → Install from Disk**, choose
-`dist/facelink-0.2.1.zip`, enable FaceLink, and open the **FaceLink** tab in the 3D Viewport
+`dist/facelink-0.2.2.zip`, enable FaceLink, and open the **FaceLink** tab in the 3D Viewport
 sidebar. Press **Start Bridge**.
 
 Run the MCP server:
@@ -113,6 +114,17 @@ uv run facelink workflow `
 
 The command does not apply anything. Review and approve the staged result in Blender.
 
+Inspect or roll back FaceLink revisions from the command line:
+
+```powershell
+uv run facelink history
+uv run facelink rollback --revision rev-0123456789abcdef
+```
+
+Revision metadata is stored in the `.blend` file. Executable rollback snapshots intentionally
+remain session-only because they contain live Blender datablock references. Rolling back an
+older revision also rolls back every newer FaceLink revision to preserve a linear scene state.
+
 An API key is optional when an MCP client performs the language-model planning itself.
 ChatGPT subscriptions and OpenAI API billing are separate; a ChatGPT membership is not an
 API key. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the trust boundary.
@@ -131,7 +143,7 @@ docs/                  Architecture, protocol and development notes
 
 ## Project status
 
-Version 0.2.1 is a creator-review alpha, not yet a production animation system. Character rig
+Version 0.2.2 is a creator-review alpha, not yet a production animation system. Character rig
 retargeting, collision-aware path planning, multi-shot sequencing and visual diff overlays
 are intentionally listed as follow-up work rather than hidden behind unreliable prompts.
 

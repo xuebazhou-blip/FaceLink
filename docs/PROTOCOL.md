@@ -1,4 +1,4 @@
-# Local bridge protocol 1.1
+# Local bridge protocol 1.2
 
 The Blender extension writes one JSON discovery record per running Blender process. The
 directory is `${FACELINK_INSTANCE_DIR}` when configured, otherwise
@@ -14,6 +14,11 @@ All requests require `Authorization: Bearer <token>` from that record.
 
 Supported jobs are `scan_scene`, `stage_patch`, `get_staged_patch`,
 `apply_staged_patch`, `discard_staged_patch`, `apply_patch` and `undo`.
+
+Protocol 1.2 also supports `list_revisions` and `rollback_revision`. The rollback payload is
+`{"revision_id":"rev-..."}`. A rollback restores the selected revision's pre-apply state and
+all newer FaceLink revisions in reverse order. It never removes a middle revision while
+leaving dependent newer edits applied.
 
 `stage_patch` performs the full scene-aware preflight and stores one deep-copied patch, but
 does not mutate scene objects, animation data, cameras or frame settings. A new staged patch
@@ -34,6 +39,18 @@ for only those referenced entities. A mismatch fails closed with an instruction 
 plan again. Unrelated objects are deliberately excluded. Legacy protocol 1.0 patches remain
 accepted and use local transform space when `space` is absent, but they have no stale-scene
 guard.
+
+## Revision history
+
+Each successful apply receives a unique `revision_id`. Audit metadata—including patch ID,
+title, operation types, affected objects, warnings, timestamps and applied/reverted status—is
+stored as JSON on the Blender Scene and therefore survives `.blend` save/load. Up to 100
+audit entries are retained.
+
+The actual rollback snapshots contain live Blender datablock references and remain in memory,
+with a maximum of 50 revisions. After reopening a `.blend`, history entries remain visible
+but report `rollback_available: false`. This separation prevents a persisted log from being
+mistaken for a safe executable snapshot.
 
 Scene access is asynchronous because Blender's Python API is not thread-safe. HTTP handler
 threads only enqueue data; a registered `bpy.app.timer` performs every scene read or write.

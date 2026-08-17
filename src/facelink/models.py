@@ -166,6 +166,7 @@ class ValidationReport(StrictModel):
 
 class ExecutionReceipt(StrictModel):
     patch_id: str
+    revision_id: str | None = None
     applied_operations: int
     changed_entities: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)

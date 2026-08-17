@@ -9,7 +9,14 @@ import bpy
 PROJECT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT / "blender_extension"))
 
-from facelink.executor import apply_patch, clear_revisions, undo_last_patch  # noqa: E402
+from facelink.executor import (  # noqa: E402
+    apply_patch,
+    clear_revision_history,
+    clear_revisions,
+    list_revision_history,
+    rollback_to_revision,
+    undo_last_patch,
+)
 from facelink.snapshot import ensure_entity_id, scan_scene, scene_fingerprint  # noqa: E402
 
 import facelink as blender_addon  # noqa: E402
@@ -21,6 +28,7 @@ RESULTS = []
 def reset_scene():
     bridge.clear_staged_patch()
     clear_revisions()
+    clear_revision_history()
     if bpy.context.mode != "OBJECT":
         bpy.ops.object.mode_set(mode="OBJECT")
     bpy.ops.object.select_all(action="SELECT")
@@ -103,6 +111,7 @@ def test_registration_surface():
     assert hasattr(bpy.ops.facelink, "start_bridge")
     assert hasattr(bpy.ops.facelink, "apply_staged_patch")
     assert hasattr(bpy.ops.facelink, "discard_staged_patch")
+    assert hasattr(bpy.ops.facelink, "rollback_revision")
 
 
 def test_panel_stages_before_apply_and_can_discard():
@@ -289,6 +298,7 @@ def test_world_space_zero_scale_parent_fails_closed():
     else:
         raise AssertionError("A non-invertible parent transform was accepted")
     assert actor.animation_data is None
+    assert list_revision_history()["entries"] == []
 
 
 def test_scene_fingerprint_rejects_changes_and_keeps_staging():
@@ -584,6 +594,90 @@ def test_revision_undo_restores_animation_constraints_camera_and_nla():
     assert tuple(round(value, 4) for value in restored.location) == (0.0, 0.0, 0.0)
 
 
+def test_revision_history_and_safe_rollback_to_target():
+    actor = cube("History Actor")
+    actor_id = ensure_entity_id(actor)
+    revision_ids = []
+    for index in range(1, 4):
+        receipt = apply_patch(
+            operation_patch(
+                {
+                    "op": "keyframe_transform",
+                    "entity_id": actor_id,
+                    "payload": {
+                        "frames": [{"frame": 1, "location": [index, 0, 0]}]
+                    },
+                },
+                patch_id=f"history-{index}",
+            )
+        )
+        revision_ids.append(receipt["revision_id"])
+
+    history = list_revision_history()
+    assert history["available_count"] == 3
+    assert [entry["patch_id"] for entry in history["entries"]] == [
+        "history-1",
+        "history-2",
+        "history-3",
+    ]
+    assert all(entry["rollback_available"] for entry in history["entries"])
+    assert tuple(actor.location) == (3.0, 0.0, 0.0)
+
+    result = rollback_to_revision(revision_ids[1])
+    assert result["rolled_back_count"] == 2
+    assert [item["patch_id"] for item in result["revisions"]] == [
+        "history-3",
+        "history-2",
+    ]
+    assert tuple(actor.location) == (1.0, 0.0, 0.0)
+    history = list_revision_history()
+    assert [entry["status"] for entry in history["entries"]] == [
+        "applied",
+        "reverted",
+        "reverted",
+    ]
+    assert [entry["rollback_available"] for entry in history["entries"]] == [
+        True,
+        False,
+        False,
+    ]
+    undo_last_patch()
+    assert tuple(actor.location) == (0.0, 0.0, 0.0)
+
+
+def test_revision_audit_survives_blend_reload_without_unsafe_rollback():
+    actor = cube("Persistent History Actor")
+    actor_id = ensure_entity_id(actor)
+    receipt = apply_patch(
+        operation_patch(
+            {
+                "op": "keyframe_transform",
+                "entity_id": actor_id,
+                "payload": {"frames": [{"frame": 1, "location": [2, 0, 0]}]},
+            },
+            patch_id="persistent-history",
+        )
+    )
+    path = PROJECT / ".cache" / f"revision-persistence-{os.getpid()}.blend"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    bpy.ops.wm.save_as_mainfile(filepath=str(path))
+    bpy.ops.wm.open_mainfile(filepath=str(path))
+
+    history = list_revision_history()
+    assert len(history["entries"]) == 1
+    assert history["entries"][0]["revision_id"] == receipt["revision_id"]
+    assert history["entries"][0]["status"] == "applied"
+    assert history["entries"][0]["rollback_available"] is False
+    assert history["available_count"] == 0
+    try:
+        rollback_to_revision(receipt["revision_id"])
+    except ValueError as exc:
+        assert "no facelink revision" in str(exc).lower()
+    else:
+        raise AssertionError("A persisted audit entry was treated as an executable snapshot")
+    path.unlink()
+
+
 blender_addon.register()
 CASES = [
     ("registration_surface", test_registration_surface),
@@ -606,6 +700,11 @@ CASES = [
     (
         "revision_undo_full_surface",
         test_revision_undo_restores_animation_constraints_camera_and_nla,
+    ),
+    ("revision_history_safe_rollback", test_revision_history_and_safe_rollback_to_target),
+    (
+        "revision_audit_blend_persistence",
+        test_revision_audit_survives_blend_reload_without_unsafe_rollback,
     ),
 ]
 for case_name, case_function in CASES:

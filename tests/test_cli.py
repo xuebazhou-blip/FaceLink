@@ -151,3 +151,38 @@ def test_cli_workflow_scans_plans_and_stages_without_applying(
     assert result["review"]["staged"] is True
     assert result["patch"]["operations"][1]["op"] == "keyframe_transform"
     assert "Apply or Discard" in result["next_step"]
+
+
+def test_cli_history_and_rollback_use_revision_jobs(monkeypatch, capsys):
+    calls = []
+
+    class FakeClient:
+        def __init__(self, instance):
+            assert instance.instance_id == "blender-history"
+
+        def run_job(self, job_type, payload=None):
+            calls.append((job_type, payload))
+            if job_type == "list_revisions":
+                return {"entries": [{"revision_id": "rev-1"}]}
+            return {"rolled_back": True, "target_revision_id": payload["revision_id"]}
+
+    monkeypatch.setattr(
+        cli,
+        "select_instance",
+        lambda _instance_id: SimpleNamespace(instance_id="blender-history"),
+    )
+    monkeypatch.setattr(cli, "BridgeClient", FakeClient)
+
+    monkeypatch.setattr(sys, "argv", ["facelink", "history"])
+    cli.main()
+    assert json.loads(capsys.readouterr().out)["entries"][0]["revision_id"] == "rev-1"
+
+    monkeypatch.setattr(
+        sys, "argv", ["facelink", "rollback", "--revision", "rev-1"]
+    )
+    cli.main()
+    assert json.loads(capsys.readouterr().out)["rolled_back"] is True
+    assert calls == [
+        ("list_revisions", None),
+        ("rollback_revision", {"revision_id": "rev-1"}),
+    ]

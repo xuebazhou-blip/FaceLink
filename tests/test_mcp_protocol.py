@@ -24,6 +24,8 @@ async def test_stdio_server_lists_expected_tools():
         "discard_staged_patch",
         "apply_scene_patch",
         "undo_last_apply",
+        "list_revision_history",
+        "rollback_to_revision",
     } <= names
     preview = next(tool for tool in result.tools if tool.name == "preview_shot")
     schema_text = str(preview.input_schema)

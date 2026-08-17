@@ -27,12 +27,15 @@ generic Blender operator name. The bridge binds to `127.0.0.1`, uses a random be
 limits request bodies to 4 MiB, and routes every `bpy` mutation through a Blender timer on
 the main thread.
 
-Successful patches retain up to 50 in-memory FaceLink revisions. MCP and the Blender panel
-use this revision stack instead of relying on `bpy.ops.ed.undo()`, whose UI-context polling
-is not reliable for background or remote bridge jobs.
-Revisions are cleared when a different `.blend` file loads. Undo is intended to happen
-immediately; manual edits made after a FaceLink patch can be overwritten by its revision
-restore and are therefore an explicit alpha limitation.
+Successful patches retain up to 50 in-memory FaceLink rollback snapshots. MCP and the Blender
+panel use this stack instead of relying on `bpy.ops.ed.undo()`, whose UI-context polling is not
+reliable for background or remote bridge jobs. A separate 100-entry audit log is stored on
+the Blender Scene and survives `.blend` save/load. Persisted audit entries are never presented
+as executable snapshots after a restart.
+
+Rollback history is linear: selecting an older revision restores every newer FaceLink
+revision first, followed by the selected revision. Manual edits made after a FaceLink patch
+can still be overwritten by its snapshot restore and remain an explicit alpha limitation.
 
 The default v0.2 path has a second safety boundary: the bridge preflights and stages one
 patch, Blender displays its operation count, affected objects, frame span and warnings, and

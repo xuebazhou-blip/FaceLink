@@ -1,6 +1,7 @@
 import json
 
 import bpy
+from bpy.props import StringProperty
 from bpy.types import Operator
 
 from .bridge import (
@@ -11,7 +12,7 @@ from .bridge import (
     start_bridge,
     stop_bridge,
 )
-from .executor import REVISION_STACK, undo_last_patch
+from .executor import list_revision_history, rollback_to_revision, undo_last_patch
 from .snapshot import ensure_entity_id, scan_scene
 
 
@@ -149,12 +150,31 @@ class FACELINK_OT_undo_patch(Operator):
     bl_description = "Restore the scene state captured before the latest FaceLink patch"
 
     @classmethod
-    def poll(cls, context):
-        return bool(REVISION_STACK)
+    def poll(cls, _context):
+        return list_revision_history()["available_count"] > 0
 
     def execute(self, context):
         result = undo_last_patch()
         context.window_manager.facelink.last_result = f"Undid {result['patch_id']}"
+        self.report({"INFO"}, context.window_manager.facelink.last_result)
+        return {"FINISHED"}
+
+
+class FACELINK_OT_rollback_revision(Operator):
+    bl_idname = "facelink.rollback_revision"
+    bl_label = "Roll Back to Revision"
+    bl_description = "Undo this FaceLink revision and every newer FaceLink revision"
+
+    revision_id: StringProperty(name="Revision ID")
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_confirm(self, event)
+
+    def execute(self, context):
+        result = rollback_to_revision(self.revision_id)
+        context.window_manager.facelink.last_result = (
+            f"Rolled back {result['rolled_back_count']} FaceLink revision(s)"
+        )
         self.report({"INFO"}, context.window_manager.facelink.last_result)
         return {"FINISHED"}
 
@@ -168,6 +188,7 @@ CLASSES = (
     FACELINK_OT_apply_staged_patch,
     FACELINK_OT_discard_staged_patch,
     FACELINK_OT_undo_patch,
+    FACELINK_OT_rollback_revision,
 )
 
 

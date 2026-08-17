@@ -1,3 +1,7 @@
+import json
+import time
+import uuid
+
 import bpy
 from mathutils import Euler, Matrix, Vector
 
@@ -13,6 +17,8 @@ ALLOWED_OPERATIONS = {
 INTERPOLATIONS = {"LINEAR", "BEZIER", "CONSTANT"}
 REVISION_STACK = []
 MAX_REVISIONS = 50
+MAX_AUDIT_ENTRIES = 100
+AUDIT_LOG_KEY = "facelink_revision_log"
 
 
 def _assert_editable(obj):
@@ -278,8 +284,13 @@ def _capture_revision(patch, operations):
             else:
                 affected.setdefault(camera.name, _capture_object(camera))
     return {
+        "revision_id": "rev-" + uuid.uuid4().hex[:16],
         "patch_id": patch.get("patch_id", "unknown"),
+        "source_title": patch.get("source_title", "Untitled patch"),
+        "applied_at": time.time(),
         "scene_pointer": scene.as_pointer(),
+        "had_audit_log": AUDIT_LOG_KEY in scene,
+        "audit_log_raw": scene.get(AUDIT_LOG_KEY),
         "scene": {
             "fps": scene.render.fps,
             "fps_base": scene.render.fps_base,
@@ -289,6 +300,88 @@ def _capture_revision(patch, operations):
         },
         "objects": affected,
         "new_camera_names": new_camera_names,
+    }
+
+
+def _read_audit_log(scene=None):
+    scene = scene or bpy.context.scene
+    raw = scene.get(AUDIT_LOG_KEY, "[]")
+    if not isinstance(raw, str):
+        return []
+    try:
+        entries = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    if not isinstance(entries, list):
+        return []
+    return [entry for entry in entries if isinstance(entry, dict)]
+
+
+def _write_audit_log(entries, scene=None):
+    scene = scene or bpy.context.scene
+    scene[AUDIT_LOG_KEY] = json.dumps(
+        entries[-MAX_AUDIT_ENTRIES:], ensure_ascii=False, separators=(",", ":")
+    )
+
+
+def clear_revision_history():
+    scene = bpy.context.scene
+    if AUDIT_LOG_KEY in scene:
+        del scene[AUDIT_LOG_KEY]
+
+
+def _record_revision(revision, operations, warnings):
+    operation_types = {}
+    for operation in operations:
+        op = operation["op"]
+        operation_types[op] = operation_types.get(op, 0) + 1
+    affected_objects = sorted(
+        set(revision["objects"]) | set(revision["new_camera_names"])
+    )
+    entry = {
+        "revision_id": revision["revision_id"],
+        "patch_id": revision["patch_id"],
+        "source_title": revision["source_title"],
+        "applied_at": revision["applied_at"],
+        "operation_count": len(operations),
+        "operation_types": dict(sorted(operation_types.items())),
+        "affected_objects": affected_objects,
+        "warnings": list(warnings),
+        "status": "applied",
+    }
+    entries = _read_audit_log()
+    entries.append(entry)
+    _write_audit_log(entries)
+
+
+def _mark_revision_reverted(revision):
+    entries = _read_audit_log()
+    for entry in reversed(entries):
+        if entry.get("revision_id") == revision["revision_id"]:
+            entry["status"] = "reverted"
+            entry["reverted_at"] = time.time()
+            break
+    _write_audit_log(entries)
+
+
+def list_revision_history():
+    scene = bpy.context.scene
+    available = {
+        revision["revision_id"]
+        for revision in REVISION_STACK
+        if revision["scene_pointer"] == scene.as_pointer()
+    }
+    entries = []
+    for entry in _read_audit_log(scene):
+        item = dict(entry)
+        item["rollback_available"] = (
+            item.get("status") == "applied" and item.get("revision_id") in available
+        )
+        entries.append(item)
+    return {
+        "scene_name": scene.name,
+        "entries": entries,
+        "available_count": len(available),
     }
 
 
@@ -379,7 +472,7 @@ def _restore_object(state):
         bpy.data.actions.remove(current_action)
 
 
-def _restore_revision(revision):
+def _restore_revision(revision, *, restore_audit=False):
     scene = bpy.context.scene
     scene_state = revision["scene"]
     scene.render.fps = scene_state["fps"]
@@ -396,6 +489,11 @@ def _restore_revision(revision):
                 bpy.data.cameras.remove(data)
     for state in revision["objects"].values():
         _restore_object(state)
+    if restore_audit:
+        if revision["had_audit_log"]:
+            scene[AUDIT_LOG_KEY] = revision["audit_log_raw"]
+        elif AUDIT_LOG_KEY in scene:
+            del scene[AUDIT_LOG_KEY]
     bpy.context.view_layer.update()
 
 
@@ -407,7 +505,47 @@ def undo_last_patch():
         raise ValueError("FaceLink revisions were cleared because the active scene changed")
     revision = REVISION_STACK.pop()
     _restore_revision(revision)
+    _mark_revision_reverted(revision)
     return {"undone": True, "patch_id": revision["patch_id"]}
+
+
+def rollback_to_revision(revision_id):
+    if not isinstance(revision_id, str) or not revision_id:
+        raise ValueError("revision_id is required")
+    if not REVISION_STACK:
+        raise ValueError("No FaceLink revision is available to roll back")
+    scene_pointer = bpy.context.scene.as_pointer()
+    if REVISION_STACK[-1]["scene_pointer"] != scene_pointer:
+        REVISION_STACK.clear()
+        raise ValueError("FaceLink revisions were cleared because the active scene changed")
+    target_index = next(
+        (
+            index
+            for index, revision in enumerate(REVISION_STACK)
+            if revision["scene_pointer"] == scene_pointer
+            and revision["revision_id"] == revision_id
+        ),
+        None,
+    )
+    if target_index is None:
+        raise ValueError(f"Revision '{revision_id}' is not available in this Blender session")
+    rolled_back = []
+    while len(REVISION_STACK) > target_index:
+        revision = REVISION_STACK.pop()
+        _restore_revision(revision)
+        _mark_revision_reverted(revision)
+        rolled_back.append(
+            {
+                "revision_id": revision["revision_id"],
+                "patch_id": revision["patch_id"],
+            }
+        )
+    return {
+        "rolled_back": True,
+        "target_revision_id": revision_id,
+        "rolled_back_count": len(rolled_back),
+        "revisions": rolled_back,
+    }
 
 
 def clear_revisions():
@@ -628,14 +766,16 @@ def apply_patch(patch):
                 changed.add(ensure_entity_id(_play_clip(entity_id, payload)))
             elif op == "ensure_camera":
                 changed.add(ensure_entity_id(_ensure_camera(payload)))
+        _record_revision(revision, operations, warnings)
     except Exception:
-        _restore_revision(revision)
+        _restore_revision(revision, restore_audit=True)
         raise
     REVISION_STACK.append(revision)
     if len(REVISION_STACK) > MAX_REVISIONS:
         del REVISION_STACK[0]
     return {
         "patch_id": patch.get("patch_id", "unknown"),
+        "revision_id": revision["revision_id"],
         "applied_operations": len(operations),
         "changed_entities": sorted(changed),
         "warnings": warnings,

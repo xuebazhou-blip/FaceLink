@@ -98,6 +98,20 @@ def undo_last_apply(instance_id: str | None = None) -> dict[str, Any]:
 
 
 @mcp.tool()
+def list_revision_history(instance_id: str | None = None) -> dict[str, Any]:
+    """List persistent FaceLink audit entries and current-session rollback availability."""
+    return BridgeClient(select_instance(instance_id)).run_job("list_revisions")
+
+
+@mcp.tool()
+def rollback_to_revision(revision_id: str, instance_id: str | None = None) -> dict[str, Any]:
+    """Undo the selected revision and every newer FaceLink revision in this session."""
+    return BridgeClient(select_instance(instance_id)).run_job(
+        "rollback_revision", {"revision_id": revision_id}
+    )
+
+
+@mcp.tool()
 def get_blender_job(job_id: str, instance_id: str | None = None) -> dict[str, Any]:
     """Get the status of a previously submitted Blender job."""
     return BridgeClient(select_instance(instance_id)).get_job(job_id)

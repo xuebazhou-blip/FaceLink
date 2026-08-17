@@ -2,6 +2,7 @@ import bpy
 from bpy.types import Panel
 
 from .bridge import get_staged_patch, is_running
+from .executor import list_revision_history
 
 
 class FACELINK_PT_main(Panel):
@@ -62,6 +63,20 @@ class FACELINK_PT_main(Panel):
         history = layout.box()
         history.label(text="History", icon="RECOVER_LAST")
         history.operator("facelink.undo_patch", icon="LOOP_BACK")
+        revision_history = list_revision_history()
+        entries = revision_history["entries"][-4:]
+        if not entries:
+            history.label(text="No FaceLink revisions in this scene")
+        for entry in reversed(entries):
+            row = history.row(align=True)
+            status = entry.get("status", "unknown")
+            icon = "CHECKMARK" if status == "applied" else "LOOP_BACK"
+            row.label(text=f"{entry.get('source_title', 'Untitled')[:36]}", icon=icon)
+            if entry.get("rollback_available"):
+                operator = row.operator("facelink.rollback_revision", text="", icon="BACK")
+                operator.revision_id = entry["revision_id"]
+            elif status == "applied":
+                row.label(text="saved log", icon="LOCKED")
 
         help_box = layout.box()
         help_box.label(text="MCP flow: scan -> preview -> stage")

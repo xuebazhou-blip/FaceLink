@@ -32,10 +32,10 @@ human-readable summary.
 - Source-level Blender acceptance must pass: registration, stable identity, bounds, locks,
   world/local parent conversion, stale-scene rejection, transform keyframes, interpolation,
   frame rate, constraints, cameras, NLA clips, idempotency, fail-closed behavior and
-  transaction rollback.
+  transaction rollback, multi-revision rollback and real `.blend` audit persistence.
 - Bridge acceptance must pass: localhost binding, bearer authentication, malformed requests,
   concurrent jobs, protocol 1.1 fingerprint agreement, main-thread dispatch, failed-job
-  reporting, Undo and discovery cleanup.
+  reporting, protocol 1.2 history/rollback, Undo and discovery cleanup.
 - The built ZIP must install, enable and load from each Blender version's isolated portable
   extension repository.
 

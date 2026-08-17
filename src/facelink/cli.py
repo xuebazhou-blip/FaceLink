@@ -41,6 +41,15 @@ def _parser() -> argparse.ArgumentParser:
     apply.add_argument("--patch", required=True)
     apply.add_argument("--instance")
 
+    history = commands.add_parser("history", help="List FaceLink revisions for a Blender scene")
+    history.add_argument("--instance")
+
+    rollback = commands.add_parser(
+        "rollback", help="Undo a revision and every newer FaceLink revision"
+    )
+    rollback.add_argument("--revision", required=True)
+    rollback.add_argument("--instance")
+
     plan = commands.add_parser("plan", help="Plan a shot with an OpenAI API key")
     plan.add_argument("--brief", required=True)
     plan.add_argument("--snapshot", required=True)
@@ -84,6 +93,14 @@ def main() -> None:
         patch = ScenePatch.model_validate(_read_json(args.patch))
         result = BridgeClient(select_instance(args.instance)).run_job(
             "apply_patch", {"patch": patch.model_dump(mode="json")}
+        )
+        _write_json(result, None)
+    elif args.command == "history":
+        result = BridgeClient(select_instance(args.instance)).run_job("list_revisions")
+        _write_json(result, None)
+    elif args.command == "rollback":
+        result = BridgeClient(select_instance(args.instance)).run_job(
+            "rollback_revision", {"revision_id": args.revision}
         )
         _write_json(result, None)
     elif args.command == "plan":

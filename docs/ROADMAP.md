@@ -16,16 +16,22 @@
 - MCP workflow that uses the client's existing model without a FaceLink API key
 - Automated compatibility matrix for Blender 4.2, 4.5 and 5.x
 
-## v0.2.1 — current scene-consistency release
+## v0.2.1 — completed scene-consistency release
 
 - World-space snapshots and parent-aware object/camera location conversion
 - Patch-scoped scene fingerprints checked at stage and apply time
 - Fingerprints evaluate at the original scan frame, so timeline scrubbing is not an edit
 - Backward-compatible execution of unguarded local-space protocol 1.0 patches
 
+## v0.2.2 — current revision-history release
+
+- Persistent per-Scene audit history stored inside `.blend` files
+- Unique revision IDs and MCP/CLI/Blender history inspection
+- Safe rollback-to that reverses the target and every newer FaceLink revision
+- Explicit separation between persistent metadata and session-only executable snapshots
+
 ## v0.2.x — remaining reliability follow-ups
 
-- Persistent revision log with selective rollback
 - Timeline overlap checks and stronger shot invariants
 - Viewport overlay for spatial path and camera-frustum review
 
