@@ -1,0 +1,13 @@
+schema_version = "1.0.0"
+id = "facelink"
+version = "0.1.0"
+name = "FaceLink"
+tagline = "Editable previs animation from constrained shot descriptions"
+maintainer = "FaceLink Contributors"
+type = "add-on"
+blender_version_min = "4.2.0"
+license = ["SPDX:GPL-3.0-or-later"]
+
+[permissions]
+network = "Runs an authenticated bridge bound only to 127.0.0.1"
+files = "Writes one instance-discovery record to a temporary folder"

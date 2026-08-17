@@ -1,0 +1,420 @@
+{
+  "$defs": {
+    "CameraSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "default": "FaceLink Camera",
+          "title": "Name",
+          "type": "string"
+        },
+        "mode": {
+          "default": "static",
+          "enum": [
+            "static",
+            "look_at",
+            "follow",
+            "dolly_in"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "target": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target"
+        },
+        "location": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Vec3"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "lens_mm": {
+          "default": 50.0,
+          "maximum": 300.0,
+          "minimum": 1.0,
+          "title": "Lens Mm",
+          "type": "number"
+        },
+        "distance": {
+          "default": 6.0,
+          "exclusiveMinimum": 0.0,
+          "title": "Distance",
+          "type": "number"
+        },
+        "height": {
+          "default": 2.0,
+          "title": "Height",
+          "type": "number"
+        }
+      },
+      "title": "CameraSpec",
+      "type": "object"
+    },
+    "LookAtBeat": {
+      "additionalProperties": false,
+      "properties": {
+        "at": {
+          "default": 0.0,
+          "description": "Start time in seconds",
+          "minimum": 0.0,
+          "title": "At",
+          "type": "number"
+        },
+        "duration": {
+          "default": 0.0,
+          "description": "Duration in seconds",
+          "minimum": 0.0,
+          "title": "Duration",
+          "type": "number"
+        },
+        "type": {
+          "const": "look_at",
+          "title": "Type",
+          "type": "string"
+        },
+        "actor": {
+          "title": "Actor",
+          "type": "string"
+        },
+        "target": {
+          "title": "Target",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "actor",
+        "target"
+      ],
+      "title": "LookAtBeat",
+      "type": "object"
+    },
+    "MoveToBeat": {
+      "additionalProperties": false,
+      "properties": {
+        "at": {
+          "default": 0.0,
+          "description": "Start time in seconds",
+          "minimum": 0.0,
+          "title": "At",
+          "type": "number"
+        },
+        "duration": {
+          "default": 0.0,
+          "description": "Duration in seconds",
+          "minimum": 0.0,
+          "title": "Duration",
+          "type": "number"
+        },
+        "type": {
+          "const": "move_to",
+          "title": "Type",
+          "type": "string"
+        },
+        "actor": {
+          "title": "Actor",
+          "type": "string"
+        },
+        "target_entity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Entity"
+        },
+        "target_position": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Vec3"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "easing": {
+          "default": "BEZIER",
+          "enum": [
+            "LINEAR",
+            "BEZIER",
+            "CONSTANT"
+          ],
+          "title": "Easing",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "actor"
+      ],
+      "title": "MoveToBeat",
+      "type": "object"
+    },
+    "PlayClipBeat": {
+      "additionalProperties": false,
+      "properties": {
+        "at": {
+          "default": 0.0,
+          "description": "Start time in seconds",
+          "minimum": 0.0,
+          "title": "At",
+          "type": "number"
+        },
+        "duration": {
+          "default": 0.0,
+          "description": "Duration in seconds",
+          "minimum": 0.0,
+          "title": "Duration",
+          "type": "number"
+        },
+        "type": {
+          "const": "play_clip",
+          "title": "Type",
+          "type": "string"
+        },
+        "actor": {
+          "title": "Actor",
+          "type": "string"
+        },
+        "clip": {
+          "title": "Clip",
+          "type": "string"
+        },
+        "loop": {
+          "default": false,
+          "title": "Loop",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "type",
+        "actor",
+        "clip"
+      ],
+      "title": "PlayClipBeat",
+      "type": "object"
+    },
+    "TurnToBeat": {
+      "additionalProperties": false,
+      "properties": {
+        "at": {
+          "default": 0.0,
+          "description": "Start time in seconds",
+          "minimum": 0.0,
+          "title": "At",
+          "type": "number"
+        },
+        "duration": {
+          "default": 0.0,
+          "description": "Duration in seconds",
+          "minimum": 0.0,
+          "title": "Duration",
+          "type": "number"
+        },
+        "type": {
+          "const": "turn_to",
+          "title": "Type",
+          "type": "string"
+        },
+        "actor": {
+          "title": "Actor",
+          "type": "string"
+        },
+        "target_entity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Entity"
+        },
+        "target_position": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Vec3"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "easing": {
+          "default": "BEZIER",
+          "enum": [
+            "LINEAR",
+            "BEZIER",
+            "CONSTANT"
+          ],
+          "title": "Easing",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "actor"
+      ],
+      "title": "TurnToBeat",
+      "type": "object"
+    },
+    "Vec3": {
+      "additionalProperties": false,
+      "properties": {
+        "x": {
+          "default": 0.0,
+          "title": "X",
+          "type": "number"
+        },
+        "y": {
+          "default": 0.0,
+          "title": "Y",
+          "type": "number"
+        },
+        "z": {
+          "default": 0.0,
+          "title": "Z",
+          "type": "number"
+        }
+      },
+      "title": "Vec3",
+      "type": "object"
+    },
+    "WaitBeat": {
+      "additionalProperties": false,
+      "properties": {
+        "at": {
+          "default": 0.0,
+          "description": "Start time in seconds",
+          "minimum": 0.0,
+          "title": "At",
+          "type": "number"
+        },
+        "duration": {
+          "default": 0.0,
+          "description": "Duration in seconds",
+          "minimum": 0.0,
+          "title": "Duration",
+          "type": "number"
+        },
+        "type": {
+          "const": "wait",
+          "title": "Type",
+          "type": "string"
+        },
+        "actor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Actor"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "WaitBeat",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "title": {
+      "default": "Untitled shot",
+      "title": "Title",
+      "type": "string"
+    },
+    "fps": {
+      "default": 24.0,
+      "exclusiveMinimum": 0,
+      "title": "Fps",
+      "type": "number"
+    },
+    "duration": {
+      "default": 5.0,
+      "exclusiveMinimum": 0,
+      "title": "Duration",
+      "type": "number"
+    },
+    "beats": {
+      "items": {
+        "discriminator": {
+          "mapping": {
+            "look_at": "#/$defs/LookAtBeat",
+            "move_to": "#/$defs/MoveToBeat",
+            "play_clip": "#/$defs/PlayClipBeat",
+            "turn_to": "#/$defs/TurnToBeat",
+            "wait": "#/$defs/WaitBeat"
+          },
+          "propertyName": "type"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/$defs/MoveToBeat"
+          },
+          {
+            "$ref": "#/$defs/TurnToBeat"
+          },
+          {
+            "$ref": "#/$defs/LookAtBeat"
+          },
+          {
+            "$ref": "#/$defs/WaitBeat"
+          },
+          {
+            "$ref": "#/$defs/PlayClipBeat"
+          }
+        ]
+      },
+      "title": "Beats",
+      "type": "array"
+    },
+    "camera": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CameraSpec"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "title": "ShotSpec",
+  "type": "object"
+}

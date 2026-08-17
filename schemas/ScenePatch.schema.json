@@ -1,0 +1,80 @@
+{
+  "$defs": {
+    "PatchOperation": {
+      "additionalProperties": false,
+      "properties": {
+        "op": {
+          "enum": [
+            "keyframe_transform",
+            "look_at",
+            "play_clip",
+            "ensure_camera",
+            "set_frame_range"
+          ],
+          "title": "Op",
+          "type": "string"
+        },
+        "entity_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Entity Id"
+        },
+        "payload": {
+          "additionalProperties": true,
+          "title": "Payload",
+          "type": "object"
+        }
+      },
+      "required": [
+        "op"
+      ],
+      "title": "PatchOperation",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "patch_id": {
+      "title": "Patch Id",
+      "type": "string"
+    },
+    "source_title": {
+      "title": "Source Title",
+      "type": "string"
+    },
+    "operations": {
+      "items": {
+        "$ref": "#/$defs/PatchOperation"
+      },
+      "title": "Operations",
+      "type": "array"
+    },
+    "warnings": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Warnings",
+      "type": "array"
+    }
+  },
+  "required": [
+    "patch_id",
+    "source_title",
+    "operations"
+  ],
+  "title": "ScenePatch",
+  "type": "object"
+}

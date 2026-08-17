@@ -1,0 +1,151 @@
+{
+  "$defs": {
+    "Bounds": {
+      "additionalProperties": false,
+      "properties": {
+        "minimum": {
+          "$ref": "#/$defs/Vec3"
+        },
+        "maximum": {
+          "$ref": "#/$defs/Vec3"
+        }
+      },
+      "required": [
+        "minimum",
+        "maximum"
+      ],
+      "title": "Bounds",
+      "type": "object"
+    },
+    "SceneEntity": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "type": {
+          "title": "Type",
+          "type": "string"
+        },
+        "transform": {
+          "$ref": "#/$defs/Transform"
+        },
+        "bounds": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Bounds"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "locked": {
+          "default": false,
+          "title": "Locked",
+          "type": "boolean"
+        },
+        "metadata": {
+          "additionalProperties": true,
+          "title": "Metadata",
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "type",
+        "transform"
+      ],
+      "title": "SceneEntity",
+      "type": "object"
+    },
+    "Transform": {
+      "additionalProperties": false,
+      "properties": {
+        "location": {
+          "$ref": "#/$defs/Vec3"
+        },
+        "rotation_euler": {
+          "$ref": "#/$defs/Vec3"
+        },
+        "scale": {
+          "$ref": "#/$defs/Vec3"
+        }
+      },
+      "title": "Transform",
+      "type": "object"
+    },
+    "Vec3": {
+      "additionalProperties": false,
+      "properties": {
+        "x": {
+          "default": 0.0,
+          "title": "X",
+          "type": "number"
+        },
+        "y": {
+          "default": 0.0,
+          "title": "Y",
+          "type": "number"
+        },
+        "z": {
+          "default": 0.0,
+          "title": "Z",
+          "type": "number"
+        }
+      },
+      "title": "Vec3",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "scene_name": {
+      "title": "Scene Name",
+      "type": "string"
+    },
+    "fps": {
+      "default": 24.0,
+      "exclusiveMinimum": 0,
+      "title": "Fps",
+      "type": "number"
+    },
+    "frame_start": {
+      "default": 1,
+      "title": "Frame Start",
+      "type": "integer"
+    },
+    "frame_end": {
+      "default": 250,
+      "title": "Frame End",
+      "type": "integer"
+    },
+    "entities": {
+      "items": {
+        "$ref": "#/$defs/SceneEntity"
+      },
+      "title": "Entities",
+      "type": "array"
+    }
+  },
+  "required": [
+    "scene_name"
+  ],
+  "title": "SceneSnapshot",
+  "type": "object"
+}
