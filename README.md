@@ -36,6 +36,8 @@ the scene only after the artist presses **Apply Staged Patch**.
   FCurve paths, places the result in NLA, and removes created copies during rollback;
 - samples reviewed `bake_pose` profiles into ordinary editable target Actions, correcting
   different local rest axes and bone scale with explicit root-motion policy and bounded work;
+- evaluates existing self-contained source-rig constraints and drivers with
+  `bake_evaluated_pose`, then bakes the final deform-bone pose into an ordinary editable Action;
 - predicts the staged camera frame without creating scene datablocks, measuring target size,
   center offset, safe-area fit, clipping and center-point occlusion before the artist applies;
 - rejects a staged plan when a referenced transform, parent link, lock or scene timing value
@@ -77,7 +79,7 @@ $env:FACELINK_BLENDER_EXE='C:\path\to\Blender\blender.exe' # optional if on PATH
 ```
 
 Then in Blender 4.5: **Edit → Preferences → Get Extensions → Install from Disk**, choose
-`dist/facelink-0.3.4.zip`, enable FaceLink, and open the **FaceLink** tab in the 3D Viewport
+`dist/facelink-0.3.5.zip`, enable FaceLink, and open the **FaceLink** tab in the 3D Viewport
 sidebar. Press **Start Bridge**.
 
 Run the MCP server:
@@ -175,6 +177,16 @@ mapped parent hierarchy and unconstrained source/target deform bones. See
 [profiles/mixamo_to_facelink_compact_bake.json](profiles/mixamo_to_facelink_compact_bake.json)
 and [examples/baked_retargeted_clip_shot.json](examples/baked_retargeted_clip_shot.json).
 
+When the source Action animates controller bones or custom properties and the source deform
+bones receive their final motion through constraints/drivers, use
+`adapter: "bake_evaluated_pose"`. The reviewed `bone_map` maps source deform bones—not the
+controller channels—to target deform bones. Version 1 permits only dependencies on the same
+source armature object/data, rejects external helper objects and scene-driven variables, and
+still requires equivalent mapped parent hierarchy plus unconstrained/undriven target bones.
+It does not discover controllers or convert IK/FK systems automatically. See
+[profiles/controller_to_deform_evaluated_bake.json](profiles/controller_to_deform_evaluated_bake.json)
+and [examples/evaluated_retargeted_clip_shot.json](examples/evaluated_retargeted_clip_shot.json).
+
 Inspect or roll back FaceLink revisions from the command line:
 
 ```powershell
@@ -231,11 +243,11 @@ docs/                  Architecture, protocol and development notes
 
 ## Project status
 
-Version 0.3.4 is a creator-review alpha, not yet a production animation system. It now performs
-a bounded transform-aware pose bake for reviewed mappings across different local rest axes and
-scale, with explicit root-motion policy. It does not automatically infer IK/FK controls, solve
-different mapped parent hierarchies, evaluate constrained control rigs, transfer object-level
-motion, synthesize missing motion or judge the visual result. Multi-level navigation,
+Version 0.3.5 is a creator-review alpha, not yet a production animation system. It performs
+bounded transform-aware pose baking for reviewed mappings and can evaluate existing constraints
+and drivers when every dependency stays on the explicit source armature. It does not infer
+controllers, translate IK/FK systems, follow external helper objects, solve different mapped
+parent hierarchies, transfer object-level motion, synthesize missing motion or judge the visual result. Multi-level navigation,
 multi-shot sequencing and visual diff overlays remain follow-up work.
 
 Before publishing your fork, replace the placeholder GitHub URLs in `pyproject.toml`, add a

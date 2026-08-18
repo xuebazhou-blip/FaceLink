@@ -129,11 +129,13 @@ def _resolve_source_rig(
     retarget,
     rigs: dict[str, RigInventory],
 ) -> tuple[RigInventory | None, str | None]:
-    if retarget is None or not action.pose_bones:
+    if retarget is None:
         return None, None
     if retarget.source_rig is not None:
         source = rigs.get(retarget.source_rig)
         return (source, "missing") if source is None else (source, None)
+    if not action.pose_bones:
+        return None, None
     action_bones = set(action.pose_bones)
     candidates = [
         rig for rig in rigs.values() if action_bones <= {bone.name for bone in rig.bones}
@@ -216,81 +218,113 @@ def _rig_action_issues(shot: ShotSpec, snapshot: SceneSnapshot) -> list[Validati
                 )
             )
             continue
-        analysis = analyze_retarget(action, rig, beat.retarget)
-        if analysis.missing_sources:
-            issues.append(
-                ValidationIssue(
-                    severity="error",
-                    code="retarget_mapping_incomplete",
-                    message=(
-                        "Strict retarget mapping does not cover action bone(s): "
-                        + ", ".join(analysis.missing_sources)
-                    ),
-                    beat_index=index,
+        evaluated_bake = (
+            beat.retarget is not None
+            and beat.retarget.adapter == "bake_evaluated_pose"
+        )
+        if evaluated_bake:
+            missing_targets = sorted(
+                set(beat.retarget.bone_map.values())
+                - {bone.name for bone in rig.bones}
+            )
+            if missing_targets:
+                issues.append(
+                    ValidationIssue(
+                        severity="error",
+                        code="retarget_target_bone_missing",
+                        message=(
+                            f"Target rig '{rig.name}' is missing mapped bone(s): "
+                            + ", ".join(missing_targets)
+                        ),
+                        beat_index=index,
+                    )
                 )
-            )
-        if analysis.missing_targets:
-            code = (
-                "retarget_target_bone_missing"
-                if beat.retarget is not None
-                else "action_incompatible_with_rig"
-            )
-            issues.append(
-                ValidationIssue(
-                    severity="error",
-                    code=code,
-                    message=(
-                        f"Target rig '{rig.name}' is missing bone(s): "
-                        + ", ".join(analysis.missing_targets)
-                    ),
-                    beat_index=index,
+        else:
+            analysis = analyze_retarget(action, rig, beat.retarget)
+            if analysis.missing_sources:
+                issues.append(
+                    ValidationIssue(
+                        severity="error",
+                        code="retarget_mapping_incomplete",
+                        message=(
+                            "Strict retarget mapping does not cover action bone(s): "
+                            + ", ".join(analysis.missing_sources)
+                        ),
+                        beat_index=index,
+                    )
                 )
-            )
-        if analysis.duplicate_targets:
-            issues.append(
-                ValidationIssue(
-                    severity="error",
-                    code="retarget_target_collision",
-                    message=(
-                        "Multiple source bones resolve to target bone(s): "
-                        + ", ".join(analysis.duplicate_targets)
-                    ),
-                    beat_index=index,
+            if analysis.missing_targets:
+                code = (
+                    "retarget_target_bone_missing"
+                    if beat.retarget is not None
+                    else "action_incompatible_with_rig"
                 )
-            )
-        if analysis.unused_sources:
-            issues.append(
-                ValidationIssue(
-                    severity="warning",
-                    code="unused_retarget_mapping",
-                    message=(
-                        "Retarget mapping contains source bone(s) unused by the action: "
-                        + ", ".join(analysis.unused_sources)
-                        + ". They remain available for hierarchy compatibility checks."
-                    ),
-                    beat_index=index,
+                issues.append(
+                    ValidationIssue(
+                        severity="error",
+                        code=code,
+                        message=(
+                            f"Target rig '{rig.name}' is missing bone(s): "
+                            + ", ".join(analysis.missing_targets)
+                        ),
+                        beat_index=index,
+                    )
                 )
-            )
+            if analysis.duplicate_targets:
+                issues.append(
+                    ValidationIssue(
+                        severity="error",
+                        code="retarget_target_collision",
+                        message=(
+                            "Multiple source bones resolve to target bone(s): "
+                            + ", ".join(analysis.duplicate_targets)
+                        ),
+                        beat_index=index,
+                    )
+                )
+            if analysis.unused_sources:
+                issues.append(
+                    ValidationIssue(
+                        severity="warning",
+                        code="unused_retarget_mapping",
+                        message=(
+                            "Retarget mapping contains source bone(s) unused by the action: "
+                            + ", ".join(analysis.unused_sources)
+                            + ". They remain available for hierarchy compatibility checks."
+                        ),
+                        beat_index=index,
+                    )
+                )
         has_non_pose_channels = any(
             not path.startswith('pose.bones["') for path in action.data_paths
         )
         if beat.retarget is not None and has_non_pose_channels:
             rename_only = beat.retarget.adapter == "rename_only"
+            evaluated = beat.retarget.adapter == "bake_evaluated_pose"
             issues.append(
                 ValidationIssue(
                     severity="warning",
                     code=(
                         "retarget_preserves_non_pose_channels"
                         if rename_only
-                        else "bake_pose_ignores_non_pose_channels"
+                        else (
+                            "bake_evaluated_pose_ignores_object_channels"
+                            if evaluated
+                            else "bake_pose_ignores_non_pose_channels"
+                        )
                     ),
                     message=(
                         f"Action '{beat.clip}' contains non-pose channels; "
                         + (
                             "rename_only preserves them unchanged."
                             if rename_only
-                            else "bake_pose omits them. Root motion must be stored on a "
-                            "mapped root pose bone to be transferred."
+                            else (
+                                "bake_evaluated_pose evaluates controller and custom-property "
+                                "channels on the source rig, but omits object-level channels."
+                                if evaluated
+                                else "bake_pose omits them. Root motion must be stored on a "
+                                "mapped root pose bone to be transferred."
+                            )
                         )
                     ),
                     beat_index=index,
@@ -298,14 +332,21 @@ def _rig_action_issues(shot: ShotSpec, snapshot: SceneSnapshot) -> list[Validati
             )
         if (
             beat.retarget is not None
-            and beat.retarget.adapter == "bake_pose"
+            and beat.retarget.adapter in {"bake_pose", "bake_evaluated_pose"}
             and snapshot.schema_version != "1.4"
         ):
             issues.append(
                 ValidationIssue(
                     severity="error",
-                    code="bake_pose_requires_rig_geometry",
-                    message="bake_pose requires a Scene Snapshot 1.4 rig geometry inventory.",
+                    code=(
+                        "bake_pose_requires_rig_geometry"
+                        if beat.retarget.adapter == "bake_pose"
+                        else "bake_evaluated_pose_requires_rig_geometry"
+                    ),
+                    message=(
+                        f"{beat.retarget.adapter} requires a Scene Snapshot 1.4 rig "
+                        "geometry inventory."
+                    ),
                     beat_index=index,
                 )
             )
@@ -334,6 +375,22 @@ def _rig_action_issues(shot: ShotSpec, snapshot: SceneSnapshot) -> list[Validati
                 )
                 continue
             compatibility = analyze_rig_compatibility(source_rig, rig, beat.retarget)
+            if evaluated_bake:
+                missing_controller_bones = sorted(
+                    set(action.pose_bones) - {bone.name for bone in source_rig.bones}
+                )
+                if missing_controller_bones:
+                    issues.append(
+                        ValidationIssue(
+                            severity="error",
+                            code="evaluated_pose_source_channel_missing",
+                            message=(
+                                f"Source rig '{source_rig.name}' is missing Action "
+                                "controller bone(s): " + ", ".join(missing_controller_bones)
+                            ),
+                            beat_index=index,
+                        )
+                    )
             has_pose_translation = any(
                 path.startswith('pose.bones["') and path.endswith("].location")
                 for path in action.data_paths
@@ -343,7 +400,8 @@ def _rig_action_issues(shot: ShotSpec, snapshot: SceneSnapshot) -> list[Validati
                 and compatibility.median_length_ratio is not None
                 and abs(compatibility.median_length_ratio - 1.0) > 0.02
             )
-            if beat.retarget.adapter == "bake_pose":
+            if beat.retarget.adapter in {"bake_pose", "bake_evaluated_pose"}:
+                adapter = beat.retarget.adapter
                 hierarchy_issues = {
                     item.code
                     for item in compatibility.issues
@@ -353,9 +411,9 @@ def _rig_action_issues(shot: ShotSpec, snapshot: SceneSnapshot) -> list[Validati
                     issues.append(
                         ValidationIssue(
                             severity="error",
-                            code="bake_pose_geometry_incompatible",
+                            code=f"{adapter}_geometry_incompatible",
                             message=(
-                                f"bake_pose cannot map '{source_rig.name}' to '{rig.name}' "
+                                f"{adapter} cannot map '{source_rig.name}' to '{rig.name}' "
                                 "because the rig mapping is incomplete or invalid."
                             ),
                             beat_index=index,
@@ -365,9 +423,9 @@ def _rig_action_issues(shot: ShotSpec, snapshot: SceneSnapshot) -> list[Validati
                     issues.append(
                         ValidationIssue(
                             severity="error",
-                            code="bake_pose_hierarchy_unsupported",
+                            code=f"{adapter}_hierarchy_unsupported",
                             message=(
-                                "bake_pose v1 requires mapped source and target parent "
+                                f"{adapter} v1 requires mapped source and target parent "
                                 "hierarchies to match; remap or bake through an intermediate "
                                 "deform skeleton."
                             ),
@@ -378,9 +436,9 @@ def _rig_action_issues(shot: ShotSpec, snapshot: SceneSnapshot) -> list[Validati
                     issues.append(
                         ValidationIssue(
                             severity="warning",
-                            code="bake_pose_output_review",
+                            code=f"{adapter}_output_review",
                             message=(
-                                f"bake_pose will correct local rest orientation and scale "
+                                f"{adapter} will correct local rest orientation and scale "
                                 f"from '{source_rig.name}' to '{rig.name}', but the generated "
                                 "Action should be reviewed in Blender."
                             ),

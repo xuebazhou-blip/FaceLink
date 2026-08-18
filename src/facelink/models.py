@@ -250,7 +250,9 @@ class WaitBeat(BeatBase):
 
 
 class ActionRetargetSpec(StrictModel):
-    adapter: Literal["rename_only", "bake_pose"] = "rename_only"
+    adapter: Literal["rename_only", "bake_pose", "bake_evaluated_pose"] = (
+        "rename_only"
+    )
     bone_map: dict[str, str] = Field(min_length=1, max_length=512)
     strict: bool = True
     source_rig: str | None = Field(default=None, min_length=1)
@@ -267,15 +269,17 @@ class ActionRetargetSpec(StrictModel):
         targets = list(self.bone_map.values())
         if len(targets) != len(set(targets)):
             raise ValueError("retarget target bones must be unique")
-        if self.adapter == "bake_pose" and self.source_rig is None:
-            raise ValueError("bake_pose requires an explicit source_rig")
-        if self.adapter == "bake_pose" and not self.strict:
-            raise ValueError("bake_pose v1 requires strict=true")
+        bake_adapters = {"bake_pose", "bake_evaluated_pose"}
+        if self.adapter in bake_adapters and self.source_rig is None:
+            raise ValueError(f"{self.adapter} requires an explicit source_rig")
+        if self.adapter in bake_adapters and not self.strict:
+            raise ValueError(f"{self.adapter} v1 requires strict=true")
         if self.adapter == "rename_only" and (
             self.sample_step is not None or self.root_motion is not None
         ):
             raise ValueError(
-                "sample_step and root_motion are only supported by bake_pose"
+                "sample_step and root_motion are only supported by bake_pose and "
+                "bake_evaluated_pose"
             )
         return self
 

@@ -1,0 +1,27 @@
+{
+  "schema_version": "1.0",
+  "title": "Editable evaluated control-rig clip",
+  "fps": 24,
+  "duration": 2,
+  "beats": [
+    {
+      "type": "play_clip",
+      "actor": "replace-with-target-armature-id",
+      "clip": "Controller Action",
+      "at": 0,
+      "duration": 2,
+      "loop": false,
+      "retarget": {
+        "adapter": "bake_evaluated_pose",
+        "bone_map": {
+          "deform_root": "pelvis",
+          "deform_spine": "spine"
+        },
+        "strict": true,
+        "source_rig": "replace-with-source-armature-id",
+        "sample_step": 1,
+        "root_motion": "scale"
+      }
+    }
+  ]
+}

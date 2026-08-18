@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0",
+  "name": "Controller-driven deform skeleton evaluated bake example",
+  "adapter": "bake_evaluated_pose",
+  "bone_map": {
+    "deform_root": "pelvis",
+    "deform_spine": "spine"
+  },
+  "strict": true,
+  "source_rig": "replace-with-source-armature-id",
+  "sample_step": 1,
+  "root_motion": "scale"
+}

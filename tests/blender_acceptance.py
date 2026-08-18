@@ -27,6 +27,7 @@ from facelink.executor import (  # noqa: E402
     rollback_to_revision,
     undo_last_patch,
 )
+from facelink.pose_baking import bake_evaluated_pose_action  # noqa: E402
 from facelink.rig_inventory import rig_fingerprint  # noqa: E402
 from facelink.snapshot import ensure_entity_id, scan_scene, scene_fingerprint  # noqa: E402
 
@@ -1193,6 +1194,337 @@ def test_bake_pose_quaternion_continuity_and_fractional_endpoint():
         previous = quaternion
 
 
+def test_evaluated_pose_bakes_self_constraint_and_restores_source_state():
+    source = geometric_armature(
+        "Evaluated Constraint Source",
+        [
+            ("root", None, (0, 0, 0), (0, 1, 0)),
+            ("spine", "root", (0, 1, 0), (0, 2, 0)),
+            ("ctrl", None, (2, 0, 0), (2, 1, 0)),
+        ],
+    )
+    target = geometric_armature(
+        "Evaluated Constraint Target",
+        [
+            ("pelvis", None, (0, 0, 0), (0, 1, 0)),
+            ("chest", "pelvis", (0, 1, 0), (0, 2, 0)),
+        ],
+    )
+    for rig in (source, target):
+        for pose_bone in rig.pose.bones:
+            pose_bone.rotation_mode = "XYZ"
+    constraint = source.pose.bones["spine"].constraints.new(type="COPY_ROTATION")
+    constraint.name = "Self controller copy"
+    constraint.target = source
+    constraint.subtarget = "ctrl"
+
+    source.animation_data_create()
+    controller_action = bpy.data.actions.new("Evaluated Controller Action")
+    source.animation_data.action = controller_action
+    ctrl = source.pose.bones["ctrl"]
+    for frame, angle in ((1, 0.0), (11, 0.6)):
+        ctrl.rotation_euler = (0.0, 0.0, angle)
+        ctrl.keyframe_insert(data_path="rotation_euler", frame=frame, group="ctrl")
+    source.animation_data.action = None
+    idle = bpy.data.actions.new("Evaluated Source Idle")
+    source.animation_data.action = idle
+    source.pose.bones["root"].location.x = 0.25
+    source.pose.bones["root"].keyframe_insert(
+        data_path="location", frame=1, group="root"
+    )
+    source_track = source.animation_data.nla_tracks.new()
+    source_track.name = "Existing Source NLA"
+    source_track.strips.new("Existing Source Strip", 1, controller_action)
+    source_track.mute = False
+    bpy.context.scene.frame_set(7, subframe=0.25)
+    bpy.context.view_layer.update()
+    original_pose = {
+        bone.name: bone.matrix_basis.copy() for bone in source.pose.bones
+    }
+
+    source_id = ensure_entity_id(source)
+    target_id = ensure_entity_id(target)
+    snapshot = scan_scene()
+    rigs = {item["entity_id"]: item for item in snapshot["rigs"]}
+    patch = {
+        "schema_version": "1.4",
+        "patch_id": "evaluated-self-constraint",
+        "source_title": "Evaluated self constraint",
+        "action_fingerprints": {
+            controller_action.name: action_fingerprint(controller_action)
+        },
+        "rig_fingerprints": {
+            source_id: rigs[source_id]["fingerprint"],
+            target_id: rigs[target_id]["fingerprint"],
+        },
+        "operations": [
+            {
+                "op": "play_clip",
+                "entity_id": target_id,
+                "payload": {
+                    "clip": controller_action.name,
+                    "frame_start": 20,
+                    "frame_end": 30,
+                    "retarget": {
+                        "adapter": "bake_evaluated_pose",
+                        "source_rig": source_id,
+                        "strict": True,
+                        "bone_map": {"root": "pelvis", "spine": "chest"},
+                    },
+                },
+            }
+        ],
+    }
+    summary = bridge.stage_patch(patch)["summary"]
+    retarget = summary["retargets"][0]
+    assert retarget["adapter"] == "bake_evaluated_pose"
+    assert retarget["mapped_bone_count"] == 2
+    assert retarget["sample_count"] == 11
+    assert len(retarget["output_action"].encode("utf-8")) <= 63
+    bridge.apply_staged_patch()
+    derived = bpy.data.actions[retarget["output_action"]]
+    assert action_inventory(derived)["pose_bones"] == ["chest", "pelvis"]
+    assert math.isclose(
+        find_action_curve(
+            derived, 'pose.bones["chest"].rotation_euler', 2
+        ).evaluate(11),
+        0.6,
+        abs_tol=1e-5,
+    )
+    assert source.animation_data.action == idle
+    assert source_track.mute is False
+    assert math.isclose(bpy.context.scene.frame_current_final, 7.25)
+    assert all(
+        source.pose.bones[name].matrix_basis == matrix
+        for name, matrix in original_pose.items()
+    )
+    assert source.pose.bones["spine"].constraints[0] == constraint
+
+
+def test_evaluated_pose_bakes_self_driver_custom_property_and_guards_edits():
+    source = armature(
+        "Evaluated Driver Source",
+        [("root", None), ("spine", "root"), ("ctrl", None)],
+    )
+    target = armature(
+        "Evaluated Driver Target", [("pelvis", None), ("chest", "pelvis")]
+    )
+    for rig in (source, target):
+        for pose_bone in rig.pose.bones:
+            pose_bone.rotation_mode = "XYZ"
+    ctrl = source.pose.bones["ctrl"]
+    ctrl["drive"] = 0.0
+    source.animation_data_create()
+    action = bpy.data.actions.new("Evaluated Custom Property")
+    source.animation_data.action = action
+    for frame, value in ((1, 0.0), (11, 0.75)):
+        ctrl["drive"] = value
+        ctrl.keyframe_insert(data_path='["drive"]', frame=frame, group="ctrl")
+    source.animation_data.action = None
+    curve = source.pose.bones["spine"].driver_add("rotation_euler", 2)
+    curve.driver.type = "SCRIPTED"
+    curve.driver.expression = "value"
+    variable = curve.driver.variables.new()
+    variable.name = "value"
+    variable.type = "SINGLE_PROP"
+    variable.targets[0].id = source
+    variable.targets[0].data_path = 'pose.bones["ctrl"]["drive"]'
+
+    source_id = ensure_entity_id(source)
+    target_id = ensure_entity_id(target)
+    snapshot = scan_scene()
+    rigs = {item["entity_id"]: item for item in snapshot["rigs"]}
+    patch = {
+        "schema_version": "1.4",
+        "patch_id": "evaluated-self-driver",
+        "source_title": "Evaluated self driver",
+        "action_fingerprints": {action.name: action_fingerprint(action)},
+        "rig_fingerprints": {
+            source_id: rigs[source_id]["fingerprint"],
+            target_id: rigs[target_id]["fingerprint"],
+        },
+        "operations": [
+            {
+                "op": "play_clip",
+                "entity_id": target_id,
+                "payload": {
+                    "clip": action.name,
+                    "frame_start": 1,
+                    "frame_end": 11,
+                    "retarget": {
+                        "adapter": "bake_evaluated_pose",
+                        "source_rig": source_id,
+                        "bone_map": {"root": "pelvis", "spine": "chest"},
+                    },
+                },
+            }
+        ],
+    }
+    summary = bridge.stage_patch(patch)["summary"]
+    bridge.apply_staged_patch()
+    derived = bpy.data.actions[summary["retargets"][0]["output_action"]]
+    assert math.isclose(
+        find_action_curve(
+            derived, 'pose.bones["chest"].rotation_euler', 2
+        ).evaluate(11),
+        0.75,
+        abs_tol=1e-5,
+    )
+
+    guard_snapshot = scan_scene()
+    guard_rigs = {item["entity_id"]: item for item in guard_snapshot["rigs"]}
+    stale_patch = json.loads(json.dumps(patch))
+    stale_patch["patch_id"] = "evaluated-driver-stale"
+    stale_patch["operations"][0]["payload"]["frame_start"] = 20
+    stale_patch["operations"][0]["payload"]["frame_end"] = 30
+    stale_patch["rig_fingerprints"] = {
+        source_id: guard_rigs[source_id]["fingerprint"],
+        target_id: guard_rigs[target_id]["fingerprint"],
+    }
+    bridge.stage_patch(stale_patch)
+    curve.driver.expression = "value * 2"
+    try:
+        bridge.apply_staged_patch()
+    except ValueError as exc:
+        assert "changed after this patch was planned" in str(exc)
+    else:
+        raise AssertionError("A staged evaluated bake accepted a changed source driver")
+    assert bridge.get_staged_patch()["staged"] is True
+    bridge.discard_staged_patch()
+
+    property_snapshot = scan_scene()
+    property_rigs = {
+        item["entity_id"]: item for item in property_snapshot["rigs"]
+    }
+    property_patch = json.loads(json.dumps(patch))
+    property_patch["patch_id"] = "evaluated-property-stale"
+    property_patch["operations"][0]["payload"]["frame_start"] = 40
+    property_patch["operations"][0]["payload"]["frame_end"] = 50
+    property_patch["rig_fingerprints"] = {
+        source_id: property_rigs[source_id]["fingerprint"],
+        target_id: property_rigs[target_id]["fingerprint"],
+    }
+    bridge.stage_patch(property_patch)
+    ctrl["drive"] = float(ctrl["drive"]) + 0.125
+    try:
+        bridge.apply_staged_patch()
+    except ValueError as exc:
+        assert "changed after this patch was planned" in str(exc)
+    else:
+        raise AssertionError("A staged evaluated bake accepted a changed control property")
+    bridge.discard_staged_patch()
+
+
+def test_evaluated_pose_rejects_external_dependencies_and_restores_on_failure():
+    source = armature(
+        "Evaluated Boundary Source", [("root", None), ("spine", "root")]
+    )
+    target = armature(
+        "Evaluated Boundary Target", [("pelvis", None), ("chest", "pelvis")]
+    )
+    action = pose_action(source, "Evaluated Boundary Action", ["root"])
+    source_id = ensure_entity_id(source)
+    target_id = ensure_entity_id(target)
+    helper = empty("External Constraint Helper")
+    constraint = source.pose.bones["spine"].constraints.new(type="COPY_ROTATION")
+    constraint.target = helper
+    snapshot = scan_scene()
+    rigs = {item["entity_id"]: item for item in snapshot["rigs"]}
+    patch = {
+        "schema_version": "1.4",
+        "patch_id": "evaluated-external-boundary",
+        "source_title": "Evaluated external boundary",
+        "action_fingerprints": {action.name: action_fingerprint(action)},
+        "rig_fingerprints": {
+            source_id: rigs[source_id]["fingerprint"],
+            target_id: rigs[target_id]["fingerprint"],
+        },
+        "operations": [
+            {
+                "op": "play_clip",
+                "entity_id": target_id,
+                "payload": {
+                    "clip": action.name,
+                    "frame_start": 1,
+                    "frame_end": 11,
+                    "retarget": {
+                        "adapter": "bake_evaluated_pose",
+                        "source_rig": source_id,
+                        "bone_map": {"root": "pelvis", "spine": "chest"},
+                    },
+                },
+            }
+        ],
+    }
+    before = set(bpy.data.actions.keys())
+    try:
+        bridge.stage_patch(patch)
+    except ValueError as exc:
+        assert "external" in str(exc) and "self-contained" in str(exc)
+    else:
+        raise AssertionError("bake_evaluated_pose accepted an external constraint target")
+    assert set(bpy.data.actions.keys()) == before
+
+    source.pose.bones["spine"].constraints.remove(constraint)
+    driver_curve = source.pose.bones["spine"].driver_add("location", 0)
+    variable = driver_curve.driver.variables.new()
+    variable.name = "external"
+    variable.type = "TRANSFORMS"
+    variable.targets[0].id = helper
+    variable.targets[0].transform_type = "LOC_X"
+    external_driver_patch = json.loads(json.dumps(patch))
+    external_driver_patch["patch_id"] = "evaluated-external-driver"
+    external_driver_patch["rig_fingerprints"][source_id] = rig_fingerprint(source)
+    try:
+        bridge.stage_patch(external_driver_patch)
+    except ValueError as exc:
+        assert "external" in str(exc) and "self-contained" in str(exc)
+    else:
+        raise AssertionError("bake_evaluated_pose accepted an external driver target")
+    source.pose.bones["spine"].driver_remove("location", 0)
+
+    contextual_driver = source.pose.bones["spine"].driver_add("location", 0)
+    contextual_driver.driver.type = "SCRIPTED"
+    contextual_driver.driver.expression = "frame"
+    contextual_patch = json.loads(json.dumps(patch))
+    contextual_patch["patch_id"] = "evaluated-context-driver"
+    contextual_patch["rig_fingerprints"][source_id] = rig_fingerprint(source)
+    try:
+        bridge.stage_patch(contextual_patch)
+    except ValueError as exc:
+        assert "external expression name 'frame'" in str(exc)
+    else:
+        raise AssertionError("bake_evaluated_pose accepted a contextual frame driver")
+    source.pose.bones["spine"].driver_remove("location", 0)
+
+    original_action = source.animation_data.action
+    original_frame = bpy.context.scene.frame_current_final
+    original_pose = {
+        bone.name: bone.matrix_basis.copy() for bone in source.pose.bones
+    }
+    try:
+        bake_evaluated_pose_action(
+            target,
+            source,
+            action,
+            action_name="FaceLink Forced Failure",
+            bone_map={"root": "pelvis", "spine": "chest"},
+            scale_map={"missing": "pelvis"},
+        )
+    except KeyError:
+        pass
+    else:
+        raise AssertionError("The forced evaluated-bake failure did not fail")
+    assert bpy.data.actions.get("FaceLink Forced Failure") is None
+    assert target.animation_data is None
+    assert source.animation_data.action == original_action
+    assert math.isclose(bpy.context.scene.frame_current_final, original_frame)
+    assert all(
+        source.pose.bones[name].matrix_basis == matrix
+        for name, matrix in original_pose.items()
+    )
+
+
 def test_bake_pose_boundaries_fail_closed_without_generated_actions():
     source = armature("Boundary Source", [("root", None), ("child", "root")])
     target = armature("Boundary Target", [("pelvis", None), ("chest", "pelvis")])
@@ -1230,6 +1562,7 @@ def test_bake_pose_boundaries_fail_closed_without_generated_actions():
     }
     before = set(bpy.data.actions.keys())
     target.pose.bones["chest"].constraints.new(type="COPY_ROTATION")
+    base["rig_fingerprints"][target_id] = rig_fingerprint(target)
     try:
         bridge.stage_patch(base)
     except ValueError as exc:
@@ -1251,6 +1584,7 @@ def test_bake_pose_boundaries_fail_closed_without_generated_actions():
     assert set(bpy.data.actions.keys()) == before
     for constraint in list(target.pose.bones["chest"].constraints):
         target.pose.bones["chest"].constraints.remove(constraint)
+    base["rig_fingerprints"][target_id] = rig_fingerprint(target)
 
     bridge.stage_patch(base)
     original_mode = target.pose.bones["chest"].rotation_mode
@@ -1270,6 +1604,7 @@ def test_bake_pose_boundaries_fail_closed_without_generated_actions():
     bridge.discard_staged_patch()
 
     target.pose.bones["chest"].driver_add("location", 0)
+    base["rig_fingerprints"][target_id] = rig_fingerprint(target)
     try:
         bridge.stage_patch(base)
     except ValueError as exc:
@@ -1279,6 +1614,7 @@ def test_bake_pose_boundaries_fail_closed_without_generated_actions():
     assert set(bpy.data.actions.keys()) == before
     target.pose.bones["chest"].driver_remove("location", 0)
     target.animation_data_clear()
+    base["rig_fingerprints"][target_id] = rig_fingerprint(target)
 
     missing_source = json.loads(json.dumps(base))
     del missing_source["operations"][0]["payload"]["retarget"]["source_rig"]
@@ -2387,6 +2723,18 @@ CASES = [
     (
         "bake_pose_boundaries_fail_closed",
         test_bake_pose_boundaries_fail_closed_without_generated_actions,
+    ),
+    (
+        "evaluated_pose_self_constraint_state_restore",
+        test_evaluated_pose_bakes_self_constraint_and_restores_source_state,
+    ),
+    (
+        "evaluated_pose_self_driver_stale_guard",
+        test_evaluated_pose_bakes_self_driver_custom_property_and_guards_edits,
+    ),
+    (
+        "evaluated_pose_boundaries_state_restore",
+        test_evaluated_pose_rejects_external_dependencies_and_restores_on_failure,
     ),
     (
         "retarget_stale_action_guard",

@@ -53,7 +53,7 @@ def _safe_job(job_id):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "FaceLink/0.3.4"
+    server_version = "FaceLink/0.3.5"
 
     def log_message(self, format, *args):
         return
@@ -231,7 +231,7 @@ def start_bridge():
     Runtime.server.daemon_threads = True
     Runtime.static_health = {
         "ok": True,
-        "protocol_version": "1.7",
+        "protocol_version": "1.8",
         "instance_id": Runtime.instance_id,
         "blender_version": bpy.app.version_string,
         "capabilities": [
@@ -252,6 +252,7 @@ def start_bridge():
             "action_fingerprint",
             "rename_only_retarget",
             "sampled_pose_bake",
+            "evaluated_pose_bake",
             "rig_rest_geometry",
             "rig_fingerprint",
             "revision_history",

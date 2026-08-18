@@ -126,6 +126,20 @@ def bake_spec(**updates):
     return ActionRetargetSpec.model_validate(payload)
 
 
+def evaluated_bake_spec(**updates):
+    payload = {
+        "adapter": "bake_evaluated_pose",
+        "bone_map": {
+            "mixamorig:Hips": "pelvis",
+            "mixamorig:Spine": "spine",
+        },
+        "strict": True,
+        "source_rig": "source-rig",
+    }
+    payload.update(updates)
+    return ActionRetargetSpec.model_validate(payload)
+
+
 def test_retarget_analysis_resolves_explicit_and_identity_mappings():
     snapshot = rig_action_snapshot()
     action = snapshot.actions[0]
@@ -253,6 +267,9 @@ def test_retarget_models_reject_invalid_hierarchies_maps_and_fingerprints():
     assert baked.adapter == "bake_pose"
     assert baked.sample_step == 2
     assert baked.root_motion == "drop"
+    evaluated = evaluated_bake_spec(sample_step=3, root_motion="preserve")
+    assert evaluated.adapter == "bake_evaluated_pose"
+    assert evaluated.source_rig == "source-rig"
     with pytest.raises(ValidationError):
         ActionInventory.model_validate(
             {
@@ -602,6 +619,60 @@ def test_compiler_accepts_bake_pose_for_rest_axis_and_scale_differences():
         "source_rig": "source-rig",
         "sample_step": 2,
         "root_motion": "scale",
+    }
+    assert patch.rig_fingerprints == {
+        "source-rig": "rig-111111111111111111111111",
+        "target-rig": "rig-222222222222222222222222",
+    }
+
+
+def test_compiler_evaluated_bake_maps_deform_bones_not_controller_channels():
+    snapshot = rig_action_snapshot()
+    snapshot.rigs[0].bones.append(
+        snapshot.rigs[0].bones[0].model_copy(
+            deep=True,
+            update={"name": "ctrl", "parent": None, "use_deform": False},
+        )
+    )
+    action = snapshot.actions[0]
+    action.pose_bones = ["ctrl"]
+    action.data_paths = ['pose.bones["ctrl"]["drive"]']
+    action.fcurve_count = 1
+    action.keyframe_count = 2
+    shot = ShotSpec.model_validate(
+        {
+            "duration": 1,
+            "beats": [
+                {
+                    "type": "play_clip",
+                    "actor": "target-rig",
+                    "clip": "Source Walk",
+                    "duration": 1,
+                    "retarget": evaluated_bake_spec(
+                        sample_step=2,
+                        root_motion="drop",
+                    ).model_dump(mode="json", exclude_none=True),
+                }
+            ],
+        }
+    )
+    report = validate_shot(shot, snapshot)
+    assert report.valid is True
+    assert "retarget_mapping_incomplete" not in {
+        issue.code for issue in report.issues
+    }
+    assert "unused_retarget_mapping" not in {issue.code for issue in report.issues}
+    patch = compile_shot(shot, snapshot)
+    assert patch.operations[1].payload["retarget"] == {
+        "adapter": "bake_evaluated_pose",
+        "bone_map": {
+            "mixamorig:Hips": "pelvis",
+            "mixamorig:Spine": "spine",
+        },
+        "strict": True,
+        "source_rig": "source-rig",
+        "sample_step": 2,
+        "root_motion": "drop",
     }
     assert patch.rig_fingerprints == {
         "source-rig": "rig-111111111111111111111111",

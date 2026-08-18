@@ -96,6 +96,7 @@ class FACELINK_PT_main(Panel):
                 adapter_labels = {
                     "rename_only": "rename-only",
                     "bake_pose": "pose bake",
+                    "bake_evaluated_pose": "evaluated pose bake",
                 }
                 adapters = ", ".join(
                     sorted(

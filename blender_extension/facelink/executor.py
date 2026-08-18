@@ -15,7 +15,12 @@ from .action_inventory import (
     rewrite_bone_data_path,
 )
 from .composition import analyze_patch_composition
-from .pose_baking import bake_pose_action, sample_frames
+from .pose_baking import (
+    bake_evaluated_pose_action,
+    bake_pose_action,
+    evaluated_pose_dependency_errors,
+    sample_frames,
+)
 from .rig_inventory import rig_fingerprint
 from .snapshot import (
     ensure_entity_id,
@@ -137,12 +142,19 @@ def _resolved_retarget_map(obj, action, value):
     if unknown:
         raise ValueError(f"play_clip retarget contains unsupported fields: {sorted(unknown)}")
     adapter = value.get("adapter", "rename_only")
-    if not isinstance(adapter, str) or adapter not in {"rename_only", "bake_pose"}:
-        raise ValueError("Retarget adapter must be rename_only or bake_pose")
+    bake_adapters = {"bake_pose", "bake_evaluated_pose"}
+    supported_adapters = {"rename_only", *bake_adapters}
+    if not isinstance(adapter, str) or adapter not in supported_adapters:
+        raise ValueError(
+            "Retarget adapter must be rename_only, bake_pose or bake_evaluated_pose"
+        )
     sample_step = value.get("sample_step")
     root_motion = value.get("root_motion")
     if adapter == "rename_only" and (sample_step is not None or root_motion is not None):
-        raise ValueError("sample_step and root_motion are only supported by bake_pose")
+        raise ValueError(
+            "sample_step and root_motion are only supported by bake_pose and "
+            "bake_evaluated_pose"
+        )
     if sample_step is not None and (
         isinstance(sample_step, bool)
         or not isinstance(sample_step, int)
@@ -157,8 +169,8 @@ def _resolved_retarget_map(obj, action, value):
     strict = value.get("strict", True)
     if not isinstance(strict, bool):
         raise ValueError("play_clip retarget strict must be a boolean")
-    if adapter == "bake_pose" and not strict:
-        raise ValueError("bake_pose v1 requires strict=true")
+    if adapter in bake_adapters and not strict:
+        raise ValueError(f"{adapter} v1 requires strict=true")
     bone_map = value.get("bone_map")
     if not isinstance(bone_map, dict) or not 1 <= len(bone_map) <= 512:
         raise ValueError("play_clip retarget bone_map must contain 1 to 512 mappings")
@@ -177,8 +189,8 @@ def _resolved_retarget_map(obj, action, value):
     action_bones = action_pose_bones(action)
     if adapter == "bake_pose" and not action_bones:
         raise ValueError("bake_pose requires at least one pose-bone Action channel")
-    if adapter == "bake_pose" and len(getattr(action, "slots", [])) > 1:
-        raise ValueError("bake_pose v1 requires a source Action with at most one slot")
+    if adapter in bake_adapters and len(getattr(action, "slots", [])) > 1:
+        raise ValueError(f"{adapter} v1 requires a source Action with at most one slot")
     if adapter == "bake_pose":
         supported_suffixes = (
             "].location",
@@ -201,8 +213,8 @@ def _resolved_retarget_map(obj, action, value):
                 + ", ".join(unsupported_pose_paths)
             )
     source_rig_id = value.get("source_rig")
-    if adapter == "bake_pose" and source_rig_id is None:
-        raise ValueError("bake_pose requires an explicit source_rig")
+    if adapter in bake_adapters and source_rig_id is None:
+        raise ValueError(f"{adapter} requires an explicit source_rig")
     source_rig = None
     if source_rig_id is not None:
         if not isinstance(source_rig_id, str) or not source_rig_id:
@@ -217,9 +229,13 @@ def _resolved_retarget_map(obj, action, value):
                 f"Source armature '{source_rig.name}' is missing action bone(s): "
                 + ", ".join(missing_source_channels)
             )
-        if adapter == "bake_pose":
+        if adapter in bake_adapters:
             if source_rig.mode == "EDIT" or obj.mode == "EDIT":
-                raise ValueError("Exit Armature Edit Mode before staging bake_pose")
+                raise ValueError(f"Exit Armature Edit Mode before staging {adapter}")
+            if adapter == "bake_evaluated_pose" and source_rig == obj:
+                raise ValueError(
+                    "bake_evaluated_pose requires distinct source and target rigs"
+                )
             source_bones = {bone.name: bone for bone in source_rig.data.bones}
             target_bones_by_name = {bone.name: bone for bone in obj.data.bones}
             missing_map_sources = sorted(set(bone_map) - set(source_bones))
@@ -250,22 +266,29 @@ def _resolved_retarget_map(obj, action, value):
                 )
                 if (bone_name := bone_name_from_data_path(curve.data_path)) is not None
             }
-            if source_drivers & set(bone_map):
+            if adapter == "bake_pose" and source_drivers & set(bone_map):
                 raise ValueError(
                     "bake_pose v1 does not evaluate driven source bones; bake drivers to "
                     "the source Action first"
                 )
             if target_drivers & set(bone_map.values()):
                 raise ValueError(
-                    "bake_pose v1 does not write through driven target bones; use an "
+                    f"{adapter} v1 does not write through driven target bones; use an "
                     "undriven deform skeleton"
                 )
+            if adapter == "bake_evaluated_pose":
+                dependency_errors = evaluated_pose_dependency_errors(source_rig)
+                if dependency_errors:
+                    raise ValueError(
+                        "bake_evaluated_pose requires self-contained source dependencies: "
+                        + "; ".join(dependency_errors)
+                    )
             for source_name, target_name in bone_map.items():
                 source_bone = source_bones[source_name]
                 target_bone = target_bones_by_name[target_name]
                 if source_bone.parent and source_bone.parent.name not in bone_map:
                     raise ValueError(
-                        "bake_pose v1 requires every mapped bone parent to be mapped; "
+                        f"{adapter} v1 requires every mapped bone parent to be mapped; "
                         f"'{source_name}' has unmapped parent '{source_bone.parent.name}'"
                     )
                 expected_parent = (
@@ -274,35 +297,47 @@ def _resolved_retarget_map(obj, action, value):
                 actual_parent = target_bone.parent.name if target_bone.parent else None
                 if expected_parent != actual_parent:
                     raise ValueError(
-                        "bake_pose v1 requires matching mapped parent hierarchies; "
+                        f"{adapter} v1 requires matching mapped parent hierarchies; "
                         f"'{source_name}' resolves to parent '{expected_parent}', but "
                         f"'{target_name}' has parent '{actual_parent}'"
                     )
-                if source_rig.pose.bones[source_name].constraints:
+                if (
+                    adapter == "bake_pose"
+                    and source_rig.pose.bones[source_name].constraints
+                ):
                     raise ValueError(
                         "bake_pose v1 does not evaluate constrained source bones; bake "
                         f"constraints to the source Action first ('{source_name}')"
                     )
                 if obj.pose.bones[target_name].constraints:
                     raise ValueError(
-                        "bake_pose v1 does not write through constrained target bones; use "
+                        f"{adapter} v1 does not write through constrained target bones; use "
                         f"an unconstrained deform skeleton ('{target_name}')"
                     )
             frames = sample_frames(action, sample_step or 1)
-            if len(frames) * len(action_bones) * 10 > 200_000:
+            output_bone_count = (
+                len(bone_map) if adapter == "bake_evaluated_pose" else len(action_bones)
+            )
+            if len(frames) * output_bone_count * 10 > 200_000:
                 raise ValueError(
-                    "bake_pose would exceed the 200000 keyframe safety limit; increase "
+                    f"{adapter} would exceed the 200000 keyframe safety limit; increase "
                     "sample_step or reduce the mapping"
                 )
-    missing_sources = sorted(action_bones - set(bone_map)) if strict else []
+    missing_sources = (
+        sorted(action_bones - set(bone_map))
+        if strict and adapter != "bake_evaluated_pose"
+        else []
+    )
     if missing_sources:
         raise ValueError(
             "Strict retarget mapping does not cover action bone(s): "
             + ", ".join(missing_sources)
         )
-    resolved = {
-        source: bone_map.get(source, source) for source in sorted(action_bones)
-    }
+    resolved = (
+        dict(sorted(bone_map.items()))
+        if adapter == "bake_evaluated_pose"
+        else {source: bone_map.get(source, source) for source in sorted(action_bones)}
+    )
     target_bones = {bone.name for bone in obj.data.bones}
     missing_targets = sorted(set(resolved.values()) - target_bones)
     if missing_targets:
@@ -326,7 +361,7 @@ def _retarget_identity(obj, action, value, resolved):
         return resolved
     source_rig = object_by_id(value["source_rig"])
     return {
-        "adapter": "bake_pose",
+        "adapter": value.get("adapter", "bake_pose"),
         "animated_bone_map": resolved,
         "bone_map": dict(sorted(value["bone_map"].items())),
         "root_motion": value.get("root_motion", "scale"),
@@ -594,19 +629,20 @@ def validate_patch(patch):
         raise ValueError("Every patch operation must be an object")
     if not all(isinstance(item.get("op"), str) for item in operations):
         raise ValueError("Every patch operation must have a string op")
-    has_bake_pose = False
+    has_pose_bake = False
     for item in operations:
         payload = item.get("payload", {})
         retarget = payload.get("retarget") if isinstance(payload, dict) else None
         if (
             item.get("op") == "play_clip"
             and isinstance(retarget, dict)
-            and retarget.get("adapter") == "bake_pose"
+            and retarget.get("adapter")
+            in {"bake_pose", "bake_evaluated_pose"}
         ):
-            has_bake_pose = True
+            has_pose_bake = True
             break
-    if patch.get("schema_version") != "1.4" and has_bake_pose:
-        raise ValueError("bake_pose requires Scene Patch 1.4 rig fingerprint guards")
+    if patch.get("schema_version") != "1.4" and has_pose_bake:
+        raise ValueError("Pose-bake adapters require Scene Patch 1.4 rig fingerprint guards")
     for field in ("patch_id", "source_title"):
         if field in patch and not isinstance(patch[field], str):
             raise ValueError(f"Patch {field} must be a string")
@@ -690,9 +726,14 @@ def validate_patch(patch):
         payload = item.get("payload", {})
         action = bpy.data.actions.get(payload.get("clip"))
         target = object_by_id(item.get("entity_id"))
-        if action is not None and action_pose_bones(action) and target.type == "ARMATURE":
+        retarget = payload.get("retarget") or {}
+        if (
+            action is not None
+            and (action_pose_bones(action) or retarget)
+            and target.type == "ARMATURE"
+        ):
             required_rigs.add(str(item.get("entity_id")))
-        source_rig = (payload.get("retarget") or {}).get("source_rig")
+        source_rig = retarget.get("source_rig")
         if source_rig is not None:
             required_rigs.add(str(source_rig))
     if patch.get("schema_version") == "1.4" and set(expected_rigs) != required_rigs:
@@ -764,12 +805,14 @@ def summarize_patch(patch):
                                     payload["retarget"].get("sample_step", 1),
                                 )
                             )
-                            if payload["retarget"].get("adapter") == "bake_pose"
+                            if payload["retarget"].get("adapter")
+                            in {"bake_pose", "bake_evaluated_pose"}
                             else None
                         ),
                         "root_motion": (
                             payload["retarget"].get("root_motion", "scale")
-                            if payload["retarget"].get("adapter") == "bake_pose"
+                            if payload["retarget"].get("adapter")
+                            in {"bake_pose", "bake_evaluated_pose"}
                             else None
                         ),
                         "output_action": _retarget_output_name(
@@ -1279,15 +1322,20 @@ def _retarget_action(obj, source, value):
             or existing.get("facelink_retarget_map") != canonical_map
             or existing.get("facelink_source_fingerprint") != source_fingerprint
             or (
-                adapter == "bake_pose"
+                adapter in {"bake_pose", "bake_evaluated_pose"}
                 and existing.get("facelink_retarget_spec") != canonical_identity
             )
         ):
             raise ValueError(f"Retarget action name collision for '{name}'")
         return existing
-    if adapter == "bake_pose":
+    if adapter in {"bake_pose", "bake_evaluated_pose"}:
         source_rig = object_by_id(value["source_rig"])
-        action = bake_pose_action(
+        bake = (
+            bake_evaluated_pose_action
+            if adapter == "bake_evaluated_pose"
+            else bake_pose_action
+        )
+        action = bake(
             obj,
             source_rig,
             source,

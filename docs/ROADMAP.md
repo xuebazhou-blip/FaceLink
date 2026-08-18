@@ -73,7 +73,7 @@
 - Stale rest-pose guards checked at both stage and apply
 - CLI and MCP profile suggestion/analysis tools
 
-## v0.3.4 — current sampled-pose-bake release
+## v0.3.4 — sampled-pose-bake release
 
 - Reviewed `bake_pose` profiles with explicit source rig, sample step and root-motion policy
 - Per-frame local pose-basis transfer across different rest axes and bone scale
@@ -82,10 +82,19 @@
 - Fail-closed hierarchy, constraint, old-schema, zero-length and workload boundaries
 - Blender 4.2/4.5/5.2 tests for axis correction, scale, root policies and rollback
 
+## v0.3.5 — current evaluated-pose-bake release
+
+- Reviewed `bake_evaluated_pose` profiles map evaluated source deform bones to target bones
+- Existing same-rig controller constraints and custom-property drivers are sampled by Blender
+- Final pose matrices are inverted to local basis and written as ordinary editable Actions
+- Constraint, driver and control-property changes participate in stale Rig guards
+- External dependencies, target controls and hierarchy mismatch remain fail-closed
+- Blender 4.2/4.5/5.2 tests cover constraints, drivers, restoration and dependency rejection
+
 ## v0.3.x — remaining useful intelligence
 
 - Optional render/vision-based artistic composition evaluator
-- Control-rig constraint baking, IK/FK discovery and hierarchy mediation
+- Automatic IK/FK/control discovery, external dependency graphs and hierarchy mediation
 - Reusable shot templates and multi-shot sequencing
 
 The technical moat should live in deterministic scene understanding, validation, repair and

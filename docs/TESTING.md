@@ -62,11 +62,16 @@ human-readable summary.
   degrees and lengths by 2x, checks all root-motion policies, exact/fractional sample endpoints,
   quaternion continuity, linear editable output, idempotent reuse, source/timeline preservation,
   rollback cleanup, old-schema rejection, constraint boundaries and workload caps.
+  Evaluated-bake coverage drives deform bones from a same-rig controller constraint and a
+  custom-property driver, verifies final-pose inversion, Action/NLA/pose/frame restoration,
+  stale driver/property guards, deterministic expression restrictions, external constraint and
+  driver rejection, bounded output names and cleanup after an injected bake failure.
 - Bridge acceptance must pass: localhost binding, bearer authentication, malformed requests,
   concurrent jobs, protocol 1.1 fingerprint agreement, main-thread dispatch, failed-job
   reporting, protocol 1.2 history/rollback, protocol 1.3 navigation snapshots, protocol 1.4
   composition diagnostics, protocol 1.5 rig/action capabilities, protocol 1.6 rest-geometry
-  guards, protocol 1.7 sampled-pose-bake capability and preview diagnostics, Undo and discovery
+  guards, protocol 1.7 sampled-pose-bake, protocol 1.8 evaluated-pose-bake capability and
+  preview diagnostics, Undo and discovery
   cleanup.
 - The built ZIP must install, enable and load from each Blender version's isolated portable
   extension repository.
@@ -78,7 +83,8 @@ result.
 ## What this does not prove
 
 The harness deliberately reports live provider calls, visual composition quality, large
-production/control rigs, IK/FK or constraint-driven retargeting and non-Windows platforms as
-unverified. Passing acceptance means the implemented deform-skeleton pose-bake and editing
-surface behave as specified; it does not mean FaceLink solves motion generation, general
+production control rigs, automatic IK/FK/controller discovery, external dependency graphs and
+non-Windows platforms as unverified. Passing acceptance means the implemented direct and
+self-contained evaluated deform-skeleton pose-bakes and editing surface behave as specified;
+it does not mean FaceLink solves motion generation, general
 character retargeting or cinematic judgment.

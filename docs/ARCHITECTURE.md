@@ -104,12 +104,20 @@ same staging, fingerprint, idempotency, NLA and rollback contract as `rename_onl
 Rig fingerprints include pose rotation modes in protocol 1.7, so switching a target between
 Euler, quaternion and axis-angle after staging cannot silently produce or reuse wrong channels.
 
+Protocol 1.8 adds `bake_evaluated_pose` for the common controller-to-deform case. It assigns the
+source Action to the original source rig with NLA muted, lets Blender evaluate its existing
+self-contained constraints/drivers, reads final `PoseBone.matrix` values, and uses Blender's
+inverse local/pose conversion before writing ordinary target keys. Rig fingerprints now include
+constraint settings, driver definitions and control custom properties. The operation restores
+source Action/slot, NLA state, pose and timeline even when baking fails.
+
 This is intentionally a deform-skeleton adapter, not a universal control-rig solver. Runtime
 preflight rejects missing mapped parents, changed hierarchy, zero-length bones, constraints on
 mapped source/target bones, pose transform drivers, multi-slot Actions, non-transform pose
 channels, Edit Mode, old unguarded patch schemas and workloads above fixed sample/curve/key
 limits. Object-level channels are omitted. Those restrictions keep failure visible while
-leaving IK/FK discovery, constraint baking and hierarchy mediation for later adapters.
+leaving automatic IK/FK discovery, external dependency graphs and hierarchy mediation for later
+adapters. Existing self-contained constraint/driver graphs can use `bake_evaluated_pose`.
 
 Protocol 1.1 adds optimistic scene consistency. The compiler fingerprints scene timing and
 the world-space state of only the objects referenced by a patch. Blender checks that value
@@ -137,9 +145,10 @@ versions are explicit so clients can negotiate future changes.
   channels. Rotation or scale under sheared/non-uniform parent chains still needs a future
   full-matrix solver; armature pose bones are not yet part of this object transform path.
 - `play_clip` requires an existing Blender Action. `rename_only` handles compatible armatures;
-  `bake_pose` handles reviewed deform skeletons with equivalent mapped hierarchy but different
-  local rest axes/scale. Automatic mapping approval, control-rig IK/FK discovery, constrained
-  rigs, object-level root motion and general motion generation remain out of scope.
+  `bake_pose` handles direct deform Actions; `bake_evaluated_pose` additionally samples an
+  existing self-contained source control graph. Both require equivalent mapped hierarchy.
+  Automatic mapping approval, control-rig/IK-FK discovery, external dependencies, object-level
+  root motion and general motion generation remain out of scope.
 - Navigation planning is currently a single-level XY projection over explicitly marked static
   geometry. It does not yet solve stacked floors, moving obstacles, crowds or character gait.
 - Camera composition preflight is geometric and evaluates the current target bounds plus the

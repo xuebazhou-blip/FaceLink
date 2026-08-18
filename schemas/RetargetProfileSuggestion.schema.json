@@ -45,7 +45,8 @@
           "default": "rename_only",
           "enum": [
             "rename_only",
-            "bake_pose"
+            "bake_pose",
+            "bake_evaluated_pose"
           ],
           "title": "Adapter",
           "type": "string"

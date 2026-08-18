@@ -42,6 +42,13 @@ requires the mapped parent hierarchy to match and mapped source/target bones to 
 constraints and transform drivers; it also requires `strict: true` and ordinary pose transform
 channels. Use deform skeletons or bake a control rig to a source Action first.
 
+`bake_evaluated_pose` is for a source Action that animates controller bones/custom properties
+while constraints or drivers move the source deform skeleton. Its reviewed map names the source
+deform bones and target deform bones, so Action controller channels need not appear in the map.
+Version 1 only evaluates dependencies on the same explicit source armature or its Armature data;
+external helpers, scene variables, automatic controller/IK-FK discovery, different mapped
+hierarchy and constrained/driven target bones are rejected.
+
 The included compact rename and bake profiles are format examples for a two-bone test rig, not
 universal Mixamo presets. Profiles are ordinary version-controlled files so rig maintainers can
 publish and review mappings without adding Python code.

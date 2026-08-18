@@ -1,4 +1,4 @@
-# Local bridge protocol 1.7
+# Local bridge protocol 1.8
 
 The Blender extension writes one JSON discovery record per running Blender process. The
 directory is `${FACELINK_INSTANCE_DIR}` when configured, otherwise
@@ -119,6 +119,9 @@ tails and canonicalized rest rotations.
 Protocol 1.7 extends this opaque Rig fingerprint with each pose bone's rotation mode because
 the generated bake Action must choose Euler, quaternion or axis-angle FCurve channels. Changing
 that mode after staging therefore invalidates the patch before mutation.
+Protocol 1.8 also fingerprints pose-constraint stacks, object/Armature-data drivers and custom
+properties on the armature and its pose bones. A controller, driver expression or control
+property edit after staging therefore invalidates an evaluated bake before mutation.
 
 Scene Patch 1.4 adds `rig_fingerprints`. For every pose Action, its target armature must be
 guarded; a retarget operation also guards the explicit or deterministically inferred source
@@ -178,6 +181,30 @@ Sampling is capped at 20,000 frames, 10,000 FCurves and 200,000 keyframe values.
 records the adapter, sample count, root-motion policy and deterministic output name. That name
 includes the source Action fingerprint, bake settings and both Rig fingerprints; repeat apply
 reuses the same generated Action, while rollback removes it when unused.
+
+## Evaluated pose bake
+
+Protocol 1.8 adds the `evaluated_pose_bake` capability and the
+`bake_evaluated_pose` adapter. Its JSON fields, sampling limits, root-motion policy, editable
+output, deterministic naming and Scene Patch 1.4 guards match `bake_pose`. The semantic
+difference is important: `bone_map` names source and target **deform/output bones**, while the
+source Action may animate different controller bones or pose custom properties.
+
+At each sample Blender evaluates the Action on the original explicit source armature, including
+its existing self-contained constraints and drivers. FaceLink reads each mapped source
+`PoseBone.matrix` (the final pose), converts it back to local basis with
+`Bone.convert_local_to_pose(..., invert=True)`, and keys the corresponding target deform bone.
+The source Action/slot, NLA mute flags, pose and scene frame are restored transactionally.
+
+Version 1 fails closed unless the source and target are distinct armatures, mapped parent
+hierarchies match, the target mapped bones have no constraints or transform drivers, and every
+source constraint/driver dependency points only to the same source armature object or its
+Armature datablock. External helper objects, Actions referenced by constraints, Scene/context
+driver variables, external rigs, automatic controller discovery and IK/FK-system conversion
+are not supported. Scripted drivers are limited to declared variables, arithmetic and a fixed
+set of deterministic math functions; implicit `self`, `frame`, custom driver namespaces and
+arbitrary expression syntax are rejected. Object-level Action channels are not copied to the
+target Action, although custom-property channels may serve as driver inputs.
 
 ## Scene consistency and transform space
 

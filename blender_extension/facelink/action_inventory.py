@@ -171,4 +171,8 @@ def retarget_action_name(source_name, target_name, bone_map, source_fingerprint)
         separators=(",", ":"),
     ).encode("utf-8")
     suffix = hashlib.sha256(encoded).hexdigest()[:10]
-    return f"FaceLink {source_name[:24]} to {target_name[:24]} {suffix}"
+    # Blender ID names are capped at 63 bytes. Keep the deterministic suffix intact
+    # so previewed and actually-created Action names cannot diverge by truncation.
+    source_label = source_name.encode("utf-8")[:18].decode("utf-8", errors="ignore")
+    target_label = target_name.encode("utf-8")[:18].decode("utf-8", errors="ignore")
+    return f"FaceLink {source_label} to {target_label} {suffix}"
