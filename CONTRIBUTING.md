@@ -4,6 +4,11 @@ Small, testable changes are welcome. Please keep the boundary between model plan
 Blender execution explicit: new scene mutations must be represented by a versioned,
 validated operation and implemented without arbitrary code execution.
 
+Use GitHub Discussions for setup questions. Before opening an issue, search existing issues
+and discussions and reduce the problem to the smallest safe reproduction. Never upload API
+keys, bridge tokens, private production assets or third-party `.blend` files without a clear
+redistribution license.
+
 ## Development loop
 
 ```powershell
@@ -20,3 +25,7 @@ or generated dependency folders.
 For a new operation, update the Pydantic models, deterministic compiler, Blender allowlist,
 executor, protocol documentation and tests in the same pull request.
 
+Pull requests must explain the user-visible behavior, editability, review boundary, stale-state
+guard and rollback behavior. The repository CI must pass before merge. Participation is governed
+by the [Code of Conduct](CODE_OF_CONDUCT.md), and contributions are accepted under the repository's
+GPL-3.0-or-later license.

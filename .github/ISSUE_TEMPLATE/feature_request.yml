@@ -1,0 +1,50 @@
+name: Feature request
+description: Propose a focused FaceLink workflow improvement
+title: "[Feature]: "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: Describe the Blender workflow problem, not only the desired implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: workflow
+    attributes:
+      label: Current workflow
+      description: How do artists handle this today, and where does it fail or waste time?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed FaceLink behavior
+      description: Include the expected editable Blender result and review boundary.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: dropdown
+    id: contribution
+    attributes:
+      label: Would you help implement or test this?
+      options:
+        - Yes, implementation
+        - Yes, testing or sample files
+        - Possibly, with guidance
+        - No
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Scope checks
+      options:
+        - label: The proposal keeps generated Blender data editable.
+          required: true
+        - label: The proposal does not require unrestricted LLM-generated Python execution.
+          required: true

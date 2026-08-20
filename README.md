@@ -1,5 +1,9 @@
 # FaceLink
 
+[![Python CI](https://github.com/xuebazhou-blip/FaceLink/actions/workflows/python-ci.yml/badge.svg)](https://github.com/xuebazhou-blip/FaceLink/actions/workflows/python-ci.yml)
+[![GitHub release](https://img.shields.io/github/v/release/xuebazhou-blip/FaceLink?include_prereleases)](https://github.com/xuebazhou-blip/FaceLink/releases)
+[![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
+
 FaceLink turns a constrained shot description into **editable Blender scene animation**.
 It is aimed at previs/white-model work: actors, props and cameras remain ordinary Blender
 objects with ordinary keyframes, so artists can drag, retime and override the result.
@@ -54,6 +58,26 @@ the scene only after the artist presses **Apply Staged Patch**.
 The Blender 4.0.2 installation found on the development machine predates the extension
 baseline. FaceLink's source can still be loaded there for smoke testing, but 4.0 is not a
 declared supported version.
+
+## Install the alpha release
+
+Download the Blender ZIP, Python wheel and checksum file from the
+[FaceLink 0.3.6 Alpha release](https://github.com/xuebazhou-blip/FaceLink/releases/tag/v0.3.6).
+
+In Blender 4.2 or newer, open **Edit → Preferences → Get Extensions → Install from Disk**,
+select `facelink-0.3.6.zip`, enable FaceLink, open the **FaceLink** tab in the 3D Viewport
+sidebar and press **Start Bridge**.
+
+Install the Python host in an isolated Python 3.11-or-newer environment:
+
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\python -m pip install .\facelink-0.3.6-py3-none-any.whl
+.\.venv\Scripts\facelink-mcp
+```
+
+Use `SHA256SUMS.txt` from the release to verify every downloaded artifact. Continue below for
+MCP client configuration and the safe stage/review/apply workflow.
 
 ## Install for development
 
@@ -266,4 +290,10 @@ motion or judge the visual result. Multi-level navigation,
 multi-shot sequencing and visual diff overlays remain follow-up work.
 
 Before promoting this alpha more broadly, add a short screen recording to this README and
-enable GitHub's private vulnerability reporting.
+complete Linux/macOS installation coverage.
+
+## License
+
+FaceLink is free software licensed under
+[GNU GPL version 3 or any later version](LICENSE). The Blender extension distribution includes
+the same license text.

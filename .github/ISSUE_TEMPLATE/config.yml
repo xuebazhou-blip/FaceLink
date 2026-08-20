@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Setup and usage questions
+    url: https://github.com/xuebazhou-blip/FaceLink/discussions
+    about: Ask for help or discuss workflows without filing a defect.
+  - name: Private security report
+    url: https://github.com/xuebazhou-blip/FaceLink/security/advisories/new
+    about: Report vulnerabilities privately. Never post credentials in an issue.
