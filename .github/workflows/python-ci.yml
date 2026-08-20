@@ -11,8 +11,8 @@ jobs:
   core:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           python-version: '3.11'
           enable-cache: true
