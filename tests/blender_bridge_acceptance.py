@@ -141,10 +141,11 @@ def client_flow(result_box):
             "rename_only_retarget",
             "sampled_pose_bake",
             "evaluated_pose_bake",
+            "object_motion_bake",
             "rig_rest_geometry",
             "rig_fingerprint",
         } <= set(health["capabilities"])
-        assert health["protocol_version"] == "1.8"
+        assert health["protocol_version"] == "1.9"
         scan_ids = [submit(base_url, token, "scan_scene") for _ in range(3)]
         assert len(set(scan_ids)) == 3
         scans = [wait_job(base_url, token, job_id) for job_id in scan_ids]

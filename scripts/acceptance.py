@@ -396,7 +396,7 @@ def main() -> int:
             ),
             (
                 "Large production control rigs, automatic IK/FK/controller discovery, external "
-                "constraint/driver graphs, object-level root motion, multi-level or "
+                "constraint/driver graphs, parented/constrained object root motion, multi-level or "
                 "dynamic-obstacle navigation and "
                 "multi-shot editing."
             ),

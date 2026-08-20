@@ -137,6 +137,7 @@ def _resolved_retarget_map(obj, action, value):
         "source_rig",
         "sample_step",
         "root_motion",
+        "object_motion",
     }
     unknown = set(value) - allowed
     if unknown:
@@ -150,10 +151,15 @@ def _resolved_retarget_map(obj, action, value):
         )
     sample_step = value.get("sample_step")
     root_motion = value.get("root_motion")
-    if adapter == "rename_only" and (sample_step is not None or root_motion is not None):
+    object_motion = value.get("object_motion")
+    if adapter == "rename_only" and (
+        sample_step is not None
+        or root_motion is not None
+        or object_motion is not None
+    ):
         raise ValueError(
-            "sample_step and root_motion are only supported by bake_pose and "
-            "bake_evaluated_pose"
+            "sample_step, root_motion and object_motion are only supported by "
+            "bake_pose and bake_evaluated_pose"
         )
     if sample_step is not None and (
         isinstance(sample_step, bool)
@@ -166,6 +172,11 @@ def _resolved_retarget_map(obj, action, value):
         or root_motion not in {"scale", "preserve", "drop"}
     ):
         raise ValueError("bake_pose root_motion must be scale, preserve or drop")
+    if object_motion is not None and (
+        not isinstance(object_motion, str)
+        or object_motion not in {"preserve", "scale"}
+    ):
+        raise ValueError("object_motion must be preserve or scale")
     strict = value.get("strict", True)
     if not isinstance(strict, bool):
         raise ValueError("play_clip retarget strict must be a boolean")
@@ -187,8 +198,24 @@ def _resolved_retarget_map(obj, action, value):
     if obj.type != "ARMATURE":
         raise ValueError("play_clip retarget requires an armature target")
     action_bones = action_pose_bones(action)
-    if adapter == "bake_pose" and not action_bones:
+    object_transform_paths = {
+        "location",
+        "rotation_euler",
+        "rotation_quaternion",
+        "rotation_axis_angle",
+        "scale",
+    }
+    action_object_paths = {
+        curve.data_path
+        for _, curve in iter_action_fcurves(action)
+        if curve.data_path in object_transform_paths
+    }
+    if adapter == "bake_pose" and not action_bones and object_motion is None:
         raise ValueError("bake_pose requires at least one pose-bone Action channel")
+    if object_motion is not None and not action_object_paths:
+        raise ValueError(
+            "object_motion requires at least one Armature object transform channel"
+        )
     if adapter in bake_adapters and len(getattr(action, "slots", [])) > 1:
         raise ValueError(f"{adapter} v1 requires a source Action with at most one slot")
     if adapter == "bake_pose":
@@ -236,6 +263,16 @@ def _resolved_retarget_map(obj, action, value):
                 raise ValueError(
                     "bake_evaluated_pose requires distinct source and target rigs"
                 )
+            if object_motion is not None:
+                if source_rig.parent is not None or obj.parent is not None:
+                    raise ValueError(
+                        "object_motion v1 requires unparented source and target armatures"
+                    )
+                if source_rig.constraints or obj.constraints:
+                    raise ValueError(
+                        "object_motion v1 requires source and target armature objects "
+                        "without object constraints"
+                    )
             source_bones = {bone.name: bone for bone in source_rig.data.bones}
             target_bones_by_name = {bone.name: bone for bone in obj.data.bones}
             missing_map_sources = sorted(set(bone_map) - set(source_bones))
@@ -266,6 +303,35 @@ def _resolved_retarget_map(obj, action, value):
                 )
                 if (bone_name := bone_name_from_data_path(curve.data_path)) is not None
             }
+            source_object_transform_drivers = {
+                curve.data_path
+                for curve in (
+                    source_rig.animation_data.drivers
+                    if source_rig.animation_data is not None
+                    else []
+                )
+                if curve.data_path in object_transform_paths
+            }
+            target_object_transform_drivers = {
+                curve.data_path
+                for curve in (
+                    obj.animation_data.drivers if obj.animation_data is not None else []
+                )
+                if curve.data_path in object_transform_paths
+            }
+            if (
+                object_motion is not None
+                and adapter == "bake_pose"
+                and source_object_transform_drivers
+            ):
+                raise ValueError(
+                    "bake_pose object_motion only supports Action-driven source object "
+                    "transforms; use bake_evaluated_pose for drivers"
+                )
+            if object_motion is not None and target_object_transform_drivers:
+                raise ValueError(
+                    "object_motion v1 does not write through driven target object transforms"
+                )
             if adapter == "bake_pose" and source_drivers & set(bone_map):
                 raise ValueError(
                     "bake_pose v1 does not evaluate driven source bones; bake drivers to "
@@ -318,7 +384,8 @@ def _resolved_retarget_map(obj, action, value):
             output_bone_count = (
                 len(bone_map) if adapter == "bake_evaluated_pose" else len(action_bones)
             )
-            if len(frames) * output_bone_count * 10 > 200_000:
+            output_channel_count = output_bone_count + int(object_motion is not None)
+            if len(frames) * output_channel_count * 10 > 200_000:
                 raise ValueError(
                     f"{adapter} would exceed the 200000 keyframe safety limit; increase "
                     "sample_step or reduce the mapping"
@@ -365,6 +432,7 @@ def _retarget_identity(obj, action, value, resolved):
         "animated_bone_map": resolved,
         "bone_map": dict(sorted(value["bone_map"].items())),
         "root_motion": value.get("root_motion", "scale"),
+        "object_motion": value.get("object_motion"),
         "sample_step": value.get("sample_step", 1),
         "source_rig": value["source_rig"],
         "source_rig_fingerprint": rig_fingerprint(source_rig),
@@ -815,6 +883,7 @@ def summarize_patch(patch):
                             in {"bake_pose", "bake_evaluated_pose"}
                             else None
                         ),
+                        "object_motion": payload["retarget"].get("object_motion"),
                         "output_action": _retarget_output_name(
                             obj, action, payload["retarget"], resolved
                         ),
@@ -1344,6 +1413,7 @@ def _retarget_action(obj, source, value):
             scale_map=value["bone_map"],
             sample_step=value.get("sample_step", 1),
             root_motion=value.get("root_motion", "scale"),
+            object_motion=value.get("object_motion"),
         )
     else:
         action = source.copy()

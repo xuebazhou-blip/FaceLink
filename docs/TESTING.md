@@ -66,11 +66,15 @@ human-readable summary.
   custom-property driver, verifies final-pose inversion, Action/NLA/pose/frame restoration,
   stale driver/property guards, deterministic expression restrictions, external constraint and
   driver rejection, bounded output names and cleanup after an injected bake failure.
+  Object-motion coverage verifies placement-preserving deltas, rig-scaled translation,
+  object-only direct Actions, editable object FCurves, omitted-channel restoration, rollback and
+  fail-closed parent/constraint/driver/rotation-mode/singular-transform boundaries.
 - Bridge acceptance must pass: localhost binding, bearer authentication, malformed requests,
   concurrent jobs, protocol 1.1 fingerprint agreement, main-thread dispatch, failed-job
   reporting, protocol 1.2 history/rollback, protocol 1.3 navigation snapshots, protocol 1.4
   composition diagnostics, protocol 1.5 rig/action capabilities, protocol 1.6 rest-geometry
-  guards, protocol 1.7 sampled-pose-bake, protocol 1.8 evaluated-pose-bake capability and
+  guards, protocol 1.7 sampled-pose-bake, protocol 1.8 evaluated-pose-bake, protocol 1.9
+  object-motion-bake capability and
   preview diagnostics, Undo and discovery
   cleanup.
 - The built ZIP must install, enable and load from each Blender version's isolated portable
@@ -84,7 +88,8 @@ result.
 
 The harness deliberately reports live provider calls, visual composition quality, large
 production control rigs, automatic IK/FK/controller discovery, external dependency graphs and
-non-Windows platforms as unverified. Passing acceptance means the implemented direct and
+parented/constrained Armature-object roots, plus non-Windows platforms as unverified. Passing
+acceptance means the implemented direct and
 self-contained evaluated deform-skeleton pose-bakes and editing surface behave as specified;
 it does not mean FaceLink solves motion generation, general
 character retargeting or cinematic judgment.

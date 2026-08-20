@@ -109,13 +109,21 @@ source Action to the original source rig with NLA muted, lets Blender evaluate i
 self-contained constraints/drivers, reads final `PoseBone.matrix` values, and uses Blender's
 inverse local/pose conversion before writing ordinary target keys. Rig fingerprints now include
 constraint settings, driver definitions and control custom properties. The operation restores
-source Action/slot, NLA state, pose and timeline even when baking fails.
+source Action/slot, NLA state, object transform, control-property values, pose and timeline even
+when baking fails.
+
+Protocol 1.9 adds optional Armature object-motion output to both bake adapters. The sampler
+computes `inverse(source_first_world) @ source_current_world`, optionally scales its translation
+by the mapped-rig median length ratio, and composes the result after the captured target world
+matrix. This produces editable object FCurves without copying absolute source coordinates or
+discarding target placement. v1 rejects parents, object constraints, singular transforms and
+driven target object channels rather than hiding a space-conversion ambiguity.
 
 This is intentionally a deform-skeleton adapter, not a universal control-rig solver. Runtime
 preflight rejects missing mapped parents, changed hierarchy, zero-length bones, constraints on
 mapped source/target bones, pose transform drivers, multi-slot Actions, non-transform pose
 channels, Edit Mode, old unguarded patch schemas and workloads above fixed sample/curve/key
-limits. Object-level channels are omitted. Those restrictions keep failure visible while
+limits. Object-level channels are omitted unless `object_motion` is explicit. Those restrictions keep failure visible while
 leaving automatic IK/FK discovery, external dependency graphs and hierarchy mediation for later
 adapters. Existing self-contained constraint/driver graphs can use `bake_evaluated_pose`.
 
@@ -147,8 +155,8 @@ versions are explicit so clients can negotiate future changes.
 - `play_clip` requires an existing Blender Action. `rename_only` handles compatible armatures;
   `bake_pose` handles direct deform Actions; `bake_evaluated_pose` additionally samples an
   existing self-contained source control graph. Both require equivalent mapped hierarchy.
-  Automatic mapping approval, control-rig/IK-FK discovery, external dependencies, object-level
-  root motion and general motion generation remain out of scope.
+  Automatic mapping approval, control-rig/IK-FK discovery, external dependencies, parented or
+  constrained object roots and general motion generation remain out of scope.
 - Navigation planning is currently a single-level XY projection over explicitly marked static
   geometry. It does not yet solve stacked floors, moving obstacles, crowds or character gait.
 - Camera composition preflight is geometric and evaluates the current target bounds plus the

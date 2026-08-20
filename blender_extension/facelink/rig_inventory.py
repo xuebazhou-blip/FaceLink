@@ -203,6 +203,7 @@ def _rig_fingerprint_payload(obj, bones):
             [bone.name, obj.pose.bones[bone.name].rotation_mode]
             for bone in sorted(obj.data.bones, key=lambda item: item.name)
         ],
+        "object_rotation_mode": obj.rotation_mode,
         "pose_constraints": [
             [
                 pose_bone.name,

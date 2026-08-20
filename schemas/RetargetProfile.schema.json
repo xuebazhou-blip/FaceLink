@@ -69,6 +69,22 @@
       "default": null,
       "title": "Root Motion"
     },
+    "object_motion": {
+      "anyOf": [
+        {
+          "enum": [
+            "preserve",
+            "scale"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Object Motion"
+    },
     "schema_version": {
       "const": "1.0",
       "default": "1.0",

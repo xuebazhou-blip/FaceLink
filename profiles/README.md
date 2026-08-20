@@ -37,7 +37,8 @@ animated by the source Action must be mapped and every target name must exist.
 `bake_pose` uses the same reviewed map but requires an explicit `source_rig`. It samples local
 pose transforms into an ordinary target Action and can correct different rest axes and scale.
 `sample_step` is 1-16; `root_motion` is `scale`, `preserve` or `drop`. Root motion means
-translation on a mapped root pose bone—object-level Action channels are omitted. Version 1
+translation on a mapped root pose bone—object-level Action channels are omitted unless the
+profile explicitly enables `object_motion`. Version 1
 requires the mapped parent hierarchy to match and mapped source/target bones to be free of pose
 constraints and transform drivers; it also requires `strict: true` and ordinary pose transform
 channels. Use deform skeletons or bake a control rig to a source Action first.
@@ -48,6 +49,12 @@ deform bones and target deform bones, so Action controller channels need not app
 Version 1 only evaluates dependencies on the same explicit source armature or its Armature data;
 external helpers, scene variables, automatic controller/IK-FK discovery, different mapped
 hierarchy and constrained/driven target bones are rejected.
+
+Both bake adapters may set `object_motion` to `preserve` or `scale` when overall movement is on
+the source Armature object. Motion is transferred as a delta from the source's first sampled
+world transform, so the target keeps its starting placement. `scale` adjusts only delta
+translation using the mapped-rig median length ratio; `preserve` keeps source units. Version 1
+requires unparented, unconstrained source/target Armature objects and an undriven target object.
 
 The included compact rename and bake profiles are format examples for a two-bone test rig, not
 universal Mixamo presets. Profiles are ordinary version-controlled files so rig maintainers can

@@ -149,6 +149,33 @@ def pose_action(obj, name, bone_names, *, include_object_location=False):
     return action
 
 
+def object_motion_action(
+    obj,
+    name,
+    *,
+    start_location,
+    end_location,
+    start_yaw=0.0,
+    end_yaw=0.0,
+):
+    obj.animation_data_create()
+    action = bpy.data.actions.new(name)
+    obj.animation_data.action = action
+    obj.rotation_mode = "XYZ"
+    for frame, location, yaw in (
+        (1, start_location, start_yaw),
+        (11, end_location, end_yaw),
+    ):
+        obj.location = location
+        obj.rotation_euler = (0.0, 0.0, yaw)
+        obj.scale = (1.0, 1.0, 1.0)
+        obj.keyframe_insert(data_path="location", frame=frame, group=obj.name)
+        obj.keyframe_insert(data_path="rotation_euler", frame=frame, group=obj.name)
+        obj.keyframe_insert(data_path="scale", frame=frame, group=obj.name)
+    obj.animation_data.action = None
+    return action
+
+
 def operation_patch(*operations, patch_id="acceptance"):
     return {
         "schema_version": "1.0",
@@ -1329,6 +1356,7 @@ def test_evaluated_pose_bakes_self_driver_custom_property_and_guards_edits():
     variable.type = "SINGLE_PROP"
     variable.targets[0].id = source
     variable.targets[0].data_path = 'pose.bones["ctrl"]["drive"]'
+    ctrl["drive"] = 0.25
 
     source_id = ensure_entity_id(source)
     target_id = ensure_entity_id(target)
@@ -1370,6 +1398,7 @@ def test_evaluated_pose_bakes_self_driver_custom_property_and_guards_edits():
         0.75,
         abs_tol=1e-5,
     )
+    assert math.isclose(float(ctrl["drive"]), 0.25)
 
     guard_snapshot = scan_scene()
     guard_rigs = {item["entity_id"]: item for item in guard_snapshot["rigs"]}
@@ -1523,6 +1552,293 @@ def test_evaluated_pose_rejects_external_dependencies_and_restores_on_failure():
         source.pose.bones[name].matrix_basis == matrix
         for name, matrix in original_pose.items()
     )
+
+
+def test_evaluated_pose_preserves_target_placement_and_bakes_object_delta():
+    source = armature("Object Motion Source", [("root", None)])
+    target = armature("Object Motion Target", [("pelvis", None)])
+    source.pose.bones["root"].rotation_mode = "XYZ"
+    target.pose.bones["pelvis"].rotation_mode = "XYZ"
+    action = object_motion_action(
+        source,
+        "Evaluated Object Motion",
+        start_location=(10.0, 0.0, 0.0),
+        end_location=(12.0, 0.0, 0.0),
+        end_yaw=0.5,
+    )
+    source.location = (33.0, -2.0, 1.0)
+    source.rotation_euler = (0.1, 0.0, 0.0)
+    target.location = (100.0, 5.0, 0.0)
+    target.rotation_mode = "XYZ"
+    target.rotation_euler = (0.0, 0.0, 0.0)
+    bpy.context.scene.frame_set(4)
+    bpy.context.view_layer.update()
+    source_basis = source.matrix_basis.copy()
+    target_basis = target.matrix_basis.copy()
+
+    source_id = ensure_entity_id(source)
+    target_id = ensure_entity_id(target)
+    snapshot = scan_scene()
+    rigs = {item["entity_id"]: item for item in snapshot["rigs"]}
+    patch = {
+        "schema_version": "1.4",
+        "patch_id": "evaluated-object-motion",
+        "source_title": "Evaluated object motion",
+        "action_fingerprints": {action.name: action_fingerprint(action)},
+        "rig_fingerprints": {
+            source_id: rigs[source_id]["fingerprint"],
+            target_id: rigs[target_id]["fingerprint"],
+        },
+        "operations": [
+            {
+                "op": "play_clip",
+                "entity_id": target_id,
+                "payload": {
+                    "clip": action.name,
+                    "frame_start": 20,
+                    "frame_end": 30,
+                    "retarget": {
+                        "adapter": "bake_evaluated_pose",
+                        "source_rig": source_id,
+                        "bone_map": {"root": "pelvis"},
+                        "root_motion": "drop",
+                        "object_motion": "preserve",
+                    },
+                },
+            }
+        ],
+    }
+    summary = bridge.stage_patch(patch)["summary"]
+    retarget = summary["retargets"][0]
+    assert retarget["object_motion"] == "preserve"
+    assert retarget["mapped_bone_count"] == 1
+    bridge.apply_staged_patch()
+    derived = bpy.data.actions[retarget["output_action"]]
+    inventory = action_inventory(derived)
+    assert {"location", "rotation_euler", "scale"} <= set(inventory["data_paths"])
+    assert inventory["pose_bones"] == ["pelvis"]
+    assert math.isclose(find_action_curve(derived, "location", 0).evaluate(1), 100.0)
+    assert math.isclose(find_action_curve(derived, "location", 1).evaluate(1), 5.0)
+    assert math.isclose(find_action_curve(derived, "location", 0).evaluate(11), 102.0)
+    assert math.isclose(find_action_curve(derived, "location", 1).evaluate(11), 5.0)
+    assert math.isclose(
+        find_action_curve(derived, "rotation_euler", 2).evaluate(11),
+        0.5,
+        abs_tol=1e-5,
+    )
+    assert source.matrix_basis == source_basis
+    assert target.matrix_basis == target_basis
+    assert math.isclose(bpy.context.scene.frame_current_final, 4.0)
+    assert all(
+        point.interpolation == "LINEAR"
+        for _, curve in iter_action_fcurves(derived)
+        for point in curve.keyframe_points
+    )
+    undo_last_patch()
+    assert bpy.data.actions.get(retarget["output_action"]) is None
+    assert target.animation_data is None
+
+
+def test_direct_pose_bake_scales_object_delta_and_supports_object_only_action():
+    source = geometric_armature(
+        "Direct Object Source", [("root", None, (0, 0, 0), (0, 1, 0))]
+    )
+    target = geometric_armature(
+        "Direct Object Target", [("pelvis", None, (0, 0, 0), (0, 2, 0))]
+    )
+    action = object_motion_action(
+        source,
+        "Direct Object Motion",
+        start_location=(0.0, 0.0, 0.0),
+        end_location=(3.0, 0.0, 0.0),
+    )
+    source.location = (7.0, 0.0, 0.0)
+    target.location = (-5.0, 0.0, 0.0)
+    source_basis = source.matrix_basis.copy()
+    target_basis = target.matrix_basis.copy()
+    bpy.context.scene.frame_set(50)
+    source_id = ensure_entity_id(source)
+    target_id = ensure_entity_id(target)
+    snapshot = scan_scene()
+    rigs = {item["entity_id"]: item for item in snapshot["rigs"]}
+    patch = {
+        "schema_version": "1.4",
+        "patch_id": "direct-scaled-object-motion",
+        "source_title": "Direct scaled object motion",
+        "action_fingerprints": {action.name: action_fingerprint(action)},
+        "rig_fingerprints": {
+            source_id: rigs[source_id]["fingerprint"],
+            target_id: rigs[target_id]["fingerprint"],
+        },
+        "operations": [
+            {
+                "op": "play_clip",
+                "entity_id": target_id,
+                "payload": {
+                    "clip": action.name,
+                    "frame_start": 1,
+                    "frame_end": 11,
+                    "retarget": {
+                        "adapter": "bake_pose",
+                        "source_rig": source_id,
+                        "bone_map": {"root": "pelvis"},
+                        "object_motion": "scale",
+                    },
+                },
+            }
+        ],
+    }
+    summary = bridge.stage_patch(patch)["summary"]
+    assert summary["retargets"][0]["mapped_bone_count"] == 0
+    bridge.apply_staged_patch()
+    derived = bpy.data.actions[summary["retargets"][0]["output_action"]]
+    inventory = action_inventory(derived)
+    assert inventory["pose_bones"] == []
+    curve = find_action_curve(derived, "location", 0)
+    assert math.isclose(curve.evaluate(1), -5.0, abs_tol=1e-6)
+    assert math.isclose(curve.evaluate(11), 1.0, abs_tol=1e-6)
+    assert source.matrix_basis == source_basis
+    assert target.matrix_basis == target_basis
+
+
+def test_object_motion_boundaries_fail_closed_and_omitted_channels_restore():
+    source = armature("Object Boundary Source", [("root", None)])
+    target = armature("Object Boundary Target", [("pelvis", None)])
+    action = object_motion_action(
+        source,
+        "Object Boundary Action",
+        start_location=(0.0, 0.0, 0.0),
+        end_location=(1.0, 0.0, 0.0),
+    )
+    source_id = ensure_entity_id(source)
+    target_id = ensure_entity_id(target)
+
+    def patch_for_current_state(object_motion="preserve"):
+        snapshot = scan_scene()
+        rigs = {item["entity_id"]: item for item in snapshot["rigs"]}
+        retarget = {
+            "adapter": "bake_evaluated_pose",
+            "source_rig": source_id,
+            "bone_map": {"root": "pelvis"},
+        }
+        if object_motion is not None:
+            retarget["object_motion"] = object_motion
+        return {
+            "schema_version": "1.4",
+            "patch_id": "object-motion-boundary",
+            "source_title": "Object motion boundary",
+            "action_fingerprints": {action.name: action_fingerprint(action)},
+            "rig_fingerprints": {
+                source_id: rigs[source_id]["fingerprint"],
+                target_id: rigs[target_id]["fingerprint"],
+            },
+            "operations": [
+                {
+                    "op": "play_clip",
+                    "entity_id": target_id,
+                    "payload": {
+                        "clip": action.name,
+                        "frame_start": 1,
+                        "frame_end": 11,
+                        "retarget": retarget,
+                    },
+                }
+            ],
+        }
+
+    parent = empty("Object Motion Parent")
+    target.parent = parent
+    try:
+        bridge.stage_patch(patch_for_current_state())
+    except ValueError as exc:
+        assert "unparented" in str(exc)
+    else:
+        raise AssertionError("object_motion accepted a parented target")
+    target.parent = None
+
+    constraint = target.constraints.new(type="COPY_LOCATION")
+    constraint.target = parent
+    try:
+        bridge.stage_patch(patch_for_current_state())
+    except ValueError as exc:
+        assert "without object constraints" in str(exc)
+    else:
+        raise AssertionError("object_motion accepted a constrained target object")
+    target.constraints.remove(constraint)
+
+    target.driver_add("location", 0)
+    try:
+        bridge.stage_patch(patch_for_current_state())
+    except ValueError as exc:
+        assert "driven target object transforms" in str(exc)
+    else:
+        raise AssertionError("object_motion accepted a driven target object")
+    target.driver_remove("location", 0)
+    target.animation_data_clear()
+
+    invalid = patch_for_current_state()
+    invalid["operations"][0]["payload"]["retarget"]["object_motion"] = "world"
+    try:
+        bridge.stage_patch(invalid)
+    except ValueError as exc:
+        assert "object_motion" in str(exc)
+    else:
+        raise AssertionError("object_motion accepted an unsupported mode")
+
+    pose_only = pose_action(source, "Object Boundary Pose Only", ["root"])
+    missing_channels = patch_for_current_state()
+    missing_channels["operations"][0]["payload"]["clip"] = pose_only.name
+    missing_channels["action_fingerprints"] = {
+        pose_only.name: action_fingerprint(pose_only)
+    }
+    try:
+        bridge.stage_patch(missing_channels)
+    except ValueError as exc:
+        assert "object transform channel" in str(exc)
+    else:
+        raise AssertionError("object_motion accepted an Action without object channels")
+
+    target.scale.x = 0.0
+    singular = patch_for_current_state()
+    bridge.stage_patch(singular)
+    before_actions = set(bpy.data.actions.keys())
+    try:
+        bridge.apply_staged_patch()
+    except ValueError as exc:
+        assert "singular target transform" in str(exc)
+    else:
+        raise AssertionError("object_motion accepted a singular target transform")
+    assert bridge.get_staged_patch()["staged"] is True
+    assert set(bpy.data.actions.keys()) == before_actions
+    assert target.animation_data is None
+    target.scale.x = 1.0
+    bridge.discard_staged_patch()
+
+    rotation_guard = patch_for_current_state()
+    bridge.stage_patch(rotation_guard)
+    original_rotation_mode = target.rotation_mode
+    target.rotation_mode = "QUATERNION"
+    try:
+        bridge.apply_staged_patch()
+    except ValueError as exc:
+        assert "changed after this patch was planned" in str(exc)
+    else:
+        raise AssertionError("object_motion accepted a changed target rotation mode")
+    target.rotation_mode = original_rotation_mode
+    bridge.discard_staged_patch()
+
+    source.location = (19.0, 2.0, 0.0)
+    source_basis = source.matrix_basis.copy()
+    omitted = patch_for_current_state(object_motion=None)
+    summary = bridge.stage_patch(omitted)["summary"]
+    bridge.apply_staged_patch()
+    derived = bpy.data.actions[summary["retargets"][0]["output_action"]]
+    assert not {"location", "rotation_euler", "rotation_quaternion", "scale"} & {
+        path
+        for path in action_inventory(derived)["data_paths"]
+        if not path.startswith('pose.bones["')
+    }
+    assert source.matrix_basis == source_basis
 
 
 def test_bake_pose_boundaries_fail_closed_without_generated_actions():
@@ -2735,6 +3051,18 @@ CASES = [
     (
         "evaluated_pose_boundaries_state_restore",
         test_evaluated_pose_rejects_external_dependencies_and_restores_on_failure,
+    ),
+    (
+        "evaluated_object_motion_target_placement",
+        test_evaluated_pose_preserves_target_placement_and_bakes_object_delta,
+    ),
+    (
+        "direct_object_motion_scaled_object_only",
+        test_direct_pose_bake_scales_object_delta_and_supports_object_only_action,
+    ),
+    (
+        "object_motion_boundaries_omitted_restore",
+        test_object_motion_boundaries_fail_closed_and_omitted_channels_restore,
     ),
     (
         "retarget_stale_action_guard",

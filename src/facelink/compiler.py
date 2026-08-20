@@ -180,6 +180,7 @@ def _rig_action_issues(shot: ShotSpec, snapshot: SceneSnapshot) -> list[Validati
             beat.retarget is not None
             and beat.retarget.adapter == "bake_pose"
             and not action.pose_bones
+            and beat.retarget.object_motion is None
         ):
             issues.append(
                 ValidationIssue(
@@ -295,10 +296,42 @@ def _rig_action_issues(shot: ShotSpec, snapshot: SceneSnapshot) -> list[Validati
                         beat_index=index,
                     )
                 )
-        has_non_pose_channels = any(
-            not path.startswith('pose.bones["') for path in action.data_paths
+        object_transform_paths = {
+            "location",
+            "rotation_euler",
+            "rotation_quaternion",
+            "rotation_axis_angle",
+            "scale",
+        }
+        has_object_transform_channels = any(
+            path in object_transform_paths for path in action.data_paths
         )
-        if beat.retarget is not None and has_non_pose_channels:
+        if (
+            beat.retarget is not None
+            and beat.retarget.object_motion is not None
+            and not has_object_transform_channels
+        ):
+            issues.append(
+                ValidationIssue(
+                    severity="error",
+                    code="object_motion_requires_object_transform_channels",
+                    message=(
+                        f"Action '{beat.clip}' has no Armature object transform channels "
+                        "to transfer."
+                    ),
+                    beat_index=index,
+                )
+            )
+        omitted_non_pose_channels = any(
+            not path.startswith('pose.bones["')
+            and not (
+                beat.retarget is not None
+                and beat.retarget.object_motion is not None
+                and path in object_transform_paths
+            )
+            for path in action.data_paths
+        )
+        if beat.retarget is not None and omitted_non_pose_channels:
             rename_only = beat.retarget.adapter == "rename_only"
             evaluated = beat.retarget.adapter == "bake_evaluated_pose"
             issues.append(
@@ -319,8 +352,8 @@ def _rig_action_issues(shot: ShotSpec, snapshot: SceneSnapshot) -> list[Validati
                             "rename_only preserves them unchanged."
                             if rename_only
                             else (
-                                "bake_evaluated_pose evaluates controller and custom-property "
-                                "channels on the source rig, but omits object-level channels."
+                                "bake_evaluated_pose evaluates controller/custom-property "
+                                "channels as inputs but does not copy unsupported channels."
                                 if evaluated
                                 else "bake_pose omits them. Root motion must be stored on a "
                                 "mapped root pose bone to be transferred."

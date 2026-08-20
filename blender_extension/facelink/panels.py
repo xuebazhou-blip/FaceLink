@@ -115,6 +115,18 @@ class FACELINK_PT_main(Panel):
                     ),
                     icon="ARMATURE_DATA",
                 )
+                object_modes = sorted(
+                    {
+                        item["object_motion"]
+                        for item in summary.get("retargets", [])
+                        if item.get("object_motion") is not None
+                    }
+                )
+                if object_modes:
+                    review.label(
+                        text="Object motion: " + ", ".join(object_modes),
+                        icon="ORIENTATION_GLOBAL",
+                    )
             for warning in summary["warnings"][:2]:
                 review.label(text=warning[:80], icon="ERROR")
             preview = overlay.preview_status()

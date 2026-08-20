@@ -1,6 +1,6 @@
 schema_version = "1.0.0"
 id = "facelink"
-version = "0.3.5"
+version = "0.3.6"
 name = "FaceLink"
 tagline = "Editable previs animation from constrained shot descriptions"
 maintainer = "FaceLink Contributors"

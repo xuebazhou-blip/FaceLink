@@ -129,6 +129,7 @@ async def test_stdio_server_validates_and_previews_without_blender():
                         "source_rig": "source-rig",
                         "bone_map": {"deform": "target"},
                         "sample_step": 3,
+                        "object_motion": "preserve",
                     }
                 },
             )
@@ -151,6 +152,7 @@ async def test_stdio_server_validates_and_previews_without_blender():
     assert not evaluated_profile.is_error
     assert evaluated_profile.structured_content["adapter"] == "bake_evaluated_pose"
     assert evaluated_profile.structured_content["sample_step"] == 3
+    assert evaluated_profile.structured_content["object_motion"] == "preserve"
 
 
 @pytest.mark.asyncio

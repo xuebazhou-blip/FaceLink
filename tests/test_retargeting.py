@@ -270,6 +270,10 @@ def test_retarget_models_reject_invalid_hierarchies_maps_and_fingerprints():
     evaluated = evaluated_bake_spec(sample_step=3, root_motion="preserve")
     assert evaluated.adapter == "bake_evaluated_pose"
     assert evaluated.source_rig == "source-rig"
+    object_bake = evaluated_bake_spec(object_motion="scale")
+    assert object_bake.object_motion == "scale"
+    with pytest.raises(ValidationError):
+        evaluated_bake_spec(object_motion="world")
     with pytest.raises(ValidationError):
         ActionInventory.model_validate(
             {
@@ -636,9 +640,9 @@ def test_compiler_evaluated_bake_maps_deform_bones_not_controller_channels():
     )
     action = snapshot.actions[0]
     action.pose_bones = ["ctrl"]
-    action.data_paths = ['pose.bones["ctrl"]["drive"]']
-    action.fcurve_count = 1
-    action.keyframe_count = 2
+    action.data_paths = ['pose.bones["ctrl"]["drive"]', "location"]
+    action.fcurve_count = 2
+    action.keyframe_count = 4
     shot = ShotSpec.model_validate(
         {
             "duration": 1,
@@ -651,6 +655,7 @@ def test_compiler_evaluated_bake_maps_deform_bones_not_controller_channels():
                     "retarget": evaluated_bake_spec(
                         sample_step=2,
                         root_motion="drop",
+                        object_motion="preserve",
                     ).model_dump(mode="json", exclude_none=True),
                 }
             ],
@@ -673,10 +678,52 @@ def test_compiler_evaluated_bake_maps_deform_bones_not_controller_channels():
         "source_rig": "source-rig",
         "sample_step": 2,
         "root_motion": "drop",
+        "object_motion": "preserve",
     }
     assert patch.rig_fingerprints == {
         "source-rig": "rig-111111111111111111111111",
         "target-rig": "rig-222222222222222222222222",
+    }
+
+
+def test_compiler_accepts_object_only_bake_and_rejects_missing_object_channels():
+    snapshot = rig_action_snapshot()
+    action = snapshot.actions[0]
+    action.pose_bones = []
+    action.data_paths = ["location", "rotation_euler"]
+    action.fcurve_count = 6
+    action.keyframe_count = 12
+    shot = ShotSpec.model_validate(
+        {
+            "duration": 1,
+            "beats": [
+                {
+                    "type": "play_clip",
+                    "actor": "target-rig",
+                    "clip": action.name,
+                    "duration": 1,
+                    "retarget": bake_spec(
+                        object_motion="scale"
+                    ).model_dump(mode="json", exclude_none=True),
+                }
+            ],
+        }
+    )
+    report = validate_shot(shot, snapshot)
+    assert report.valid is True
+    assert "bake_pose_requires_pose_channels" not in {
+        issue.code for issue in report.issues
+    }
+    assert compile_shot(shot, snapshot).operations[1].payload["retarget"][
+        "object_motion"
+    ] == "scale"
+
+    action.data_paths = ['pose.bones["mixamorig:Hips"]["control"]']
+    action.pose_bones = ["mixamorig:Hips"]
+    missing = validate_shot(shot, snapshot)
+    assert missing.valid is False
+    assert "object_motion_requires_object_transform_channels" in {
+        issue.code for issue in missing.issues
     }
 
 

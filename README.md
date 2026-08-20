@@ -38,6 +38,8 @@ the scene only after the artist presses **Apply Staged Patch**.
   different local rest axes and bone scale with explicit root-motion policy and bounded work;
 - evaluates existing self-contained source-rig constraints and drivers with
   `bake_evaluated_pose`, then bakes the final deform-bone pose into an ordinary editable Action;
+- optionally transfers Armature object root motion as a placement-preserving relative delta,
+  with source-unit or rig-scale-adjusted translation;
 - predicts the staged camera frame without creating scene datablocks, measuring target size,
   center offset, safe-area fit, clipping and center-point occlusion before the artist applies;
 - rejects a staged plan when a referenced transform, parent link, lock or scene timing value
@@ -79,7 +81,7 @@ $env:FACELINK_BLENDER_EXE='C:\path\to\Blender\blender.exe' # optional if on PATH
 ```
 
 Then in Blender 4.5: **Edit → Preferences → Get Extensions → Install from Disk**, choose
-`dist/facelink-0.3.5.zip`, enable FaceLink, and open the **FaceLink** tab in the 3D Viewport
+`dist/facelink-0.3.6.zip`, enable FaceLink, and open the **FaceLink** tab in the 3D Viewport
 sidebar. Press **Start Bridge**.
 
 Run the MCP server:
@@ -172,7 +174,8 @@ reviewed profile to `adapter: "bake_pose"`, set its explicit `source_rig`, and o
 `sample_step` (1-16) and `root_motion` (`scale`, `preserve` or `drop`). FaceLink samples the
 source Action's native frame range, writes linear location/rotation/scale keys to a normal
 target Action, and puts it in the same editable NLA workflow. Object-level Action channels are
-omitted; root motion must be on a mapped root pose bone. This first adapter requires equivalent
+omitted unless `object_motion` is explicit; otherwise root motion must be on a mapped root pose
+bone. This first adapter requires equivalent
 mapped parent hierarchy and unconstrained source/target deform bones. See
 [profiles/mixamo_to_facelink_compact_bake.json](profiles/mixamo_to_facelink_compact_bake.json)
 and [examples/baked_retargeted_clip_shot.json](examples/baked_retargeted_clip_shot.json).
@@ -186,6 +189,16 @@ still requires equivalent mapped parent hierarchy plus unconstrained/undriven ta
 It does not discover controllers or convert IK/FK systems automatically. See
 [profiles/controller_to_deform_evaluated_bake.json](profiles/controller_to_deform_evaluated_bake.json)
 and [examples/evaluated_retargeted_clip_shot.json](examples/evaluated_retargeted_clip_shot.json).
+
+If overall character movement lives on the source Armature object, add
+`object_motion: "preserve"` or `"scale"` to either bake adapter. FaceLink uses the source
+object's transform relative to its first sampled frame, applies that delta after the target's
+current world transform, and writes ordinary object location/rotation/scale FCurves into the
+same generated Action. `scale` multiplies delta translation by the mapped-rig median length
+ratio; `preserve` keeps source units. Version 1 requires unparented source/target Armatures with
+no object constraints or driven target object transforms. See
+[profiles/object_motion_bake.json](profiles/object_motion_bake.json) and
+[examples/object_motion_clip_shot.json](examples/object_motion_clip_shot.json).
 
 Inspect or roll back FaceLink revisions from the command line:
 
@@ -243,11 +256,13 @@ docs/                  Architecture, protocol and development notes
 
 ## Project status
 
-Version 0.3.5 is a creator-review alpha, not yet a production animation system. It performs
+Version 0.3.6 is a creator-review alpha, not yet a production animation system. It performs
 bounded transform-aware pose baking for reviewed mappings and can evaluate existing constraints
-and drivers when every dependency stays on the explicit source armature. It does not infer
-controllers, translate IK/FK systems, follow external helper objects, solve different mapped
-parent hierarchies, transfer object-level motion, synthesize missing motion or judge the visual result. Multi-level navigation,
+and drivers when every dependency stays on the explicit source armature. It can also transfer
+unparented, unconstrained Armature-object motion without moving the target's starting placement.
+It does not infer controllers, translate IK/FK systems, follow external helper objects, solve
+different mapped parent hierarchies, handle parented/constrained object roots, synthesize missing
+motion or judge the visual result. Multi-level navigation,
 multi-shot sequencing and visual diff overlays remain follow-up work.
 
 Before publishing your fork, replace the placeholder GitHub URLs in `pyproject.toml`, add a

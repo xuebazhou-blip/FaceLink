@@ -1,0 +1,27 @@
+{
+  "schema_version": "1.0",
+  "title": "Placement-preserving Armature object motion",
+  "fps": 24,
+  "duration": 2,
+  "beats": [
+    {
+      "type": "play_clip",
+      "actor": "replace-with-target-armature-id",
+      "clip": "Object Root Motion",
+      "at": 0,
+      "duration": 2,
+      "loop": false,
+      "retarget": {
+        "adapter": "bake_pose",
+        "bone_map": {
+          "source_root": "target_root"
+        },
+        "strict": true,
+        "source_rig": "replace-with-source-armature-id",
+        "sample_step": 1,
+        "root_motion": "drop",
+        "object_motion": "scale"
+      }
+    }
+  ]
+}

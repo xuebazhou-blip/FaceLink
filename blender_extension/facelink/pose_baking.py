@@ -2,6 +2,7 @@ import ast
 import math
 
 import bpy
+from mathutils import Matrix
 
 from .action_inventory import (
     MAX_ACTION_FCURVES,
@@ -136,6 +137,43 @@ def _remove_temporary_source(source_copy, data_copy):
 
 def _capture_pose(obj, names):
     return {name: obj.pose.bones[name].matrix_basis.copy() for name in names}
+
+
+def _copy_custom_value(value, depth=0):
+    if depth > 4 or value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if hasattr(value, "keys"):
+        return {
+            str(key): _copy_custom_value(value[key], depth + 1)
+            for key in value.keys()
+        }
+    if hasattr(value, "__iter__") and not hasattr(value, "bl_rna"):
+        return [_copy_custom_value(item, depth + 1) for item in value]
+    return value
+
+
+def _capture_custom_properties(obj):
+    owners = [obj, obj.data, *obj.pose.bones]
+    return [
+        (
+            owner,
+            {
+                str(key): _copy_custom_value(owner[key])
+                for key in owner.keys()
+                if key != "_RNA_UI"
+            },
+        )
+        for owner in owners
+    ]
+
+
+def _restore_custom_properties(states):
+    for owner, values in states:
+        try:
+            for key, value in values.items():
+                owner[key] = value
+        except ReferenceError:
+            continue
 
 
 def _restore_pose(obj, matrices):
@@ -312,6 +350,18 @@ def _evaluated_local_basis(pose_bone):
     )
 
 
+def _object_motion_matrix(source_world, first_source_world, target_world, mode, ratio):
+    if abs(first_source_world.to_3x3().determinant()) <= 1e-12:
+        raise ValueError("object_motion does not support a singular source transform")
+    if abs(target_world.to_3x3().determinant()) <= 1e-12:
+        raise ValueError("object_motion does not support a singular target transform")
+    delta = first_source_world.inverted() @ source_world
+    location, rotation, scale = delta.decompose()
+    if mode == "scale":
+        location *= ratio
+    return target_world @ Matrix.LocRotScale(location, rotation, scale)
+
+
 def _keyframe_pose_bone(pose_bone, frame, previous_rotation):
     pose_bone.keyframe_insert(data_path="location", frame=frame, group=pose_bone.name)
     pose_bone.keyframe_insert(data_path="scale", frame=frame, group=pose_bone.name)
@@ -356,6 +406,7 @@ def bake_pose_action(
     scale_map,
     sample_step=1,
     root_motion="scale",
+    object_motion=None,
 ):
     """Sample an Action's local pose basis into a normal editable target Action.
 
@@ -364,7 +415,7 @@ def bake_pose_action(
     Blender evaluates the copied transform relative to the target bone's own rest matrix.
     """
     frames = sample_frames(source_action, sample_step)
-    curve_budget = len(bone_map) * 10
+    curve_budget = (len(bone_map) + int(object_motion is not None)) * 10
     keyframe_budget = curve_budget * len(frames)
     if curve_budget > MAX_ACTION_FCURVES:
         raise ValueError(
@@ -389,6 +440,8 @@ def bake_pose_action(
     original_target_slot = None
     target_track_states = []
     original_target_pose = _capture_pose(target_rig, target_names)
+    original_target_basis = target_rig.matrix_basis.copy()
+    target_world = target_rig.matrix_world.copy()
     try:
         target_animation = target_rig.animation_data_create()
         original_target_action = target_animation.action
@@ -418,6 +471,8 @@ def bake_pose_action(
         )
 
         previous_rotations = {}
+        previous_object_rotation = None
+        first_source_world = None
         for frame in frames:
             _set_scene_frame(scene, frame)
             bpy.context.view_layer.update()
@@ -439,6 +494,22 @@ def bake_pose_action(
                     frame,
                     previous_rotations.get(target_name),
                 )
+            if object_motion is not None:
+                source_world = source_copy.matrix_world.copy()
+                if first_source_world is None:
+                    first_source_world = source_world.copy()
+                target_rig.matrix_world = _object_motion_matrix(
+                    source_world,
+                    first_source_world,
+                    target_world,
+                    object_motion,
+                    uniform_ratio,
+                )
+                previous_object_rotation = _keyframe_pose_bone(
+                    target_rig,
+                    frame,
+                    previous_object_rotation,
+                )
 
         for _, curve in iter_action_fcurves(action):
             for point in curve.keyframe_points:
@@ -456,6 +527,7 @@ def bake_pose_action(
             target_animation.action_slot = original_target_slot
         _restore_tracks(target_track_states)
         _restore_pose(target_rig, original_target_pose)
+        target_rig.matrix_basis = original_target_basis
         _set_scene_frame(scene, original_frame)
         _remove_temporary_source(source_copy, data_copy)
         if not succeeded and action is not None and action.users == 0:
@@ -479,6 +551,7 @@ def bake_evaluated_pose_action(
     scale_map,
     sample_step=1,
     root_motion="scale",
+    object_motion=None,
 ):
     """Bake the source rig's final constrained/driven pose into an editable Action."""
     if source_rig == target_rig:
@@ -490,7 +563,7 @@ def bake_evaluated_pose_action(
             + "; ".join(dependency_errors)
         )
     frames = sample_frames(source_action, sample_step)
-    curve_budget = len(bone_map) * 10
+    curve_budget = (len(bone_map) + int(object_motion is not None)) * 10
     keyframe_budget = curve_budget * len(frames)
     if curve_budget > MAX_ACTION_FCURVES:
         raise ValueError(
@@ -508,7 +581,11 @@ def bake_evaluated_pose_action(
     target_names = list(bone_map.values())
     original_source_pose = _capture_pose(source_rig, source_names)
     original_target_pose = _capture_pose(target_rig, target_names)
+    original_source_basis = source_rig.matrix_basis.copy()
+    original_target_basis = target_rig.matrix_basis.copy()
+    target_world = target_rig.matrix_world.copy()
     source_animation_state = _capture_animation_state(source_rig)
+    source_custom_properties = _capture_custom_properties(source_rig)
     target_animation_existed = target_rig.animation_data is not None
     target_animation = None
     original_target_action = None
@@ -553,6 +630,8 @@ def bake_evaluated_pose_action(
         )
 
         previous_rotations = {}
+        previous_object_rotation = None
+        first_source_world = None
         for frame in frames:
             _set_scene_frame(scene, frame)
             bpy.context.view_layer.update()
@@ -579,6 +658,22 @@ def bake_evaluated_pose_action(
                     frame,
                     previous_rotations.get(target_name),
                 )
+            if object_motion is not None:
+                source_world = source_rig.matrix_world.copy()
+                if first_source_world is None:
+                    first_source_world = source_world.copy()
+                target_rig.matrix_world = _object_motion_matrix(
+                    source_world,
+                    first_source_world,
+                    target_world,
+                    object_motion,
+                    uniform_ratio,
+                )
+                previous_object_rotation = _keyframe_pose_bone(
+                    target_rig,
+                    frame,
+                    previous_object_rotation,
+                )
 
         for _, curve in iter_action_fcurves(action):
             for point in curve.keyframe_points:
@@ -596,8 +691,11 @@ def bake_evaluated_pose_action(
             target_animation.action_slot = original_target_slot
         _restore_tracks(target_track_states)
         _restore_pose(target_rig, original_target_pose)
+        target_rig.matrix_basis = original_target_basis
         _restore_animation_state(source_rig, source_animation_state)
+        _restore_custom_properties(source_custom_properties)
         _restore_pose(source_rig, original_source_pose)
+        source_rig.matrix_basis = original_source_basis
         _set_scene_frame(scene, original_frame)
         if not succeeded and action is not None and action.users == 0:
             bpy.data.actions.remove(action)

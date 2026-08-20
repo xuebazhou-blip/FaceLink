@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0",
+  "name": "Placement-preserving Armature object motion bake example",
+  "adapter": "bake_pose",
+  "bone_map": {
+    "source_root": "target_root"
+  },
+  "strict": true,
+  "source_rig": "replace-with-source-armature-id",
+  "sample_step": 1,
+  "root_motion": "drop",
+  "object_motion": "scale"
+}

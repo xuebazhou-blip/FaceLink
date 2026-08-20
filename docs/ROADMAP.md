@@ -82,7 +82,7 @@
 - Fail-closed hierarchy, constraint, old-schema, zero-length and workload boundaries
 - Blender 4.2/4.5/5.2 tests for axis correction, scale, root policies and rollback
 
-## v0.3.5 — current evaluated-pose-bake release
+## v0.3.5 — evaluated-pose-bake release
 
 - Reviewed `bake_evaluated_pose` profiles map evaluated source deform bones to target bones
 - Existing same-rig controller constraints and custom-property drivers are sampled by Blender
@@ -90,6 +90,15 @@
 - Constraint, driver and control-property changes participate in stale Rig guards
 - External dependencies, target controls and hierarchy mismatch remain fail-closed
 - Blender 4.2/4.5/5.2 tests cover constraints, drivers, restoration and dependency rejection
+
+## v0.3.6 — current object-motion-bake release
+
+- Optional `object_motion` preserve/scale modes on both pose-bake adapters
+- Relative first-sample transform delta preserves target world placement
+- Ordinary editable object location/rotation/scale FCurves share the generated Action/NLA strip
+- Source object state restores even when object channels are intentionally omitted or bake fails
+- Fail-closed parent, object-constraint, target-driver, rotation-mode and singular-matrix guards
+- Blender 4.2/4.5/5.2 coverage for evaluated/direct and object-only Actions
 
 ## v0.3.x — remaining useful intelligence
 

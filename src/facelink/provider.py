@@ -18,10 +18,11 @@ never invent a bone mapping. Emit retarget only when an exact supplied retarget 
 copy every profile field exactly. The rename_only adapter only rewrites pose-bone channel names
 and does not correct rest pose, proportions, axes or root motion. The bake_pose adapter samples
 direct pose transforms. The bake_evaluated_pose adapter samples the final constrained/driven pose
-of a self-contained explicit source rig. Both create editable target Actions; root_motion only
-affects translation on a mapped root pose bone and object-level channels are omitted. Never
-treat an unreviewed mapping suggestion as an approved profile; compatibility validation belongs
-to FaceLink's deterministic compiler."""
+of a self-contained explicit source rig. Both create editable target Actions; root_motion affects
+translation on a mapped root pose bone. Object-level channels are omitted unless an exact profile
+supplies object_motion; preserve/scale modes bake the source object's relative transform delta
+while retaining target placement. Never treat an unreviewed mapping suggestion as an approved
+profile; compatibility validation belongs to FaceLink's deterministic compiler."""
 
 
 def plan_with_openai(

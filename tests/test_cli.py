@@ -304,6 +304,7 @@ def test_cli_validates_evaluated_pose_bake_profile(monkeypatch, tmp_path):
                 "bone_map": {"deform_root": "pelvis"},
                 "sample_step": 2,
                 "root_motion": "preserve",
+                "object_motion": "scale",
             }
         ),
         encoding="utf-8",
@@ -325,6 +326,7 @@ def test_cli_validates_evaluated_pose_bake_profile(monkeypatch, tmp_path):
     assert normalized["adapter"] == "bake_evaluated_pose"
     assert normalized["source_rig"] == "source-rig"
     assert normalized["root_motion"] == "preserve"
+    assert normalized["object_motion"] == "scale"
 
 
 def test_cli_suggests_then_analyzes_retarget_profile(monkeypatch, tmp_path):

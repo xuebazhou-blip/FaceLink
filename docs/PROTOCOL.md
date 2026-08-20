@@ -1,4 +1,4 @@
-# Local bridge protocol 1.8
+# Local bridge protocol 1.9
 
 The Blender extension writes one JSON discovery record per running Blender process. The
 directory is `${FACELINK_INSTANCE_DIR}` when configured, otherwise
@@ -122,6 +122,8 @@ that mode after staging therefore invalidates the patch before mutation.
 Protocol 1.8 also fingerprints pose-constraint stacks, object/Armature-data drivers and custom
 properties on the armature and its pose bones. A controller, driver expression or control
 property edit after staging therefore invalidates an evaluated bake before mutation.
+Protocol 1.9 includes the Armature object's rotation representation because object-motion
+output must select Euler, quaternion or axis-angle FCurve channels deterministically.
 
 Scene Patch 1.4 adds `rig_fingerprints`. For every pose Action, its target armature must be
 guarded; a retarget operation also guards the explicit or deterministically inferred source
@@ -163,7 +165,8 @@ The source Action's exact first and last frames are always included, including f
 frames. `root_motion` defaults to `scale`: translation on a mapped root bone is multiplied by
 the median target/source mapped-bone length ratio. `preserve` keeps source units and `drop`
 zeros root-bone translation. Translation on non-root pose bones uses that bone's individual
-target/source length ratio. Non-pose object channels are deliberately omitted.
+target/source length ratio. Non-pose object channels are omitted unless `object_motion` is
+explicitly enabled as described below.
 
 Blender evaluates the Action on a temporary source-armature copy and samples each mapped
 `PoseBone.matrix_basis`. That transform is relative to the source bone's parent and rest bone;
@@ -176,7 +179,8 @@ The first bake adapter requires `strict: true`, an equivalent fully mapped paren
 non-zero mapped bone lengths, ordinary pose transform channels, and no pose constraints or
 transform drivers on mapped source or target bones. Armatures must be outside Edit Mode and a
 Blender 4.4+ source Action may have at most one slot. Control-rig IK/FK, constraint and driver
-evaluation are not inferred. A source Action must contain pose-bone channels.
+evaluation are not inferred. A source Action must contain pose-bone channels unless explicit
+object motion is the only requested output.
 Sampling is capped at 20,000 frames, 10,000 FCurves and 200,000 keyframe values. Stage summary
 records the adapter, sample count, root-motion policy and deterministic output name. That name
 includes the source Action fingerprint, bake settings and both Rig fingerprints; repeat apply
@@ -203,8 +207,31 @@ Armature datablock. External helper objects, Actions referenced by constraints, 
 driver variables, external rigs, automatic controller discovery and IK/FK-system conversion
 are not supported. Scripted drivers are limited to declared variables, arithmetic and a fixed
 set of deterministic math functions; implicit `self`, `frame`, custom driver namespaces and
-arbitrary expression syntax are rejected. Object-level Action channels are not copied to the
-target Action, although custom-property channels may serve as driver inputs.
+arbitrary expression syntax are rejected. Object-level Action channels are not copied unless
+`object_motion` is explicit, although custom-property channels may serve as driver inputs.
+
+## Armature object motion bake
+
+Protocol 1.9 adds the `object_motion_bake` capability. Either pose-bake adapter may set:
+
+```json
+{"object_motion": "preserve"}
+```
+
+The mode is optional; omission retains the previous bone-only behavior. `preserve` keeps the
+source object's translation units. `scale` multiplies translation by the median mapped-bone
+target/source length ratio. Both modes transfer the full location/rotation/scale delta relative
+to the source Action's first exact sample, compose it after the target's current world transform,
+and key ordinary object transform FCurves in the same generated Action. Thus the first generated
+key preserves target placement instead of teleporting it to the source rig's coordinates.
+
+Version 1 requires at least one source Action object-transform channel, unparented source and
+target Armatures, non-singular transforms and no object constraints. Target object transform
+drivers are rejected. `bake_pose` accepts only Action-driven source object transforms;
+`bake_evaluated_pose` may evaluate self-contained source drivers under its existing dependency
+rules. Source and target object transforms, source custom-property values, Action/slot, NLA,
+pose and scene frame are restored transactionally; even when object output is omitted, source
+object or driver-control channels cannot leak their last sampled value into the scene.
 
 ## Scene consistency and transform space
 
