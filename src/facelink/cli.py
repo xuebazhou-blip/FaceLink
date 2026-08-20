@@ -7,6 +7,7 @@ from typing import Any
 
 from .bridge_client import BridgeClient, discover_instances, select_instance
 from .compiler import compile_shot
+from .diagnostics import diagnose_environment, render_doctor_report
 from .models import RetargetProfile, ScenePatch, SceneSnapshot, ShotSpec
 from .provider import plan_with_openai
 from .retargeting import analyze_rig_compatibility, suggest_retarget_profile
@@ -39,6 +40,13 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="facelink")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("instances", help="List running Blender bridges")
+
+    doctor = commands.add_parser(
+        "doctor", help="Diagnose the FaceLink, Blender, bridge and provider setup"
+    )
+    doctor.add_argument("--blender-exe", help="Probe an explicit Blender executable")
+    doctor.add_argument("--json", action="store_true", help="Print machine-readable JSON")
+    doctor.add_argument("--out", help="Write the machine-readable report to a JSON file")
 
     scan = commands.add_parser("scan", help="Scan the active Blender scene")
     scan.add_argument("--instance")
@@ -122,6 +130,14 @@ def main() -> None:
             ],
             None,
         )
+    elif args.command == "doctor":
+        report = diagnose_environment(args.blender_exe)
+        if args.json or args.out:
+            _write_json(report, args.out)
+        else:
+            print(render_doctor_report(report))
+        if not report["ok"]:
+            raise SystemExit(1)
     elif args.command == "scan":
         result = BridgeClient(select_instance(args.instance)).run_job("scan_scene")
         _write_json(result, args.out)

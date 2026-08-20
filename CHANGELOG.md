@@ -5,6 +5,22 @@ the public API is experimental.
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-08-21
+
+### Added
+
+- `facelink doctor` human and JSON diagnostics for Python, Blender, the MCP launcher, discovery,
+  live bridge capabilities and optional BYOK configuration.
+- A checksum-verifying Windows installer for the Python host and Blender extension, including a
+  non-mutating `-PlanOnly` mode.
+- Explicit product packaging policy: Blender remains an externally detected dependency and is
+  never copied into the FaceLink release.
+
+### Security
+
+- Doctor reports API-key presence only and never emits provider keys or bridge bearer tokens.
+- The installer can verify both release artifacts against `SHA256SUMS.txt` before mutation.
+
 ## [0.3.6] - 2026-08-21
 
 ### Added
@@ -38,7 +54,8 @@ the public API is experimental.
 
 - Added deterministic navigation and collision preflight for single-level previs scenes.
 
-[Unreleased]: https://github.com/xuebazhou-blip/FaceLink/compare/v0.3.6...HEAD
+[Unreleased]: https://github.com/xuebazhou-blip/FaceLink/compare/v0.3.7...HEAD
+[0.3.7]: https://github.com/xuebazhou-blip/FaceLink/releases/tag/v0.3.7
 [0.3.6]: https://github.com/xuebazhou-blip/FaceLink/releases/tag/v0.3.6
 [0.3.5]: https://github.com/xuebazhou-blip/FaceLink/compare/a62dc48...v0.3.6
 [0.3.4]: https://github.com/xuebazhou-blip/FaceLink/commit/b14db7e

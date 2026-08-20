@@ -4,7 +4,9 @@ The Blender extension writes one JSON discovery record per running Blender proce
 directory is `${FACELINK_INSTANCE_DIR}` when configured, otherwise
 `${TEMP}/facelink/instances`.
 
-All requests require `Authorization: Bearer <token>` from that record.
+All requests require `Authorization: Bearer <token>` from that record. Health includes the
+additive `facelink_version` field so sidecars can report extension/host version skew without
+reading or exposing the discovery token.
 
 | Method | Path | Purpose |
 |---|---|---|

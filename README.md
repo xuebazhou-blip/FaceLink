@@ -61,18 +61,50 @@ declared supported version.
 
 ## Install the alpha release
 
-Download the Blender ZIP, Python wheel and checksum file from the
-[FaceLink 0.3.6 Alpha release](https://github.com/xuebazhou-blip/FaceLink/releases/tag/v0.3.6).
+Download the Windows installer script, Blender ZIP, Python wheel and checksum file from the
+[FaceLink 0.3.7 Alpha release](https://github.com/xuebazhou-blip/FaceLink/releases/tag/v0.3.7).
+
+FaceLink does **not** bundle Blender. It detects an existing official Blender 4.2-or-newer
+installation, which keeps the release small and lets each artist choose Blender 4.5 LTS or a
+newer compatible version. If Blender is missing, install it from the
+[official Blender LTS page](https://www.blender.org/download/lts/).
+
+For a fresh Windows install, keep the four downloaded files together and run:
+
+```powershell
+.\install-windows.ps1 `
+  -WheelPath .\facelink-0.3.7-py3-none-any.whl `
+  -ExtensionZipPath .\facelink-0.3.7.zip `
+  -ChecksumsPath .\SHA256SUMS.txt
+```
+
+The script verifies the release hashes, finds Python 3.11+ and Blender 4.2+, creates an
+isolated FaceLink host, installs the extension and prints the exact `facelink-mcp.exe` path.
+Pass `-PlanOnly` to inspect every resolved path without installing anything. Pass
+`-BlenderExe C:\path\to\blender.exe` when Blender is portable or not on a conventional path.
+For an existing FaceLink extension, update it from Blender Preferences or remove the old
+version before running the extension-install step.
+
+After starting FaceLink's bridge in Blender, validate the complete setup:
+
+```powershell
+facelink doctor --blender-exe C:\path\to\blender.exe
+```
+
+The diagnostic never prints API keys or the Blender bridge bearer token. A missing API key is
+only a warning because an MCP client can use its own model.
+
+To install the two components manually, continue below.
 
 In Blender 4.2 or newer, open **Edit → Preferences → Get Extensions → Install from Disk**,
-select `facelink-0.3.6.zip`, enable FaceLink, open the **FaceLink** tab in the 3D Viewport
+select `facelink-0.3.7.zip`, enable FaceLink, open the **FaceLink** tab in the 3D Viewport
 sidebar and press **Start Bridge**.
 
 Install the Python host in an isolated Python 3.11-or-newer environment:
 
 ```powershell
 py -3.11 -m venv .venv
-.\.venv\Scripts\python -m pip install .\facelink-0.3.6-py3-none-any.whl
+.\.venv\Scripts\python -m pip install .\facelink-0.3.7-py3-none-any.whl
 .\.venv\Scripts\facelink-mcp
 ```
 
@@ -105,7 +137,7 @@ $env:FACELINK_BLENDER_EXE='C:\path\to\Blender\blender.exe' # optional if on PATH
 ```
 
 Then in Blender 4.5: **Edit → Preferences → Get Extensions → Install from Disk**, choose
-`dist/facelink-0.3.6.zip`, enable FaceLink, and open the **FaceLink** tab in the 3D Viewport
+`dist/facelink-0.3.7.zip`, enable FaceLink, and open the **FaceLink** tab in the 3D Viewport
 sidebar. Press **Start Bridge**.
 
 Run the MCP server:
@@ -280,7 +312,7 @@ docs/                  Architecture, protocol and development notes
 
 ## Project status
 
-Version 0.3.6 is a creator-review alpha, not yet a production animation system. It performs
+Version 0.3.7 is a creator-review alpha, not yet a production animation system. It performs
 bounded transform-aware pose baking for reviewed mappings and can evaluate existing constraints
 and drivers when every dependency stays on the explicit source armature. It can also transfer
 unparented, unconstrained Armature-object motion without moving the target's starting placement.
@@ -289,8 +321,9 @@ different mapped parent hierarchies, handle parented/constrained object roots, s
 motion or judge the visual result. Multi-level navigation,
 multi-shot sequencing and visual diff overlays remain follow-up work.
 
-Before promoting this alpha more broadly, add a short screen recording to this README and
-complete Linux/macOS installation coverage.
+The Windows release now has a checksum-verifying installer plan and a secret-safe environment
+doctor. Before promoting this alpha more broadly, add a short screen recording to this README,
+test the installer with non-developer users and complete Linux/macOS installation coverage.
 
 ## License
 

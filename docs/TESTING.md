@@ -7,6 +7,12 @@ Each supported version also runs a short hidden-window UI smoke test because GPU
 are unavailable in Blender background mode; the smoke test requires a real viewport callback
 before Blender exits automatically.
 
+Product-readiness tests also cover Blender version parsing, bounded installation discovery,
+missing/unsupported executables, stale bridge records, API-key/token redaction, Doctor's JSON
+and human CLI contracts, installer hash validation and the Windows installer's non-mutating
+`-PlanOnly` result. A release smoke test installs the built wheel into a clean off-repository
+virtual environment before publication.
+
 Run the complete Windows matrix:
 
 ```powershell

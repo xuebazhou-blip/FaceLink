@@ -91,7 +91,7 @@
 - External dependencies, target controls and hierarchy mismatch remain fail-closed
 - Blender 4.2/4.5/5.2 tests cover constraints, drivers, restoration and dependency rejection
 
-## v0.3.6 — current object-motion-bake release
+## v0.3.6 — completed object-motion-bake release
 
 - Optional `object_motion` preserve/scale modes on both pose-bake adapters
 - Relative first-sample transform delta preserves target world placement
@@ -99,6 +99,14 @@
 - Source object state restores even when object channels are intentionally omitted or bake fails
 - Fail-closed parent, object-constraint, target-driver, rotation-mode and singular-matrix guards
 - Blender 4.2/4.5/5.2 coverage for evaluated/direct and object-only Actions
+
+## v0.3.7 — current installation-readiness release
+
+- Secret-safe `facelink doctor` report with human-readable and JSON output
+- Bounded detection and version probing for external Blender 4.2+ installations
+- Windows installer with local SHA-256 verification and a non-mutating plan mode
+- Isolated Python host installation plus optional official Blender extension installation
+- Explicit non-bundling policy for Blender to preserve release size and version choice
 
 ## v0.3.x — remaining useful intelligence
 

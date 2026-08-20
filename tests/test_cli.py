@@ -2,6 +2,8 @@ import json
 import sys
 from types import SimpleNamespace
 
+import pytest
+
 from facelink import cli
 from facelink.models import ShotSpec
 
@@ -62,6 +64,45 @@ def test_cli_instances_prints_discovered_blender(monkeypatch, capsys, tmp_path):
     cli.main()
     payload = json.loads(capsys.readouterr().out)
     assert payload[0]["instance_id"] == "blender-1"
+
+
+def test_cli_doctor_prints_human_report(monkeypatch, capsys):
+    report = {
+        "ok": True,
+        "facelink_version": "0.3.7",
+        "checks": [],
+        "readiness": {"mcp": True, "byok": False},
+    }
+    monkeypatch.setattr(cli, "diagnose_environment", lambda path: report)
+    monkeypatch.setattr(sys, "argv", ["facelink", "doctor", "--blender-exe", "blender"])
+
+    cli.main()
+
+    output = capsys.readouterr().out
+    assert "FaceLink Doctor 0.3.7" in output
+    assert "MCP ready: yes" in output
+
+
+def test_cli_doctor_writes_json_and_returns_failure(monkeypatch, tmp_path):
+    output_path = tmp_path / "doctor.json"
+    report = {
+        "ok": False,
+        "facelink_version": "0.3.7",
+        "checks": [],
+        "readiness": {"mcp": False, "byok": False},
+    }
+    monkeypatch.setattr(cli, "diagnose_environment", lambda path: report)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["facelink", "doctor", "--json", "--out", str(output_path)],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 1
+    assert json.loads(output_path.read_text(encoding="utf-8")) == report
 
 
 def test_cli_plan_uses_provider_and_writes_shot(monkeypatch, tmp_path, scene_snapshot):
