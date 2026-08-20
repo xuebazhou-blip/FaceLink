@@ -13,6 +13,15 @@ execution. The model produces a typed `ShotSpec`; FaceLink validates it, compile
 small whitelist of patch operations, stages a human-readable review in Blender, and changes
 the scene only after the artist presses **Apply Staged Patch**.
 
+## Demo
+
+[![FaceLink turns a shot instruction into editable Blender keyframes](docs/assets/facelink-demo.gif)](docs/assets/facelink-demo.mp4)
+
+This four-second demo is rendered from the included
+[editable `.blend` scene](docs/assets/facelink-demo.blend). The movement was applied through
+FaceLink's real patch executor and remains 24 ordinary editable keyframe values—not a generated
+video baked outside Blender.
+
 ## Current MVP
 
 - scans the open Blender scene and gives objects stable FaceLink IDs;
@@ -61,27 +70,36 @@ declared supported version.
 
 ## Install the alpha release
 
-Download the Windows installer script, Blender ZIP, Python wheel and checksum file from the
-[FaceLink 0.3.7 Alpha release](https://github.com/xuebazhou-blip/FaceLink/releases/tag/v0.3.7).
+Download `FaceLink-Setup-0.3.8.exe` from the
+[FaceLink 0.3.8 Alpha release](https://github.com/xuebazhou-blip/FaceLink/releases/tag/v0.3.8),
+open it, choose **Check setup**, then **Install FaceLink**.
+
+![FaceLink graphical Windows installer](docs/assets/facelink-setup.png)
 
 FaceLink does **not** bundle Blender. It detects an existing official Blender 4.2-or-newer
 installation, which keeps the release small and lets each artist choose Blender 4.5 LTS or a
 newer compatible version. If Blender is missing, install it from the
 [official Blender LTS page](https://www.blender.org/download/lts/).
 
-For a fresh Windows install, keep the four downloaded files together and run:
+The graphical installer contains the FaceLink host, extension, checksum manifest and safe
+PowerShell backend in one small EXE. It verifies the embedded files, detects Python and Blender,
+installs both FaceLink components, and safely configures the shared local ChatGPT Desktop/Codex
+MCP file. It does not request administrator access or store an API key.
+
+For a manual Windows install, keep the four raw release files together and run:
 
 ```powershell
 .\install-windows.ps1 `
-  -WheelPath .\facelink-0.3.7-py3-none-any.whl `
-  -ExtensionZipPath .\facelink-0.3.7.zip `
+  -WheelPath .\facelink-0.3.8-py3-none-any.whl `
+  -ExtensionZipPath .\facelink-0.3.8.zip `
   -ChecksumsPath .\SHA256SUMS.txt
 ```
 
 The script verifies the release hashes, finds Python 3.11+ and Blender 4.2+, creates an
-isolated FaceLink host, installs the extension and prints the exact `facelink-mcp.exe` path.
+isolated FaceLink host, installs the extension and configures the exact `facelink-mcp.exe` path.
 Pass `-PlanOnly` to inspect every resolved path without installing anything. Pass
 `-BlenderExe C:\path\to\blender.exe` when Blender is portable or not on a conventional path.
+Pass `-SkipMcpConfiguration` to leave the local MCP configuration untouched.
 For an existing FaceLink extension, update it from Blender Preferences or remove the old
 version before running the extension-install step.
 
@@ -97,14 +115,14 @@ only a warning because an MCP client can use its own model.
 To install the two components manually, continue below.
 
 In Blender 4.2 or newer, open **Edit → Preferences → Get Extensions → Install from Disk**,
-select `facelink-0.3.7.zip`, enable FaceLink, open the **FaceLink** tab in the 3D Viewport
+select `facelink-0.3.8.zip`, enable FaceLink, open the **FaceLink** tab in the 3D Viewport
 sidebar and press **Start Bridge**.
 
 Install the Python host in an isolated Python 3.11-or-newer environment:
 
 ```powershell
 py -3.11 -m venv .venv
-.\.venv\Scripts\python -m pip install .\facelink-0.3.7-py3-none-any.whl
+.\.venv\Scripts\python -m pip install .\facelink-0.3.8-py3-none-any.whl
 .\.venv\Scripts\facelink-mcp
 ```
 
@@ -137,7 +155,7 @@ $env:FACELINK_BLENDER_EXE='C:\path\to\Blender\blender.exe' # optional if on PATH
 ```
 
 Then in Blender 4.5: **Edit → Preferences → Get Extensions → Install from Disk**, choose
-`dist/facelink-0.3.7.zip`, enable FaceLink, and open the **FaceLink** tab in the 3D Viewport
+`dist/facelink-0.3.8.zip`, enable FaceLink, and open the **FaceLink** tab in the 3D Viewport
 sidebar. Press **Start Bridge**.
 
 Run the MCP server:
@@ -146,23 +164,31 @@ Run the MCP server:
 uv run facelink-mcp
 ```
 
-Example MCP configuration:
+Safely create or update the shared local ChatGPT Desktop/Codex configuration:
 
-```json
-{
-  "mcpServers": {
-    "facelink": {
-      "command": "E:\\FaceLink\\.venv\\Scripts\\facelink-mcp.exe",
-      "env": {
-        "FACELINK_INSTANCE_DIR": "E:\\CodexData\\Work\\FaceLink\\instances"
-      }
-    }
-  }
-}
+```powershell
+uv run facelink configure-mcp `
+  --mcp-launcher E:\FaceLink\.venv\Scripts\facelink-mcp.exe `
+  --instance-dir E:\CodexData\Work\FaceLink\instances
 ```
 
-The same `FACELINK_INSTANCE_DIR` must be set before launching Blender. If it is omitted,
-FaceLink uses the current user's temporary directory.
+FaceLink backs up an existing `~/.codex/config.toml`, preserves unrelated settings and owns
+only its clearly marked block. The resulting OpenAI-compatible configuration is TOML:
+
+```toml
+[mcp_servers.facelink]
+command = "E:\\FaceLink\\.venv\\Scripts\\facelink-mcp.exe"
+enabled = true
+
+[mcp_servers.facelink.env]
+FACELINK_INSTANCE_DIR = "E:\\CodexData\\Work\\FaceLink\\instances"
+```
+
+The ChatGPT desktop app, Codex CLI and Codex IDE extension share this local configuration.
+ChatGPT on the web does not read local MCP configuration and would require a separately hosted
+plugin. See the [official OpenAI MCP documentation](https://developers.openai.com/codex/mcp/).
+The same `FACELINK_INSTANCE_DIR` is set for future Blender processes; restart Blender and the
+MCP client after installation.
 
 With an MCP client, the safe default sequence is:
 
@@ -312,7 +338,7 @@ docs/                  Architecture, protocol and development notes
 
 ## Project status
 
-Version 0.3.7 is a creator-review alpha, not yet a production animation system. It performs
+Version 0.3.8 is a creator-review alpha, not yet a production animation system. It performs
 bounded transform-aware pose baking for reviewed mappings and can evaluate existing constraints
 and drivers when every dependency stays on the explicit source armature. It can also transfer
 unparented, unconstrained Armature-object motion without moving the target's starting placement.
@@ -321,9 +347,10 @@ different mapped parent hierarchies, handle parented/constrained object roots, s
 motion or judge the visual result. Multi-level navigation,
 multi-shot sequencing and visual diff overlays remain follow-up work.
 
-The Windows release now has a checksum-verifying installer plan and a secret-safe environment
-doctor. Before promoting this alpha more broadly, add a short screen recording to this README,
-test the installer with non-developer users and complete Linux/macOS installation coverage.
+The Windows release now has a single-file graphical installer, safe local MCP configuration,
+a secret-safe environment doctor and a reproducible real-Blender demo. Before promoting this
+alpha more broadly, test installation with non-developer users and complete Linux/macOS
+installation coverage.
 
 ## License
 

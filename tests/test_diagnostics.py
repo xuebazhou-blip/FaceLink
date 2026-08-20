@@ -169,7 +169,7 @@ def test_doctor_full_report_is_ready_and_never_exposes_secrets(monkeypatch, tmp_
         "health",
         lambda self, timeout=0.8: {
             "ok": True,
-            "facelink_version": "0.3.7",
+            "facelink_version": "0.3.8",
             "protocol_version": "1.9",
             "capabilities": ["stage_patch", "scan_scene"],
         },
@@ -180,7 +180,7 @@ def test_doctor_full_report_is_ready_and_never_exposes_secrets(monkeypatch, tmp_
     assert report["ok"] is True
     assert report["readiness"] == {"mcp": True, "byok": True}
     assert _checks(report)["blender_bridge"]["status"] == "pass"
-    assert report["bridge"]["live_instances"][0]["facelink_version"] == "0.3.7"
+    assert report["bridge"]["live_instances"][0]["facelink_version"] == "0.3.8"
     assert report["bridge"]["live_instances"][0]["capabilities"] == [
         "scan_scene",
         "stage_patch",
@@ -236,7 +236,7 @@ def test_doctor_counts_stale_records_without_failing(monkeypatch, tmp_path):
 
 def test_render_doctor_report_contains_actions_but_not_machine_details():
     report = {
-        "facelink_version": "0.3.7",
+        "facelink_version": "0.3.8",
         "checks": [
             {"status": "pass", "summary": "Ready.", "detail": "C:/FaceLink"},
             {"status": "warning", "summary": "Optional.", "remediation": "Configure it."},
@@ -247,7 +247,7 @@ def test_render_doctor_report_contains_actions_but_not_machine_details():
 
     text = diagnostics.render_doctor_report(report)
 
-    assert "FaceLink Doctor 0.3.7" in text
+    assert "FaceLink Doctor 0.3.8" in text
     assert "[PASS] Ready." in text
     assert "[WARN] Optional." in text
     assert "Fix: Install it." in text

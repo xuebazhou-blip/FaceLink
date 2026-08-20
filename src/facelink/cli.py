@@ -7,6 +7,7 @@ from typing import Any
 
 from .bridge_client import BridgeClient, discover_instances, select_instance
 from .compiler import compile_shot
+from .configurator import configure_codex_mcp
 from .diagnostics import diagnose_environment, render_doctor_report
 from .models import RetargetProfile, ScenePatch, SceneSnapshot, ShotSpec
 from .provider import plan_with_openai
@@ -47,6 +48,17 @@ def _parser() -> argparse.ArgumentParser:
     doctor.add_argument("--blender-exe", help="Probe an explicit Blender executable")
     doctor.add_argument("--json", action="store_true", help="Print machine-readable JSON")
     doctor.add_argument("--out", help="Write the machine-readable report to a JSON file")
+
+    configure_mcp = commands.add_parser(
+        "configure-mcp",
+        help="Safely configure FaceLink for ChatGPT Desktop and local Codex clients",
+    )
+    configure_mcp.add_argument("--mcp-launcher", required=True)
+    configure_mcp.add_argument("--instance-dir", required=True)
+    configure_mcp.add_argument("--config", help="Override the Codex config.toml path")
+    configure_mcp.add_argument("--server-name", default="facelink")
+    configure_mcp.add_argument("--dry-run", action="store_true")
+    configure_mcp.add_argument("--out")
 
     scan = commands.add_parser("scan", help="Scan the active Blender scene")
     scan.add_argument("--instance")
@@ -138,6 +150,15 @@ def main() -> None:
             print(render_doctor_report(report))
         if not report["ok"]:
             raise SystemExit(1)
+    elif args.command == "configure-mcp":
+        result = configure_codex_mcp(
+            args.mcp_launcher,
+            args.instance_dir,
+            config_path=args.config,
+            server_name=args.server_name,
+            dry_run=args.dry_run,
+        )
+        _write_json(result, args.out)
     elif args.command == "scan":
         result = BridgeClient(select_instance(args.instance)).run_job("scan_scene")
         _write_json(result, args.out)

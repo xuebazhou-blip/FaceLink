@@ -145,7 +145,7 @@ def client_flow(result_box):
             "rig_rest_geometry",
             "rig_fingerprint",
         } <= set(health["capabilities"])
-        assert health["facelink_version"] == "0.3.7"
+        assert health["facelink_version"] == "0.3.8"
         assert health["protocol_version"] == "1.9"
         scan_ids = [submit(base_url, token, "scan_scene") for _ in range(3)]
         assert len(set(scan_ids)) == 3

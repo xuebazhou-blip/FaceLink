@@ -100,13 +100,21 @@
 - Fail-closed parent, object-constraint, target-driver, rotation-mode and singular-matrix guards
 - Blender 4.2/4.5/5.2 coverage for evaluated/direct and object-only Actions
 
-## v0.3.7 — current installation-readiness release
+## v0.3.7 — completed installation-readiness release
 
 - Secret-safe `facelink doctor` report with human-readable and JSON output
 - Bounded detection and version probing for external Blender 4.2+ installations
 - Windows installer with local SHA-256 verification and a non-mutating plan mode
 - Isolated Python host installation plus optional official Blender extension installation
 - Explicit non-bundling policy for Blender to preserve release size and version choice
+
+## v0.3.8 — current product-onboarding release
+
+- Single-file WinForms installer with embedded, checksum-verified FaceLink payloads
+- Safe managed MCP configuration for ChatGPT Desktop and local Codex clients
+- Automatic backup, idempotent updates and refusal of unmanaged configuration collisions
+- Real FaceLink-generated Blender animation demo with editable `.blend` source
+- Installer compilation, embedded-payload plan and report verification in acceptance
 
 ## v0.3.x — remaining useful intelligence
 

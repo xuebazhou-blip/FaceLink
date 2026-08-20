@@ -13,6 +13,12 @@ and human CLI contracts, installer hash validation and the Windows installer's n
 `-PlanOnly` result. A release smoke test installs the built wheel into a clean off-repository
 virtual environment before publication.
 
+The Windows acceptance run builds the Python distributions and Blender ZIP, embeds them into
+the WinForms setup EXE, extracts them through the real setup executable, verifies both embedded
+hashes and checks that `-PlanOnly` creates no install directory. MCP configuration tests cover
+new files, preservation of unrelated TOML, CRLF paths, idempotent updates, timestamped backups,
+dry runs, malformed marker refusal, unmanaged name collisions and invalid UTF-8/TOML.
+
 Run the complete Windows matrix:
 
 ```powershell
@@ -85,6 +91,9 @@ human-readable summary.
   cleanup.
 - The built ZIP must install, enable and load from each Blender version's isolated portable
   extension repository.
+- The checked-in demo `.blend` must open in the primary Blender version with its FaceLink ID,
+  96-frame timeline, six ordinary transform FCurves and exactly 24 editable linear keyframe
+  values intact.
 
 Blender is always invoked with `--python-exit-code 1`. Without this flag Blender can print a
 Python traceback and still return process exit code zero, which creates a false-green CI

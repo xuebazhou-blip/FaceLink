@@ -216,6 +216,8 @@ def main() -> int:
     commands: list[CommandResult] = []
     junit_path = RUN_DIR / "pytest.xml"
     coverage_path = RUN_DIR / "coverage.xml"
+    dist = RUN_DIR / "dist"
+    dist.mkdir(exist_ok=True)
     commands.append(run_command("ruff", [sys.executable, "-m", "ruff", "check", "."]))
     commands.append(
         run_command(
@@ -231,9 +233,18 @@ def main() -> int:
             ],
         )
     )
+    package_build = run_command(
+        "python-package-build",
+        ["uv", "build", "--out-dir", dist],
+    )
+    commands.append(package_build)
+    public_dist = PROJECT / "dist"
+    public_dist.mkdir(exist_ok=True)
+    if package_build.status == "passed":
+        for artifact in dist.glob(f"facelink-{EXTENSION_VERSION}*"):
+            if artifact.suffix in {".whl", ".gz"}:
+                shutil.copy2(artifact, public_dist / artifact.name)
 
-    dist = RUN_DIR / "dist"
-    dist.mkdir(exist_ok=True)
     package = dist / f"facelink-{EXTENSION_VERSION}.zip"
     build_result = run_command(
         "extension-build",
@@ -251,11 +262,73 @@ def main() -> int:
     )
     commands.append(build_result)
     if build_result.status == "passed" and package.exists():
-        public_dist = PROJECT / "dist"
-        public_dist.mkdir(exist_ok=True)
         shutil.copy2(package, public_dist / package.name)
 
+    if os.name == "nt" and package_build.status == "passed" and build_result.status == "passed":
+        installer_build = run_command(
+            "windows-installer-build",
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                PROJECT / "scripts" / "build_windows_installer.ps1",
+            ],
+        )
+        commands.append(installer_build)
+        installer = public_dist / f"FaceLink-Setup-{EXTENSION_VERSION}.exe"
+        if installer_build.status == "passed" and installer.is_file():
+            installer_report = RUN_DIR / "installer-self-test.json"
+            commands.append(
+                run_command(
+                    "windows-installer-self-test",
+                    [
+                        installer,
+                        "--self-test",
+                        "--report",
+                        installer_report,
+                        "--blender",
+                        primary[0],
+                        "--python",
+                        sys.executable,
+                        "--install-root",
+                        RUN_DIR / "installer-plan",
+                    ],
+                    blender_version=primary[1],
+                )
+            )
+            commands.append(
+                run_command(
+                    "windows-installer-report",
+                    [
+                        sys.executable,
+                        PROJECT / "tests" / "verify_installer_report.py",
+                        installer_report,
+                    ],
+                    blender_version=primary[1],
+                )
+            )
+
     suite_reports: dict[str, dict[str, Any] | None] = {}
+    demo_report = RUN_DIR / "blender-demo-asset.json"
+    commands.append(
+        run_command(
+            "blender-demo-asset",
+            [
+                primary[0],
+                "--background",
+                PROJECT / "docs" / "assets" / "facelink-demo.blend",
+                "--python-exit-code",
+                "1",
+                "--python",
+                PROJECT / "tests" / "blender_demo_asset_acceptance.py",
+            ],
+            environment={"FACELINK_TEST_REPORT": str(demo_report)},
+            blender_version=primary[1],
+        )
+    )
+    suite_reports["demo-asset"] = read_json(demo_report)
     for executable, version in matrix:
         version_key = safe_name(version)
         commands.append(

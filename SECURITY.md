@@ -6,7 +6,7 @@ because they contain a short-lived bearer token.
 
 ## Supported versions
 
-Only the latest GitHub release receives security fixes. Versions older than 0.3.7 are not
+Only the latest GitHub release receives security fixes. Versions older than 0.3.8 are not
 supported. Blender 4.2 LTS and newer are in scope; Windows x64 is the only fully verified
 platform in the current release.
 

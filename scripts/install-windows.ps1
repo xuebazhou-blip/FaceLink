@@ -7,8 +7,10 @@ param(
     [string]$InstallRoot = (Join-Path $env:LOCALAPPDATA 'FaceLink'),
     [string]$PythonExe,
     [string]$BlenderExe = $env:FACELINK_BLENDER_EXE,
+    [string]$McpConfigPath,
     [switch]$PlanOnly,
-    [switch]$SkipExtensionInstall
+    [switch]$SkipExtensionInstall,
+    [switch]$SkipMcpConfiguration
 )
 
 $ErrorActionPreference = 'Stop'
@@ -104,7 +106,17 @@ function Confirm-Checksum([string]$FilePath, [string]$ChecksumFile) {
     $line = Get-Content -LiteralPath $ChecksumFile | Where-Object { $_ -match "^([0-9a-fA-F]{64})\s+[*]?$escaped$" } | Select-Object -First 1
     if (-not $line) { throw "SHA-256 entry for $name was not found in $ChecksumFile" }
     $expected = ([regex]::Match($line, '^([0-9a-fA-F]{64})')).Groups[1].Value.ToLowerInvariant()
-    $actual = (Get-FileHash -LiteralPath $FilePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $stream = [IO.File]::OpenRead($FilePath)
+    try {
+        $algorithm = [Security.Cryptography.SHA256]::Create()
+        try {
+            $actual = -join ($algorithm.ComputeHash($stream) | ForEach-Object { $_.ToString('x2') })
+        } finally {
+            $algorithm.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
+    }
     if ($actual -ne $expected) { throw "SHA-256 verification failed for $name" }
 }
 
@@ -119,6 +131,12 @@ $resolvedInstallRoot = [IO.Path]::GetFullPath($InstallRoot)
 $venvRoot = Join-Path $resolvedInstallRoot 'host'
 $venvPython = Join-Path $venvRoot 'Scripts\python.exe'
 $mcpLauncher = Join-Path $venvRoot 'Scripts\facelink-mcp.exe'
+$instanceDir = Join-Path $resolvedInstallRoot 'instances'
+$resolvedMcpConfig = if ($McpConfigPath) {
+    [IO.Path]::GetFullPath($McpConfigPath)
+} else {
+    Join-Path ([Environment]::GetFolderPath('UserProfile')) '.codex\config.toml'
+}
 
 Confirm-Checksum $wheel $checksums
 Confirm-Checksum $extensionZip $checksums
@@ -134,6 +152,9 @@ $plan = [ordered]@{
     checksums_verified = [bool]$checksums
     install_root = $resolvedInstallRoot
     mcp_launcher = $mcpLauncher
+    instance_directory = $instanceDir
+    mcp_configuration = -not $SkipMcpConfiguration
+    mcp_config_path = $resolvedMcpConfig
     extension_install = -not $SkipExtensionInstall
 }
 if ($PlanOnly) {
@@ -156,10 +177,24 @@ if (-not $SkipExtensionInstall) {
     }
 }
 
+if (-not $SkipMcpConfiguration) {
+    New-Item -ItemType Directory -Force -Path $instanceDir | Out-Null
+    $env:FACELINK_INSTANCE_DIR = $instanceDir
+    [Environment]::SetEnvironmentVariable('FACELINK_INSTANCE_DIR', $instanceDir, 'User')
+    & $venvPython -m facelink.cli configure-mcp `
+        --mcp-launcher $mcpLauncher `
+        --instance-dir $instanceDir `
+        --config $resolvedMcpConfig
+    if ($LASTEXITCODE -ne 0) {
+        throw "MCP client configuration failed with exit code $LASTEXITCODE"
+    }
+}
+
 & $venvPython -m facelink.cli doctor --blender-exe $blender
 $doctorExit = $LASTEXITCODE
 $plan['doctor_exit_code'] = $doctorExit
 $plan['installed'] = $true
+$plan['restart_required'] = -not $SkipMcpConfiguration
 $plan | ConvertTo-Json -Depth 3
 if ($doctorExit -ne 0) {
     Write-Warning 'FaceLink installed, but Doctor found an incomplete setup. Start the bridge in Blender and rerun Doctor.'

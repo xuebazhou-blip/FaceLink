@@ -69,7 +69,7 @@ def test_cli_instances_prints_discovered_blender(monkeypatch, capsys, tmp_path):
 def test_cli_doctor_prints_human_report(monkeypatch, capsys):
     report = {
         "ok": True,
-        "facelink_version": "0.3.7",
+        "facelink_version": "0.3.8",
         "checks": [],
         "readiness": {"mcp": True, "byok": False},
     }
@@ -79,7 +79,7 @@ def test_cli_doctor_prints_human_report(monkeypatch, capsys):
     cli.main()
 
     output = capsys.readouterr().out
-    assert "FaceLink Doctor 0.3.7" in output
+    assert "FaceLink Doctor 0.3.8" in output
     assert "MCP ready: yes" in output
 
 
@@ -87,7 +87,7 @@ def test_cli_doctor_writes_json_and_returns_failure(monkeypatch, tmp_path):
     output_path = tmp_path / "doctor.json"
     report = {
         "ok": False,
-        "facelink_version": "0.3.7",
+        "facelink_version": "0.3.8",
         "checks": [],
         "readiness": {"mcp": False, "byok": False},
     }
@@ -103,6 +103,47 @@ def test_cli_doctor_writes_json_and_returns_failure(monkeypatch, tmp_path):
 
     assert exc_info.value.code == 1
     assert json.loads(output_path.read_text(encoding="utf-8")) == report
+
+
+def test_cli_configure_mcp_writes_result(monkeypatch, tmp_path):
+    output_path = tmp_path / "configured.json"
+    captured = {}
+
+    def configure(launcher, instance_dir, **kwargs):
+        captured.update(
+            {"launcher": launcher, "instance_dir": instance_dir, **kwargs}
+        )
+        return {"status": "planned", "changed": True}
+
+    monkeypatch.setattr(cli, "configure_codex_mcp", configure)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "facelink",
+            "configure-mcp",
+            "--mcp-launcher",
+            "facelink-mcp.exe",
+            "--instance-dir",
+            "instances",
+            "--config",
+            "config.toml",
+            "--server-name",
+            "facelink-test",
+            "--dry-run",
+            "--out",
+            str(output_path),
+        ],
+    )
+    cli.main()
+    assert captured == {
+        "launcher": "facelink-mcp.exe",
+        "instance_dir": "instances",
+        "config_path": "config.toml",
+        "server_name": "facelink-test",
+        "dry_run": True,
+    }
+    assert json.loads(output_path.read_text(encoding="utf-8"))["status"] == "planned"
 
 
 def test_cli_plan_uses_provider_and_writes_shot(monkeypatch, tmp_path, scene_snapshot):

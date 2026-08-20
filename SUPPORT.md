@@ -10,6 +10,6 @@ FaceLink is alpha software maintained by volunteers.
   for security issues. Never post API keys, bearer tokens or private `.blend` assets.
 
 Please include the FaceLink version, Blender version, operating system and the smallest safe
-reproduction you can provide. Windows is the only fully verified platform in v0.3.7. Run
+reproduction you can provide. Windows is the only fully verified platform in v0.3.8. Run
 `facelink doctor --json` and attach the report when possible; it intentionally excludes API
 keys and bridge bearer tokens.
