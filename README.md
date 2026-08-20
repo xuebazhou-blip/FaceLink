@@ -265,5 +265,5 @@ different mapped parent hierarchies, handle parented/constrained object roots, s
 motion or judge the visual result. Multi-level navigation,
 multi-shot sequencing and visual diff overlays remain follow-up work.
 
-Before publishing your fork, replace the placeholder GitHub URLs in `pyproject.toml`, add a
-short screen recording to this README, and enable GitHub's private vulnerability reporting.
+Before promoting this alpha more broadly, add a short screen recording to this README and
+enable GitHub's private vulnerability reporting.

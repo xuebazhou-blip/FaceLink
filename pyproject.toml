@@ -38,8 +38,10 @@ facelink = "facelink.cli:main"
 facelink-mcp = "facelink.mcp_server:main"
 
 [project.urls]
-Homepage = "https://github.com/your-name/FaceLink"
-Issues = "https://github.com/your-name/FaceLink/issues"
+Homepage = "https://github.com/xuebazhou-blip/FaceLink"
+Documentation = "https://github.com/xuebazhou-blip/FaceLink#readme"
+Issues = "https://github.com/xuebazhou-blip/FaceLink/issues"
+Source = "https://github.com/xuebazhou-blip/FaceLink"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/facelink"]
