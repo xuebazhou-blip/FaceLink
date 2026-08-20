@@ -74,6 +74,10 @@ Download `FaceLink-Setup-0.3.8.exe` from the
 [FaceLink 0.3.8 Alpha release](https://github.com/xuebazhou-blip/FaceLink/releases/tag/v0.3.8),
 open it, choose **Check setup**, then **Install FaceLink**.
 
+This alpha EXE is not yet code-signed, so Windows SmartScreen may show an unknown-publisher
+warning. Verify it against the release `SHA256SUMS.txt` before choosing **More info → Run
+anyway**, and only use files downloaded from the official FaceLink release page.
+
 ![FaceLink graphical Windows installer](docs/assets/facelink-setup.png)
 
 FaceLink does **not** bundle Blender. It detects an existing official Blender 4.2-or-newer
