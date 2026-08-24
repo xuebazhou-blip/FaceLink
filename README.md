@@ -35,6 +35,8 @@ video baked outside Blender.
   rollback to a selected current-session revision.
 - persists a bounded, payload-free task lifecycle journal for explicit startup recovery and
   never replays interrupted work automatically;
+- adds a bounded Blender task/recovery center for connection state, queue progress, queued-job
+  cancellation, recent outcomes and privacy-safe startup guidance;
 - negotiates local bridge protocol 1.12/1.13 explicitly and attaches request/correlation IDs
   to jobs and stable errors for cross-layer troubleshooting;
 - exposes an authenticated, bounded diagnostic endpoint and a separate privacy-safe local JSON
@@ -63,6 +65,28 @@ video baked outside Blender.
   center offset, safe-area fit, clipping and center-point occlusion before the artist applies;
 - rejects a staged plan when a referenced transform, parent link, lock or scene timing value
   changed after the scene scan.
+
+## Blender 任务与恢复中心（开发分支）
+
+打开 **3D 视图 → 侧边栏 → FaceLink**，点击 **Start Bridge** 后，顶部会显示当前连接、
+队列、活动任务和最近结果。展开 **Tasks** 可以取消仍在排队的任务；运行中的任务不会被
+异步强杀，只能在安全检查点协作式停止。由于 Blender 场景操作同步占用主线程，长任务
+运行时面板按钮可能无法及时响应，运行中取消目前主要由独立 MCP/HTTP 客户端发起。
+界面显示 **Local bridge ready** 只表示本机 Blender 桥接已就绪，不表示 AI、Codex 账号
+或 API Key 已连接。
+
+如果上一次 Blender 会话异常中断，面板会要求先检查场景、历史并重新扫描。点击
+**I Reviewed** 只确认用户看过恢复提示，不会重放、应用、撤销或回滚任何任务。打开其他
+`.blend`、未保存文件首次保存或 **Save As** 改变路径时，桥接会停止并要求为当前文件
+重新启动，防止继续写入旧工作区日志。
+
+恢复确认以前，Blender UI 会禁用应用暂存、撤销和历史回滚；本机 HTTP 还会拒绝上述
+三类以及直接应用，返回 `recovery_review_required` 且不创建任务。扫描和读取等检查
+操作仍可使用。
+
+这一切片不包含 Blender 内的 Codex/ChatGPT 订阅登录或 API Key 表单，也不会读取
+Codex 的 `auth.json`。完整状态、取消、恢复、文件切换和隐私边界见
+[Blender 任务与恢复中心](docs/TASK_CENTER.md)。
 
 ## Supported Blender versions
 

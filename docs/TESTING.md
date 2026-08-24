@@ -29,6 +29,15 @@ JSON 只保留允许列表字段，且这些敏感值逐字节不存在。测试
 临时文件清理、确定性哈希及 `uploaded: false`。这些测试降低回归风险，但不取代用户在
 分享诊断包前的人工检查。
 
+Blender 任务与恢复中心另有三层功能验收。纯 Python 测试向状态投影输入错误类型、超大
+计数、非法任务编号、未知枚举、路径、凭据和原始异常，要求输出仍然有界且只含允许列表
+字段；运行时测试要求重复读取任务中心状态不会推进超时、改变运行时版本或写入日志；真实
+Blender 测试覆盖注册/注销、自动重绘、连接状态、排队取消确认、运行任务安全检查点、
+完成优先竞争、恢复确认失败、未来日志失败关闭、加载文件以及首次保存/另存为后的桥接
+解绑。恢复门禁测试还要求 UI 禁用应用暂存、撤销和历史回滚，HTTP 对这三类及直接应用
+返回带稳定错误码的 409，且拒绝时不创建任务；扫描和读取仍然可用。隐藏窗口 UI smoke
+还必须实际绘制侧边栏，以发现不同 Blender 版本中的图标、属性和 Operator 注册问题。
+
 The Windows acceptance run builds the Python distributions and Blender ZIP, embeds them into
 the WinForms setup EXE, extracts them through the real setup executable, verifies both embedded
 hashes and checks that `-PlanOnly` creates no install directory. MCP configuration tests cover
@@ -54,6 +63,16 @@ Or supply explicit Blender executables:
 Every run writes timestamped command logs, JUnit XML, coverage XML, per-Blender JSON results
 and a consolidated report below `artifacts/`. `artifacts/latest-report.md` is the quickest
 human-readable summary.
+
+## 开发阶段与发布候选阶段
+
+日常功能提交运行与改动相关的单元/故障注入测试、完整快速 `pytest`、Ruff、隐私回归、
+受支持 Blender 版本的功能验收和 CI。上面的 `run_acceptance.ps1` 属于可重复的功能矩阵，
+不代表已经完成路线图中的 1,000 个端到端任务或连续两小时稳定性门禁。
+
+1,000 个任务和连续两小时运行属于高成本发布候选验收，按路线图延后到 v0.5.0 候选版
+统一执行，并在 v1.0.0 正式候选阶段按当时的完整标准再次执行。延后期间不得把它标记为
+通过，也不能用少量边界测试推断长时间稳定性；它不阻塞 v0.5.0 各功能切片的开发和审核。
 
 ## Acceptance gates
 
@@ -121,6 +140,17 @@ human-readable summary.
   unknown-path content, a 256-event eviction boundary, at most 64 recent sanitized jobs and no
   request body, result, scene name/path, token, provider key or raw exception in memory,
   endpoint output, journal or shareable export. Concurrent event recording must remain bounded.
+- Blender task-center acceptance must prove that panel redraw is side-effect free and bounded;
+  queued cancellation is immediate; running cancellation remains cooperative at safe
+  checkpoints; completion wins are reported honestly; recovery acknowledgement never replays
+  or rolls back work; acknowledgement-write failure keeps recovery required; startup errors use
+  stable content-free messages; recovery-gated apply/undo/rollback requests return HTTP 409 /
+  `recovery_review_required` before creating a job while inspection requests remain available;
+  future journals remain byte-for-byte unchanged; and file load, first save and Save As stop or
+  rebind the bridge so later tasks cannot be recorded in the previous workspace log. Ready-state
+  tests must not imply that AI or account authentication is connected.
+  The task-status surface must not expose ports, paths, payloads, results, scene-facing names,
+  raw exceptions, bridge tokens or provider keys.
 - Migration acceptance must distinguish malformed journals from valid future schemas. Malformed
   data is quarantined; a future journal version must fail closed with its exact bytes unchanged,
   no `.corrupt-*` rename and no replacement file. Unsupported Scene Patch schemas must return

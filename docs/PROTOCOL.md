@@ -23,7 +23,8 @@ reading or exposing the discovery token. Protocol 1.13 explicitly negotiates onl
 | `GET` | `/v1/diagnostics` | Read bounded, allowlisted bridge support metadata |
 
 Supported jobs are `scan_scene`, `stage_patch`, `get_staged_patch`,
-`apply_staged_patch`, `discard_staged_patch`, `apply_patch` and `undo`.
+`apply_staged_patch`, `discard_staged_patch`, `apply_patch`, `undo`, `list_revisions` and
+`rollback_revision`.
 
 ## 协议协商、关联编号与安全诊断
 
@@ -116,8 +117,8 @@ HTTP 429 responses also include `Retry-After: 1`. Request-level stable codes are
 `invalid_request_size`, `request_too_large`, `invalid_json`, `invalid_request`,
 `unsupported_job_type`, `invalid_job_payload`, `queue_full`, `job_registry_full`,
 `journal_unavailable`, `bridge_stopping`, `invalid_correlation_id`,
-`invalid_protocol_version` and `unsupported_protocol_version`. Request bodies are limited to
-4 MiB.
+`invalid_protocol_version`, `unsupported_protocol_version` and `recovery_review_required`.
+Request bodies are limited to 4 MiB.
 
 A failed job record uses `invalid_job_payload` for missing or type-invalid payload data,
 `job_rejected` for a valid request rejected by scene-aware validation, and `internal_error` for
@@ -173,8 +174,10 @@ explicit cancellation is not.
 
 ## Persistent journal and startup recovery
 
-Protocol 1.12 adds `persistent_job_journal` and `startup_recovery`. Before an accepted job is
-returned to a client, the bridge atomically persists a bounded lifecycle record. It records at
+Protocol 1.12 adds `persistent_job_journal` and `startup_recovery`. The job journal is an
+independently versioned data structure whose current `schema_version` is `1.0`; that schema
+number is not the bridge protocol version. Before an accepted job is returned to a client, the
+bridge atomically persists a bounded lifecycle record. It records at
 most 256 jobs and only a fixed allowlist of identifiers, job types, timestamps, status,
 deadlines, cancellation state and transaction-checkpoint metadata. It never persists a request
 payload, prompt, patch body, result, scene snapshot, bearer token, provider key, raw exception
@@ -211,10 +214,24 @@ scene scan. `POST /v1/recovery/acknowledge` durably clears the report but does n
 Blender scene. Health exposes only the recovery reason and interrupted-job count; the full
 sanitized report remains behind the authenticated recovery endpoint.
 
-If admission, cancellation or a safe transaction checkpoint cannot be journaled, the bridge
-fails closed with HTTP/job error `journal_unavailable`. Python clients use `recovery_status()`
-and `acknowledge_recovery()`. They also treat `interrupted` as a terminal status, with fallback
-error code `job_interrupted` for compatible servers.
+While recovery reports `required: true`, the bridge rejects the four high-impact scene mutation
+and rollback job types: `apply_staged_patch`, `apply_patch`, `undo` and
+`rollback_revision`. Rejection happens before a job ID is generated or queue admission, returns
+HTTP 409 with `error_code: recovery_review_required`, and therefore creates no job record.
+Inspection and preparation calls such as `scan_scene`, `get_staged_patch`, `list_revisions`,
+`stage_patch` and `discard_staged_patch` remain available. A scan may add stable FaceLink entity
+ID metadata, but it does not apply animation or geometry changes. Successful acknowledgement removes
+the gate; a failed acknowledgement write leaves recovery required. The acknowledgement itself
+never replays, applies, undoes or rolls back a task.
+
+If admission or a safe transaction checkpoint cannot be journaled, the bridge fails closed with
+HTTP/job error `journal_unavailable`. Cancellation changes in-memory state before persistence so
+the current session stops as early as safely possible. If that write fails, HTTP returns 503 /
+`journal_unavailable` with `details.cancellation_status`: `cancelled` means a queued job was
+removed from this session, while `running` means only a cooperative cancellation was requested
+and the final outcome remains unknown. Neither response claims that a running job already stopped.
+Python clients use `recovery_status()` and `acknowledge_recovery()`. They also treat `interrupted`
+as a terminal status, with fallback error code `job_interrupted` for compatible servers.
 
 Protocol 1.2 also supports `list_revisions` and `rollback_revision`. The rollback payload is
 `{"revision_id":"rev-..."}`. A rollback restores the selected revision's pre-apply state and

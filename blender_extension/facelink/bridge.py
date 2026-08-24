@@ -27,6 +27,7 @@ from .executor import (
     undo_last_patch,
 )
 from .job_journal import (
+    MUTATING_JOB_TYPES,
     JobJournal,
     JournalError,
     sanitize_job_records,
@@ -39,6 +40,7 @@ from .job_runtime import (
     JobRuntime,
     error_payload,
 )
+from .product_status import JOB_ID_PATTERN, build_product_status
 from .snapshot import scan_scene
 
 MAX_REQUEST_BYTES = 4 * 1024 * 1024
@@ -62,14 +64,18 @@ SUPPORTED_JOB_TYPES = frozenset(
         "rollback_revision",
     }
 )
-
-
 class RequestError(ValueError):
     def __init__(self, status: int, code: str, message: str, **details):
         super().__init__(message)
         self.status = status
         self.code = code
         self.details = details
+
+
+class CancellationPersistenceError(JournalError):
+    def __init__(self, job_status):
+        self.job_status = job_status if job_status in {"cancelled", "running"} else "unknown"
+        super().__init__("The cancellation state could not be persisted.")
 
 
 class Runtime:
@@ -409,37 +415,48 @@ class Handler(BaseHTTPRequestHandler):
         return job_type, payload, timeout_ms
 
     def _cancel_job(self, job_id):
-        with Runtime.lifecycle_lock:
-            if Runtime.stopping:
-                self._send_error(
-                    503,
-                    "bridge_stopping",
-                    "The Blender bridge is stopping and cannot accept job control requests.",
-                    retryable=True,
-                )
-                return
-            try:
-                job = Runtime.job_runtime.cancel(job_id)
-            except JobControlError as exc:
-                self._send_error(409, exc.code, str(exc), details=exc.details)
-                return
-            if job is None:
-                self._send_error(
-                    404,
-                    "job_not_found",
-                    "The Blender job does not exist or its completed record has expired.",
-                )
-                return
-            try:
-                _persist_job_journal()
-            except JournalError:
-                self._send_error(
-                    503,
-                    "journal_unavailable",
-                    "The task journal could not be persisted; no job will be executed.",
-                    retryable=True,
-                )
-                return
+        try:
+            job = cancel_job(job_id)
+        except JobControlError as exc:
+            status = (
+                404
+                if exc.code == "job_not_found"
+                else 503
+                if exc.code == "bridge_stopping"
+                else 409
+            )
+            self._send_error(
+                status,
+                exc.code,
+                str(exc),
+                details=exc.details,
+                retryable=exc.code == "bridge_stopping",
+            )
+            return
+        except CancellationPersistenceError as exc:
+            message = (
+                "Cancellation was requested, but its record could not be persisted; "
+                "check the final job status."
+                if exc.job_status == "running"
+                else "The queued job was removed from this session, but its cancellation "
+                "record could not be persisted."
+            )
+            self._send_error(
+                503,
+                "journal_unavailable",
+                message,
+                details={"cancellation_status": exc.job_status},
+                retryable=True,
+            )
+            return
+        except JournalError:
+            self._send_error(
+                503,
+                "journal_unavailable",
+                "The task journal could not be persisted.",
+                retryable=True,
+            )
+            return
         self._send(202 if job["status"] == "running" else 200, job)
 
     def do_GET(self):
@@ -513,24 +530,23 @@ class Handler(BaseHTTPRequestHandler):
         if not self._request_contract_valid():
             return
         if self.path == "/v1/recovery/acknowledge":
-            with Runtime.lifecycle_lock:
-                if Runtime.stopping:
-                    self._send_error(
-                        503,
-                        "bridge_stopping",
-                        "The Blender bridge is stopping and cannot accept recovery control.",
-                        retryable=True,
-                    )
-                    return
-                try:
-                    self._send(200, Runtime.job_journal.acknowledge())
-                except JournalError:
-                    self._send_error(
-                        503,
-                        "journal_unavailable",
-                        "The recovery acknowledgement could not be persisted.",
-                        retryable=True,
-                    )
+            try:
+                self._send(200, acknowledge_recovery())
+            except JobControlError as exc:
+                self._send_error(
+                    503,
+                    exc.code,
+                    str(exc),
+                    details=exc.details,
+                    retryable=True,
+                )
+            except JournalError:
+                self._send_error(
+                    503,
+                    "journal_unavailable",
+                    "The recovery acknowledgement could not be persisted.",
+                    retryable=True,
+                )
             return
         parts = self.path.split("/")
         if len(parts) == 6 and parts[1:3] == ["v1", "jobs"] and parts[4:] == ["cancel", ""]:
@@ -551,6 +567,17 @@ class Handler(BaseHTTPRequestHandler):
                         "bridge_stopping",
                         "The Blender bridge is stopping and cannot accept new jobs.",
                         retryable=True,
+                    )
+                    return
+                recovery = _recovery_status() or {}
+                if (
+                    job_type in MUTATING_JOB_TYPES
+                    and recovery.get("required") is True
+                ):
+                    self._send_error(
+                        409,
+                        "recovery_review_required",
+                        "Review and acknowledge the previous session before changing the scene.",
                     )
                     return
                 job_id = "job-" + uuid.uuid4().hex[:16]
@@ -690,6 +717,82 @@ def _process_jobs():
 
 def is_running():
     return Runtime.server is not None
+
+
+def workspace_matches_current_file():
+    with Runtime.lifecycle_lock:
+        if Runtime.server is None or Runtime.job_journal is None:
+            return True
+        workspace_id, _persistent = workspace_identity(bpy.data.filepath, os.getpid())
+        return Runtime.job_journal.workspace_id == workspace_id
+
+
+def product_status(
+    *, startup_error_code=None, startup_error_version=None, transition_code=None
+):
+    """Return a bounded, content-free model for the Blender product panel."""
+    with Runtime.lifecycle_lock:
+        running = Runtime.server is not None and not Runtime.stopping
+        view = {"runtime": {}, "jobs": []}
+        recovery = {}
+        instance_id = None
+        protocol_version = None
+        if running:
+            view = Runtime.job_runtime.task_center_view()
+            recovery = _recovery_status() or {}
+            instance_id = Runtime.instance_id
+            protocol_version = Runtime.static_health.get("protocol_version")
+        return build_product_status(
+            running=running,
+            instance_id=instance_id,
+            protocol_version=protocol_version,
+            runtime=view["runtime"],
+            records=view["jobs"],
+            recovery=recovery,
+            staged=Runtime.staged_patch is not None,
+            startup_error_code=startup_error_code,
+            startup_error_version=startup_error_version,
+            transition_code=transition_code,
+        )
+
+
+def cancel_job(job_id):
+    if not isinstance(job_id, str) or JOB_ID_PATTERN.fullmatch(job_id) is None:
+        raise JobControlError(
+            "job_not_found",
+            "The Blender job does not exist or its completed record has expired.",
+            details={},
+        )
+    with Runtime.lifecycle_lock:
+        if Runtime.stopping or Runtime.server is None:
+            raise JobControlError(
+                "bridge_stopping",
+                "The Blender bridge is not available for job control.",
+                details={},
+            )
+        job = Runtime.job_runtime.cancel(job_id)
+        if job is None:
+            raise JobControlError(
+                "job_not_found",
+                "The Blender job does not exist or its completed record has expired.",
+                details={},
+            )
+        try:
+            _persist_job_journal()
+        except JournalError as exc:
+            raise CancellationPersistenceError(job["status"]) from exc
+        return job
+
+
+def acknowledge_recovery():
+    with Runtime.lifecycle_lock:
+        if Runtime.stopping or Runtime.server is None or Runtime.job_journal is None:
+            raise JobControlError(
+                "bridge_stopping",
+                "The Blender bridge is not available for recovery control.",
+                details={},
+            )
+        return Runtime.job_journal.acknowledge()
 
 
 def stage_patch(patch, *, check_interrupted=None):
@@ -861,6 +964,7 @@ def _start_bridge_once():
             "safe_job_cancellation",
             "persistent_job_journal",
             "startup_recovery",
+            "recovery_mutation_gate",
             "correlation_ids",
             "sanitized_diagnostics",
             "protocol_negotiation",
@@ -948,15 +1052,24 @@ def stop_bridge():
         try:
             _persist_job_journal(clean_shutdown=True, force=True)
         except JournalError:
-            traceback.print_exc()
+            pass
     if server:
-        server.shutdown()
-        server.server_close()
+        try:
+            server.shutdown()
+        except OSError:
+            pass
+        try:
+            server.server_close()
+        except OSError:
+            pass
     if Runtime.thread:
         Runtime.thread.join(timeout=1.0)
     Runtime.thread = None
-    if Runtime.instance_file and Runtime.instance_file.exists():
-        Runtime.instance_file.unlink()
+    if Runtime.instance_file:
+        try:
+            Runtime.instance_file.unlink(missing_ok=True)
+        except OSError:
+            pass
     Runtime.instance_file = None
     Runtime.token = None
     Runtime.instance_id = None

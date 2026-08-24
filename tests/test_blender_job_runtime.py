@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -532,3 +533,179 @@ def test_interrupted_records_are_terminal_and_prunable():
     runtime.submit("new", "scan_scene", {})
     assert runtime.get("old") is None
     assert runtime.get("new")["status"] == "queued"
+
+
+def test_task_center_view_is_a_repeatable_read_without_deadline_or_version_side_effects(
+    monkeypatch,
+):
+    clock = {"monotonic": 10.0}
+    monkeypatch.setattr(job_runtime.time, "monotonic", lambda: clock["monotonic"])
+    runtime = job_runtime.JobRuntime(pending_capacity=2, retention_capacity=2)
+    runtime.submit(
+        "job-read-only",
+        "scan_scene",
+        {"private": "must-not-leak"},
+        timeout_ms=1,
+        created_at=100.0,
+    )
+    initial = runtime.task_center_view()
+    initial_version = initial["version"]
+    clock["monotonic"] = 999.0
+
+    first = runtime.task_center_view()
+    second = runtime.task_center_view()
+
+    assert first == second == initial
+    assert first["version"] == initial_version
+    assert first["runtime"]["pending"] == 1
+    assert first["runtime"]["status_counts"]["queued"] == 1
+    assert first["jobs"][0]["status"] == "queued"
+    assert first["jobs"][0]["queue_position"] == 1
+    clock["monotonic"] = 10.0
+    assert runtime.start_next()[0] == "job-read-only"
+
+
+def test_task_center_view_does_not_consult_the_clock(monkeypatch):
+    runtime = job_runtime.JobRuntime()
+    runtime.submit("job-read-only", "scan_scene", {}, timeout_ms=1)
+
+    def forbidden_clock_read():
+        raise AssertionError("task_center_view must not advance deadline state")
+
+    monkeypatch.setattr(job_runtime.time, "monotonic", forbidden_clock_read)
+
+    assert runtime.task_center_view()["jobs"][0]["status"] == "queued"
+
+
+def test_task_center_view_projects_only_content_free_fields_and_returns_deep_copies():
+    secret = "PRIVATE-RUNTIME-CONTENT-19dd"
+    runtime = job_runtime.JobRuntime(pending_capacity=3, retention_capacity=6)
+    runtime.submit(
+        "completed",
+        "apply_patch",
+        {"payload": secret},
+        request_id=f"req-{secret}",
+        correlation_id=f"corr-{secret}",
+    )
+    runtime.start_next()
+    runtime.set_checkpoint(
+        "completed",
+        "transaction_committed",
+        {"private_revision": secret},
+    )
+    runtime.cancel("completed")
+    runtime.mark_succeeded("completed", {"result": secret})
+
+    runtime.submit("failed", "scan_scene", {"payload": secret})
+    runtime.start_next()
+    runtime.mark_failed(
+        "failed",
+        code="job_failed",
+        message=secret,
+        details={"private_detail": secret},
+    )
+    runtime.submit("queued", "undo", {"payload": secret})
+
+    baseline = runtime.task_center_view()
+    serialized = json.dumps(baseline, sort_keys=True)
+
+    assert secret not in serialized
+    assert baseline["jobs"] == [
+        {
+            "job_id": "completed",
+            "type": "apply_patch",
+            "status": "succeeded",
+            "checkpoint": "terminal",
+            "cancel_requested": True,
+            "completed_after_cancel_request": True,
+        },
+        {
+            "job_id": "failed",
+            "type": "scan_scene",
+            "status": "failed",
+            "checkpoint": "terminal",
+            "error_code": "job_failed",
+        },
+        {
+            "job_id": "queued",
+            "type": "undo",
+            "status": "queued",
+            "checkpoint": "accepted",
+            "queue_position": 1,
+        },
+    ]
+    forbidden_fields = {
+        "payload",
+        "result",
+        "submission_request_id",
+        "job_correlation_id",
+        "request_id",
+        "correlation_id",
+        "token",
+        "path",
+        "error",
+        "details",
+        "checkpoint_metadata",
+        "created_at",
+        "started_at",
+        "finished_at",
+        "deadline_at",
+    }
+    assert all(forbidden_fields.isdisjoint(job) for job in baseline["jobs"])
+
+    baseline["runtime"]["status_counts"]["queued"] = 999
+    baseline["runtime"]["pending"] = 999
+    baseline["jobs"][0]["status"] = "poisoned"
+    baseline["jobs"].append({"job_id": secret})
+
+    reread = runtime.task_center_view()
+    assert reread["runtime"]["status_counts"]["queued"] == 1
+    assert reread["runtime"]["pending"] == 1
+    assert reread["jobs"][0]["status"] == "succeeded"
+    assert len(reread["jobs"]) == 3
+    assert secret not in json.dumps(reread, sort_keys=True)
+
+
+def test_task_center_view_capacity_boundary_and_queue_positions_are_exact():
+    runtime = job_runtime.JobRuntime(pending_capacity=6, retention_capacity=8)
+    for index in range(1, 7):
+        runtime.submit(f"job-{index}", "scan_scene", {"index": index})
+
+    full = runtime.task_center_view()
+
+    assert full["runtime"] == {
+        "pending": 6,
+        "pending_capacity": 6,
+        "retained": 6,
+        "retention_capacity": 8,
+        "status_counts": {
+            "queued": 6,
+            "running": 0,
+            "succeeded": 0,
+            "failed": 0,
+            "cancelled": 0,
+            "timed_out": 0,
+            "interrupted": 0,
+        },
+        "cancel_requested": 0,
+        "evicted_total": 0,
+    }
+    assert [job["queue_position"] for job in full["jobs"]] == list(range(1, 7))
+    full_version = full["version"]
+
+    with pytest.raises(job_runtime.JobAdmissionError) as captured:
+        runtime.submit("job-7", "scan_scene", {})
+    assert captured.value.code == "queue_full"
+    assert runtime.task_center_view() == full
+    assert runtime.task_center_view()["version"] == full_version
+
+    assert runtime.start_next()[0] == "job-1"
+    shifted = runtime.task_center_view()
+    assert "queue_position" not in shifted["jobs"][0]
+    assert [job["queue_position"] for job in shifted["jobs"][1:]] == list(range(1, 6))
+
+    runtime.submit("job-7", "scan_scene", {})
+    refilled = runtime.task_center_view()
+    queued = [job for job in refilled["jobs"] if job["status"] == "queued"]
+    assert [job["queue_position"] for job in queued] == list(range(1, 7))
+    assert refilled["runtime"]["pending"] == refilled["runtime"]["pending_capacity"] == 6

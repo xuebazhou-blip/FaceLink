@@ -361,6 +361,20 @@ def test_semantic_allowlists_reject_safe_shaped_business_text():
     assert diagnostic_export._safe_identifier("project-confidential123") is None
 
 
+def test_recovery_gate_capability_and_error_code_survive_safe_projection():
+    diagnostics = _poisoned_bridge_payload()
+    diagnostics["capabilities"].append("recovery_mutation_gate")
+    diagnostics["recent_jobs"][0]["error_code"] = "recovery_review_required"
+
+    sanitized = diagnostic_export.sanitize_bridge_diagnostics(diagnostics)
+
+    assert sanitized["capabilities"] == [
+        "correlation_ids",
+        "recovery_mutation_gate",
+    ]
+    assert sanitized["recent_jobs"][0]["error_code"] == "recovery_review_required"
+
+
 def test_payload_caps_all_nested_collections_and_preserves_recent_order():
     reports = [_dense_bridge_report(index) for index in range(33)]
     reports[-1]["instance_ref"] = "../../invalid-private-tail"

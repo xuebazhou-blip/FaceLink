@@ -10,6 +10,7 @@ import traceback
 import urllib.error
 import urllib.request
 from pathlib import Path
+from types import SimpleNamespace
 
 import bpy
 
@@ -20,14 +21,25 @@ state_root = PROJECT / ".cache" / "bridge-state" / str(os.getpid())
 os.environ["FACELINK_INSTANCE_DIR"] = str(instance_root)
 os.environ["FACELINK_STATE_DIR"] = str(state_root)
 
-from facelink.job_journal import UnsupportedJournalVersion  # noqa: E402
+from facelink.job_journal import JournalError  # noqa: E402
+from facelink.snapshot import ensure_entity_id  # noqa: E402
 
 import facelink as blender_addon  # noqa: E402
 from facelink import bridge  # noqa: E402
 from facelink import executor as blender_executor  # noqa: E402
+from facelink import operators as blender_operators  # noqa: E402
+from facelink import panels as blender_panels  # noqa: E402
 
 REQUEST_ID_PATTERN = re.compile(r"^req-[0-9a-f]{16}$")
 CORRELATION_ID_PATTERN = re.compile(r"^corr-[0-9a-f]{32}$")
+
+
+class OperatorReportSink:
+    def __init__(self):
+        self.reports = []
+
+    def report(self, levels, message):
+        self.reports.append((set(levels), message))
 
 
 def request_json_response_with_headers(
@@ -939,6 +951,84 @@ def client_flow(result_box):
 
 
 blender_addon.register()
+for operator_name in (
+    "start_bridge",
+    "stop_bridge",
+    "refresh_status",
+    "cancel_job",
+    "acknowledge_recovery",
+):
+    assert hasattr(bpy.ops.facelink, operator_name), operator_name
+assert hasattr(bpy.context.window_manager, "facelink")
+for property_name in (
+    "last_status",
+    "last_error_code",
+    "startup_error_version",
+    "last_result",
+    "show_tasks",
+    "show_details",
+):
+    assert hasattr(bpy.context.window_manager.facelink, property_name), property_name
+assert bpy.app.timers.is_registered(blender_panels._refresh_task_center)
+
+
+class RedrawCountingArea:
+    type = "VIEW_3D"
+
+    def __init__(self):
+        self.redraw_count = 0
+
+    def tag_redraw(self):
+        self.redraw_count += 1
+
+
+# Exercise the real timer callback with a deterministic Blender context facade. Identical
+# models must not redraw twice, and a disconnected panel must use the slower refresh cadence.
+redraw_area = RedrawCountingArea()
+fake_window_manager = SimpleNamespace(
+    windows=[SimpleNamespace(screen=SimpleNamespace(areas=[redraw_area]))]
+)
+offline_timer_model = {
+    "connection": {"running": False},
+    "recovery": {"required": False},
+}
+running_timer_model = {
+    "connection": {"running": True},
+    "recovery": {"required": False},
+}
+original_panels_bpy = blender_panels.bpy
+original_panels_product_status = blender_panels.product_status
+try:
+    blender_panels.bpy = SimpleNamespace(
+        context=SimpleNamespace(window_manager=fake_window_manager)
+    )
+    blender_panels._last_task_center_model = None
+    blender_panels.product_status = lambda: offline_timer_model
+    assert (
+        blender_panels._refresh_task_center()
+        == blender_panels.IDLE_REFRESH_INTERVAL_SECONDS
+    )
+    assert redraw_area.redraw_count == 1
+    assert (
+        blender_panels._refresh_task_center()
+        == blender_panels.IDLE_REFRESH_INTERVAL_SECONDS
+    )
+    assert redraw_area.redraw_count == 1
+    blender_panels.product_status = lambda: running_timer_model
+    assert (
+        blender_panels._refresh_task_center()
+        == blender_panels.REFRESH_INTERVAL_SECONDS
+    )
+    assert redraw_area.redraw_count == 2
+    assert (
+        blender_panels._refresh_task_center()
+        == blender_panels.REFRESH_INTERVAL_SECONDS
+    )
+    assert redraw_area.redraw_count == 2
+finally:
+    blender_panels.bpy = original_panels_bpy
+    blender_panels.product_status = original_panels_product_status
+    blender_panels._last_task_center_model = None
 bpy.ops.mesh.primitive_cube_add(location=(0, 0, 0))
 bpy.context.active_object.name = "Bridge Actor"
 bpy.ops.mesh.primitive_cube_add(location=(10, 10, 0))
@@ -1027,6 +1117,181 @@ expect_http_error(
     lambda: request_json("GET", f"{probe_base_url}/v1/recovery", "wrong-token"),
     error_code="authentication_required",
 )
+
+
+def scene_state_for_recovery_assertion():
+    return {
+        "objects": sorted(
+            (
+                item.name,
+                item.type,
+                tuple(round(float(value), 6) for value in item.location),
+                item.animation_data.action.name
+                if item.animation_data is not None
+                and item.animation_data.action is not None
+                else None,
+            )
+            for item in bpy.context.scene.objects
+        ),
+        "actions": sorted(item.name for item in bpy.data.actions),
+        "revisions": bridge.list_revision_history(),
+        "staged": bridge.get_staged_patch(),
+    }
+
+
+# Recovery review gates every scene-changing HTTP job before admission while preserving
+# bounded read-only inspection. UI mutation controls must expose the same gate.
+recovery_gate_private_marker = "FACELINK_PRIVATE_RECOVERY_GATE_PAYLOAD"
+recovery_gate_patch = {
+    "schema_version": "1.0",
+    "patch_id": "recovery-gate-acceptance",
+    "source_title": recovery_gate_private_marker,
+    "operations": [
+        {
+            "op": "keyframe_transform",
+            "entity_id": ensure_entity_id(bpy.data.objects["Bridge Actor"]),
+            "payload": {"frames": [{"frame": 1, "location": [91, 0, 0]}]},
+        }
+    ],
+}
+bridge.stage_patch(recovery_gate_patch)
+assert blender_operators.FACELINK_OT_apply_staged_patch.poll(None) is False
+assert bpy.ops.facelink.apply_staged_patch.poll() is False
+original_operator_revision_history = blender_operators.list_revision_history
+blender_operators.list_revision_history = lambda: {"available_count": 1}
+try:
+    assert blender_operators.FACELINK_OT_undo_patch.poll(None) is False
+    assert bpy.ops.facelink.undo_patch.poll() is False
+finally:
+    blender_operators.list_revision_history = original_operator_revision_history
+assert blender_operators.FACELINK_OT_rollback_revision.poll(None) is False
+assert bpy.ops.facelink.rollback_revision.poll() is False
+bridge.clear_staged_patch()
+
+recovery_gate_scene_before = scene_state_for_recovery_assertion()
+recovery_gate_runtime_before = bridge.Runtime.job_runtime.task_center_view()
+recovery_gate_journal_before = bridge.Runtime.job_journal.path.read_bytes()
+gated_mutations = (
+    ("apply_patch", {"patch": recovery_gate_patch}),
+    ("apply_staged_patch", {}),
+    ("undo", {}),
+    ("rollback_revision", {"revision_id": "rev-recovery-gate"}),
+)
+for gated_job_type, gated_payload in gated_mutations:
+    rejected_mutation, rejected_headers = expect_http_error(
+        409,
+        lambda job_type=gated_job_type, payload=gated_payload: submit(
+            probe_base_url,
+            probe_token,
+            job_type,
+            payload,
+        ),
+        error_code="recovery_review_required",
+    )
+    assert_response_envelope(rejected_mutation, rejected_headers)
+    assert rejected_mutation["retryable"] is False
+    assert rejected_mutation.get("details", {}) == {}
+    assert recovery_gate_private_marker not in json.dumps(rejected_mutation)
+    assert bridge.Runtime.job_runtime.task_center_view() == recovery_gate_runtime_before
+    assert bridge.Runtime.job_journal.path.read_bytes() == recovery_gate_journal_before
+    assert scene_state_for_recovery_assertion() == recovery_gate_scene_before
+
+readonly_scan_id = submit(probe_base_url, probe_token, "scan_scene")
+readonly_history_id = submit(probe_base_url, probe_token, "list_revisions")
+assert bridge.Runtime.job_runtime.task_center_view()["runtime"]["pending"] == 2
+bridge._process_jobs()
+bridge._process_jobs()
+for readonly_job_id in (readonly_scan_id, readonly_history_id):
+    readonly_job = request_json(
+        "GET",
+        f"{probe_base_url}/v1/jobs/{readonly_job_id}",
+        probe_token,
+    )
+    assert readonly_job["status"] == "succeeded"
+assert bridge.Runtime.job_journal.status()["required"] is True
+
+# Leave the following recovery acknowledgement assertions with an empty runtime, while the
+# successful read-only records above have already proved the admission exception end to end.
+bridge.Runtime.job_runtime = bridge.JobRuntime()
+bridge._persist_job_journal()
+
+# A failed acknowledgement must preserve the recovery requirement and the exact journal.
+# A successful UI acknowledgement must only update recovery metadata: it never replays work
+# or mutates the Blender scene.
+recovery_scene_before = scene_state_for_recovery_assertion()
+recovery_journal_before = bridge.Runtime.job_journal.path.read_bytes()
+original_journal_writer = bridge.Runtime.job_journal._write_payload
+
+
+def fail_recovery_acknowledgement(_payload):
+    raise JournalError("injected recovery acknowledgement failure")
+
+
+bridge.Runtime.job_journal._write_payload = fail_recovery_acknowledgement
+try:
+    failed_acknowledgement_reports = OperatorReportSink()
+    failed_acknowledgement = blender_operators.FACELINK_OT_acknowledge_recovery.execute(
+        failed_acknowledgement_reports,
+        bpy.context,
+    )
+finally:
+    bridge.Runtime.job_journal._write_payload = original_journal_writer
+assert failed_acknowledgement == {"CANCELLED"}
+assert failed_acknowledgement_reports.reports[-1][0] == {"ERROR"}
+assert bridge.Runtime.job_journal.status()["required"] is True
+assert bridge.product_status()["recovery"]["required"] is True
+assert bridge.Runtime.job_journal.path.read_bytes() == recovery_journal_before
+assert bpy.context.window_manager.facelink.last_error_code == "journal_unavailable"
+assert scene_state_for_recovery_assertion() == recovery_scene_before
+
+successful_acknowledgement = bpy.ops.facelink.acknowledge_recovery()
+assert successful_acknowledgement == {"FINISHED"}
+assert bridge.Runtime.job_journal.status()["required"] is False
+assert bridge.product_status()["recovery"]["required"] is False
+assert bridge.Runtime.job_runtime.task_center_view()["jobs"] == []
+assert bpy.context.window_manager.facelink.last_error_code == ""
+assert scene_state_for_recovery_assertion() == recovery_scene_before
+
+bridge.stage_patch(recovery_gate_patch)
+assert blender_operators.FACELINK_OT_apply_staged_patch.poll(None) is True
+assert bpy.ops.facelink.apply_staged_patch.poll() is True
+blender_operators.list_revision_history = lambda: {"available_count": 1}
+try:
+    assert blender_operators.FACELINK_OT_undo_patch.poll(None) is True
+    assert bpy.ops.facelink.undo_patch.poll() is True
+finally:
+    blender_operators.list_revision_history = original_operator_revision_history
+assert blender_operators.FACELINK_OT_rollback_revision.poll(None) is True
+assert bpy.ops.facelink.rollback_revision.poll() is True
+bridge.clear_staged_patch()
+
+# The UI acknowledgement immediately reopens admission. Keep the jobs queued, verify 202,
+# then cancel them so this gate test itself does not change the Blender scene.
+post_ack_scene_before = scene_state_for_recovery_assertion()
+post_ack_job_ids = []
+for gated_job_type, gated_payload in gated_mutations:
+    admitted_status, admitted_job = request_json_response(
+        "POST",
+        f"{probe_base_url}/v1/jobs",
+        probe_token,
+        {"type": gated_job_type, "payload": gated_payload},
+    )
+    assert admitted_status == 202
+    assert admitted_job["status"] == "queued"
+    post_ack_job_ids.append(admitted_job["job_id"])
+assert bridge.Runtime.job_runtime.task_center_view()["runtime"]["pending"] == 4
+assert scene_state_for_recovery_assertion() == post_ack_scene_before
+for admitted_job_id in post_ack_job_ids:
+    cancelled_after_ack = request_json(
+        "POST",
+        f"{probe_base_url}/v1/jobs/{admitted_job_id}/cancel",
+        probe_token,
+    )
+    assert cancelled_after_ack["status"] == "cancelled"
+assert scene_state_for_recovery_assertion() == post_ack_scene_before
+bridge.Runtime.job_runtime = bridge.JobRuntime()
+bridge._persist_job_journal()
+
 acknowledged = request_json(
     "POST", f"{probe_base_url}/v1/recovery/acknowledge", probe_token
 )
@@ -1044,6 +1309,354 @@ status, oversized_payload = request_with_declared_size(
 assert status == 413
 assert oversized_payload["error_code"] == "request_too_large"
 assert oversized_payload["details"]["max_bytes"] == bridge.MAX_REQUEST_BYTES
+
+# The task centre is a read-only projection. Reading it must not advance a queued job,
+# expire it, persist anything, or expose its payload. The UI cancellation operator must
+# remove queued work before dispatch and persist the terminal cancellation record.
+bridge.Runtime.job_runtime = bridge.JobRuntime()
+ui_cancel_id = "job-cccccccccccccccc"
+ui_cancel_private_marker = "FACELINK_PRIVATE_UI_CANCEL_PAYLOAD"
+ui_cancel_patch = {
+    "schema_version": "1.0",
+    "patch_id": "ui-queued-cancel",
+    "source_title": ui_cancel_private_marker,
+    "operations": [
+        {
+            "op": "keyframe_transform",
+            "entity_id": ensure_entity_id(bpy.data.objects["Bridge Actor"]),
+            "payload": {"frames": [{"frame": 1, "location": [77, 0, 0]}]},
+        }
+    ],
+}
+bridge.Runtime.job_runtime.submit(
+    ui_cancel_id,
+    "apply_patch",
+    {"patch": ui_cancel_patch, "private": ui_cancel_private_marker},
+)
+bridge._persist_job_journal()
+ui_actor = bpy.data.objects["Bridge Actor"]
+ui_actor_before = tuple(ui_actor.location)
+ui_action_before = ui_actor.animation_data.action if ui_actor.animation_data else None
+task_view_before = bridge.Runtime.job_runtime.task_center_view()
+task_journal_before = bridge.Runtime.job_journal.path.read_bytes()
+first_product_status = bridge.product_status()
+second_product_status = bridge.product_status()
+assert first_product_status == second_product_status
+assert bridge.Runtime.job_runtime.task_center_view() == task_view_before
+assert bridge.Runtime.job_journal.path.read_bytes() == task_journal_before
+assert first_product_status["connection"]["state"] == "busy"
+assert first_product_status["active_jobs"] == [
+    {
+        "job_id": ui_cancel_id,
+        "type": "apply_patch",
+        "status": "queued",
+        "checkpoint": "accepted",
+        "queue_position": 1,
+    }
+]
+assert ui_cancel_private_marker not in repr(first_product_status)
+
+queued_ui_cancel_result = bpy.ops.facelink.cancel_job(job_id=ui_cancel_id)
+assert queued_ui_cancel_result == {"FINISHED"}
+assert bpy.context.window_manager.facelink.last_error_code == ""
+assert bpy.context.window_manager.facelink.last_result == "Queued task cancelled"
+cancelled_ui_job = bridge.Runtime.job_runtime.get(ui_cancel_id)
+assert cancelled_ui_job["status"] == "cancelled"
+assert cancelled_ui_job["error_code"] == "job_cancelled"
+assert bridge.Runtime.job_runtime.task_center_view()["runtime"]["pending"] == 0
+assert bridge._process_jobs() == 0.05
+assert tuple(ui_actor.location) == ui_actor_before
+assert (ui_actor.animation_data.action if ui_actor.animation_data else None) is ui_action_before
+cancelled_journal = json.loads(bridge.Runtime.job_journal.path.read_text(encoding="utf-8"))
+cancelled_journal_job = next(
+    item for item in cancelled_journal["jobs"] if item["job_id"] == ui_cancel_id
+)
+assert cancelled_journal_job["status"] == "cancelled"
+assert cancelled_journal_job["error_code"] == "job_cancelled"
+assert ui_cancel_private_marker not in json.dumps(cancelled_journal)
+
+# Construct the running/completion race directly so this assertion remains deterministic:
+# the UI first records a cooperative cancel request, then completion wins before the next
+# checkpoint. Both the intermediate and terminal outcomes must remain visible and persisted.
+bridge.Runtime.job_runtime = bridge.JobRuntime()
+running_race_id = "job-dddddddddddddddd"
+running_private_marker = "FACELINK_PRIVATE_RUNNING_RACE_RESULT"
+bridge.Runtime.job_runtime.submit(running_race_id, "scan_scene", {})
+started_race = bridge.Runtime.job_runtime.start_next()
+assert started_race[:2] == (running_race_id, "scan_scene")
+bridge._persist_job_journal()
+running_ui_cancel_result = bpy.ops.facelink.cancel_job(job_id=running_race_id)
+assert running_ui_cancel_result == {"FINISHED"}
+running_race_status = bridge.product_status()
+assert running_race_status["queue"]["cancel_requested"] == 1
+assert running_race_status["active_jobs"] == [
+    {
+        "job_id": running_race_id,
+        "type": "scan_scene",
+        "status": "running",
+        "checkpoint": "main_thread_started",
+        "cancel_requested": True,
+    }
+]
+bridge.Runtime.job_runtime.mark_succeeded(
+    running_race_id,
+    {"private": running_private_marker},
+)
+bridge._persist_job_journal()
+completed_race_status = bridge.product_status()
+assert completed_race_status["active_job_count"] == 0
+assert completed_race_status["queue"]["cancel_requested"] == 0
+assert completed_race_status["recent_jobs"] == [
+    {
+        "job_id": running_race_id,
+        "type": "scan_scene",
+        "status": "succeeded",
+        "checkpoint": "terminal",
+        "completed_after_cancel_request": True,
+    }
+]
+assert running_private_marker not in repr(completed_race_status)
+race_journal = json.loads(bridge.Runtime.job_journal.path.read_text(encoding="utf-8"))
+assert race_journal["jobs"][0]["completed_after_cancel_request"] is True
+assert running_private_marker not in json.dumps(race_journal)
+
+# Cancellation changes memory before its journal write. Inject the persistence fault at that
+# exact boundary and prove the 503 response describes the in-session truth without claiming
+# more than happened. A queued mutation stays removed and can never reach Blender dispatch.
+cancellation_fault_marker = (
+    "FACELINK_PRIVATE_CANCEL_PERSISTENCE E:\\Private\\cancel-journal.json"
+)
+original_persist_job_journal = bridge._persist_job_journal
+bridge.Runtime.job_runtime = bridge.JobRuntime()
+queued_fault_scene_before = scene_state_for_recovery_assertion()
+queued_fault_id = submit(
+    probe_base_url,
+    probe_token,
+    "apply_patch",
+    {"patch": ui_cancel_patch},
+)
+queued_fault_journal_before = bridge.Runtime.job_journal.path.read_bytes()
+
+
+def fail_cancel_persistence(*, clean_shutdown=False, force=False):
+    raise JournalError(cancellation_fault_marker)
+
+
+bridge._persist_job_journal = fail_cancel_persistence
+try:
+    queued_fault_payload, queued_fault_headers = expect_http_error(
+        503,
+        lambda: request_json(
+            "POST",
+            f"{probe_base_url}/v1/jobs/{queued_fault_id}/cancel",
+            probe_token,
+        ),
+        error_code="journal_unavailable",
+    )
+finally:
+    bridge._persist_job_journal = original_persist_job_journal
+assert_response_envelope(queued_fault_payload, queued_fault_headers)
+assert queued_fault_payload["retryable"] is True
+assert queued_fault_payload["details"] == {"cancellation_status": "cancelled"}
+assert cancellation_fault_marker not in json.dumps(queued_fault_payload)
+assert "E:\\Private" not in json.dumps(queued_fault_payload)
+queued_fault_job = bridge.Runtime.job_runtime.get(queued_fault_id)
+assert queued_fault_job["status"] == "cancelled"
+assert queued_fault_job["error_code"] == "job_cancelled"
+assert bridge.Runtime.job_runtime.task_center_view()["runtime"]["pending"] == 0
+assert bridge.Runtime.job_journal.path.read_bytes() == queued_fault_journal_before
+assert bridge._process_jobs() == 0.05
+assert scene_state_for_recovery_assertion() == queued_fault_scene_before
+bridge._persist_job_journal()
+
+# The UI uses a fixed queued-failure message. It reports the record failure, not the injected
+# exception or path, while retaining the same in-session cancelled/no-dispatch guarantee.
+bridge.Runtime.job_runtime = bridge.JobRuntime()
+queued_ui_fault_id = "job-eeeeeeeeeeeeeeee"
+bridge.Runtime.job_runtime.submit(
+    queued_ui_fault_id,
+    "apply_patch",
+    {"patch": ui_cancel_patch},
+)
+bridge._persist_job_journal()
+queued_ui_fault_scene_before = scene_state_for_recovery_assertion()
+bridge._persist_job_journal = fail_cancel_persistence
+try:
+    queued_ui_fault_reports = OperatorReportSink()
+    queued_ui_fault_reports.job_id = queued_ui_fault_id
+    queued_ui_fault_result = blender_operators.FACELINK_OT_cancel_job.execute(
+        queued_ui_fault_reports,
+        bpy.context,
+    )
+finally:
+    bridge._persist_job_journal = original_persist_job_journal
+queued_ui_fault_message = (
+    "Queued task was removed, but its cancellation record was not saved"
+)
+assert queued_ui_fault_result == {"CANCELLED"}
+assert queued_ui_fault_reports.reports[-1] == ({"ERROR"}, queued_ui_fault_message)
+assert bpy.context.window_manager.facelink.last_status == queued_ui_fault_message
+assert bpy.context.window_manager.facelink.last_error_code == "journal_unavailable"
+assert cancellation_fault_marker not in queued_ui_fault_message
+assert "E:\\Private" not in queued_ui_fault_message
+assert bridge.Runtime.job_runtime.get(queued_ui_fault_id)["status"] == "cancelled"
+assert bridge._process_jobs() == 0.05
+assert scene_state_for_recovery_assertion() == queued_ui_fault_scene_before
+bridge._persist_job_journal()
+
+# For a genuinely running job, fail only the cancel-request persistence. The Blender operation
+# is allowed to return normally, so mark_succeeded records completion-wins rather than falsely
+# claiming cancellation. This is synchronized with events and has no timing race.
+bridge.Runtime.job_runtime = bridge.JobRuntime()
+bridge.stage_patch(recovery_gate_patch)
+running_fault_id = submit(probe_base_url, probe_token, "discard_staged_patch")
+running_fault_operation_started = threading.Event()
+running_fault_response_finished = threading.Event()
+running_fault_result = {}
+running_fault_count = {"value": 0}
+original_discard_staged_patch = bridge.discard_staged_patch
+
+
+def controlled_discard_for_persistence_fault():
+    running_fault_operation_started.set()
+    if not running_fault_response_finished.wait(timeout=3):
+        raise TimeoutError("Cancellation persistence response did not complete")
+    return original_discard_staged_patch()
+
+
+def fail_only_running_cancel_persistence(*, clean_shutdown=False, force=False):
+    current = bridge.Runtime.job_runtime.get(running_fault_id)
+    if (
+        running_fault_count["value"] == 0
+        and current is not None
+        and current["status"] == "running"
+        and current.get("cancel_requested") is True
+    ):
+        running_fault_count["value"] += 1
+        raise JournalError(cancellation_fault_marker)
+    return original_persist_job_journal(
+        clean_shutdown=clean_shutdown,
+        force=force,
+    )
+
+
+def request_running_cancel_with_persistence_fault():
+    try:
+        if not running_fault_operation_started.wait(timeout=3):
+            raise TimeoutError("Running job did not reach the controlled operation")
+        payload, headers = expect_http_error(
+            503,
+            lambda: request_json(
+                "POST",
+                f"{probe_base_url}/v1/jobs/{running_fault_id}/cancel",
+                probe_token,
+            ),
+            error_code="journal_unavailable",
+        )
+        running_fault_result.update(
+            status="passed",
+            payload=payload,
+            headers=headers,
+            intermediate=bridge.Runtime.job_runtime.get(running_fault_id),
+        )
+    except Exception as exc:
+        running_fault_result.update(
+            status="failed",
+            error=str(exc),
+            traceback=traceback.format_exc(),
+        )
+    finally:
+        running_fault_response_finished.set()
+
+
+bridge.discard_staged_patch = controlled_discard_for_persistence_fault
+bridge._persist_job_journal = fail_only_running_cancel_persistence
+running_fault_thread = threading.Thread(
+    target=request_running_cancel_with_persistence_fault,
+    daemon=True,
+)
+running_fault_thread.start()
+try:
+    bridge._process_jobs()
+finally:
+    bridge.discard_staged_patch = original_discard_staged_patch
+    bridge._persist_job_journal = original_persist_job_journal
+running_fault_thread.join(timeout=1)
+assert not running_fault_thread.is_alive()
+assert running_fault_result.get("status") == "passed", running_fault_result.get(
+    "traceback", running_fault_result
+)
+assert running_fault_count["value"] == 1
+running_fault_payload = running_fault_result["payload"]
+assert_response_envelope(running_fault_payload, running_fault_result["headers"])
+assert running_fault_payload["retryable"] is True
+assert running_fault_payload["details"] == {"cancellation_status": "running"}
+assert cancellation_fault_marker not in json.dumps(running_fault_payload)
+assert "E:\\Private" not in json.dumps(running_fault_payload)
+assert running_fault_result["intermediate"]["status"] == "running"
+assert running_fault_result["intermediate"]["cancel_requested"] is True
+completed_running_fault = bridge.Runtime.job_runtime.get(running_fault_id)
+assert completed_running_fault["status"] == "succeeded"
+assert completed_running_fault["completed_after_cancel_request"] is True
+completed_running_fault_http = request_json(
+    "GET",
+    f"{probe_base_url}/v1/jobs/{running_fault_id}",
+    probe_token,
+)
+assert completed_running_fault_http["status"] == "succeeded"
+assert completed_running_fault_http["completed_after_cancel_request"] is True
+running_fault_product_status = bridge.product_status()
+assert running_fault_product_status["recent_jobs"] == [
+    {
+        "job_id": running_fault_id,
+        "type": "discard_staged_patch",
+        "status": "succeeded",
+        "checkpoint": "terminal",
+        "completed_after_cancel_request": True,
+    }
+]
+running_fault_journal = json.loads(
+    bridge.Runtime.job_journal.path.read_text(encoding="utf-8")
+)
+assert running_fault_journal["jobs"][0]["status"] == "succeeded"
+assert running_fault_journal["jobs"][0]["completed_after_cancel_request"] is True
+
+# Exercise the running branch of the UI operator independently, checking its exact copy and
+# proving it says only that cancellation was requested, never that the task already stopped.
+bridge.Runtime.job_runtime = bridge.JobRuntime()
+running_ui_fault_id = "job-ffffffffffffffff"
+bridge.Runtime.job_runtime.submit(running_ui_fault_id, "scan_scene", {})
+assert bridge.Runtime.job_runtime.start_next()[:2] == (
+    running_ui_fault_id,
+    "scan_scene",
+)
+bridge._persist_job_journal()
+bridge._persist_job_journal = fail_cancel_persistence
+try:
+    running_ui_fault_reports = OperatorReportSink()
+    running_ui_fault_reports.job_id = running_ui_fault_id
+    running_ui_fault_result = blender_operators.FACELINK_OT_cancel_job.execute(
+        running_ui_fault_reports,
+        bpy.context,
+    )
+finally:
+    bridge._persist_job_journal = original_persist_job_journal
+running_ui_fault_message = (
+    "Cancellation was requested but not saved; check the final task result"
+)
+assert running_ui_fault_result == {"CANCELLED"}
+assert running_ui_fault_reports.reports[-1] == ({"ERROR"}, running_ui_fault_message)
+assert bpy.context.window_manager.facelink.last_status == running_ui_fault_message
+assert bpy.context.window_manager.facelink.last_error_code == "journal_unavailable"
+assert "stopped" not in running_ui_fault_message.lower()
+assert cancellation_fault_marker not in running_ui_fault_message
+assert "E:\\Private" not in running_ui_fault_message
+running_ui_fault_job = bridge.Runtime.job_runtime.get(running_ui_fault_id)
+assert running_ui_fault_job["status"] == "running"
+assert running_ui_fault_job["cancel_requested"] is True
+bridge.Runtime.job_runtime.mark_succeeded(running_ui_fault_id, {"completed": True})
+bridge._persist_job_journal()
+
 bridge.Runtime.job_runtime = bridge.JobRuntime(pending_capacity=2, retention_capacity=2)
 cancel_probe = submit(
     probe_base_url,
@@ -1313,12 +1926,28 @@ future_journal = (
     + "\r\n"
 ).encode("utf-8")
 journal_path.write_bytes(future_journal)
-try:
-    bridge.start_bridge()
-except UnsupportedJournalVersion as exc:
-    assert exc.requested == "2.0"
-else:
-    raise AssertionError("Bridge unexpectedly opened a future task journal")
+future_start_reports = OperatorReportSink()
+future_start_result = blender_operators.FACELINK_OT_start_bridge.execute(
+    future_start_reports,
+    bpy.context,
+)
+assert future_start_result == {"CANCELLED"}
+assert future_start_reports.reports[-1][0] == {"ERROR"}
+product_state = bpy.context.window_manager.facelink
+assert product_state.last_error_code == "unsupported_journal_version"
+assert product_state.startup_error_version == "2.0"
+assert "2.0" in product_state.last_status
+assert "preserve-exactly" not in product_state.last_status
+future_product_status = bridge.product_status(
+    startup_error_code=product_state.last_error_code,
+    startup_error_version=product_state.startup_error_version,
+)
+assert future_product_status["connection"] == {
+    "running": False,
+    "state": "incompatible",
+    "error_code": "unsupported_journal_version",
+    "requested_version": "2.0",
+}
 assert journal_path.read_bytes() == future_journal
 assert bridge.Runtime.server is None
 assert bridge.Runtime.thread is None
@@ -1327,6 +1956,56 @@ assert bridge.Runtime.token is None
 assert bridge.Runtime.job_journal is None
 assert not list(instance_root.glob("*.json"))
 journal_path.write_bytes(last_good_journal)
+
+# Saving an unsaved workspace under a persistent path changes its journal identity, so the
+# save handler must stop the old bridge. Re-saving the same workspace may keep it running;
+# loading any file must stop it before Blender replaces scene data and clear transient state.
+workspace_file = state_root / "workspace-transition.blend"
+bridge.start_bridge()
+save_transition_instance = Path(bridge.Runtime.instance_file)
+assert save_transition_instance.exists()
+assert bridge.workspace_matches_current_file() is True
+bpy.ops.wm.save_as_mainfile(filepath=str(workspace_file))
+assert Path(bpy.data.filepath) == workspace_file
+assert bridge.is_running() is False
+assert not save_transition_instance.exists()
+assert (
+    bpy.context.window_manager.facelink.last_status
+    == "File location changed; restart FaceLink for this file"
+)
+assert bpy.context.window_manager.facelink.transition_code == "workspace_changed"
+workspace_changed_model = bridge.product_status(
+    transition_code=bpy.context.window_manager.facelink.transition_code
+)
+assert workspace_changed_model["connection"]["notice_code"] == "workspace_changed"
+poisoned_transition = "FACELINK_PRIVATE_TRANSITION_C_DO_NOT_PROJECT"
+bpy.context.window_manager.facelink.transition_code = poisoned_transition
+poisoned_transition_model = bridge.product_status(
+    transition_code=bpy.context.window_manager.facelink.transition_code
+)
+assert "notice_code" not in poisoned_transition_model["connection"]
+assert poisoned_transition not in repr(poisoned_transition_model)
+bpy.context.window_manager.facelink.transition_code = "workspace_changed"
+
+bridge.start_bridge()
+same_workspace_instance = Path(bridge.Runtime.instance_file)
+assert bridge.workspace_matches_current_file() is True
+bpy.ops.wm.save_as_mainfile(filepath=str(workspace_file))
+assert bridge.is_running() is True
+assert same_workspace_instance.exists()
+bpy.ops.wm.open_mainfile(filepath=str(workspace_file))
+assert bridge.is_running() is False
+assert not same_workspace_instance.exists()
+assert bpy.context.window_manager.facelink.last_status == (
+    "File loaded; start FaceLink for this Blender file"
+)
+assert bpy.context.window_manager.facelink.transition_code == "file_loaded"
+file_loaded_model = bridge.product_status(
+    transition_code=bpy.context.window_manager.facelink.transition_code
+)
+assert file_loaded_model["connection"]["notice_code"] == "file_loaded"
+assert bridge.get_staged_patch()["staged"] is False
+assert bridge.list_revision_history()["available_count"] == 0
 
 result.update(
     suite="blender_bridge_acceptance",
@@ -1348,6 +2027,24 @@ result.update(
     failed_start_cleanup=True,
     restart_after_failed_start=True,
     future_journal_bridge_fail_closed=True,
+    product_controls_registered=True,
+    product_status_read_only=True,
+    queued_ui_cancellation_persisted=True,
+    running_ui_cancellation_race_visible=True,
+    recovery_ui_acknowledgement_safe=True,
+    recovery_ui_write_failure_preserved=True,
+    future_journal_operator_fail_closed=True,
+    workspace_save_load_bridge_safety=True,
+    recovery_http_mutation_gate=True,
+    recovery_http_readonly_allowed=True,
+    recovery_ui_mutation_gate=True,
+    recovery_acknowledgement_reopens_admission=True,
+    task_center_timer_idempotent=True,
+    task_center_offline_backoff=True,
+    safe_file_transition_notices=True,
+    queued_cancel_persistence_failure_http=True,
+    running_cancel_persistence_failure_completion_wins=True,
+    cancellation_persistence_failure_ui_copy=True,
 )
 report_path = os.environ.get("FACELINK_TEST_REPORT")
 if report_path:

@@ -305,6 +305,7 @@ def main() -> int:
                         sys.executable,
                         PROJECT / "tests" / "verify_installer_report.py",
                         installer_report,
+                        primary[1].split()[0],
                     ],
                     blender_version=primary[1],
                 )

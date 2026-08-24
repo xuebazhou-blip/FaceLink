@@ -42,6 +42,51 @@ The durable `transaction_committed` checkpoint lets the user distinguish “resc
 again” from “inspect revision history before retrying” without treating the journal as an
 executable rollback snapshot.
 
+## Blender 任务与恢复中心的数据流
+
+v0.5.0 的第一个界面切片在现有运行时和任务日志之上增加一层只读产品状态模型。Blender
+面板不会直接展示运行时字典，也不会在 `draw()` 中调用会推进任务的快照接口：
+
+1. `JobRuntime.task_center_view()` 在运行时锁内复制允许列表字段，但不处理排队超时、
+   不改变运行时版本，也不持久化任务日志；
+2. `bridge.product_status()` 在生命周期锁内组合任务视图、内存中的恢复状态、本机实例编号
+   和协议版本；
+3. `build_product_status()` 再次验证标识、枚举和数量边界，只向面板返回最多 6 个活动任务
+   和 3 个最近结果；
+4. Blender 定时器在桥接活动/恢复状态下每 0.5 秒、离线空闲时每 2 秒读取这份只读模型，
+   只有模型变化才标记 3D 视图重绘，不访问磁盘、网络或模型提供商。
+
+产品状态明确排除 payload、result、Scene Snapshot、Scene Patch、场景名称和路径、端口、
+原始异常及凭据。取消任务和确认恢复不复用这条只读路径，而是经过显式 Operator、运行时
+控制锁和任务日志持久化。无效任务编号在查找以前失败，避免把任意输入反射回界面或日志。
+
+排队任务取消是即时状态转换。运行任务采用协作式安全检查点；由于 `bpy` 修改在 Blender
+主线程同步执行，长操作占用主线程期间，面板按钮本身可能无法获得执行机会，独立 HTTP/
+MCP 客户端才能并行提交取消请求。取消与完成竞争时保留真实最终状态，并单独标记
+“取消请求后完成”，不使用异步异常强杀 Blender。
+
+取消先更新本次会话的内存状态，再尝试写任务日志。若写入失败，排队任务仍从当前队列移除，
+运行任务仍保留协作式取消请求；HTTP/UI 按两种状态分别报告 `journal_unavailable`，运行
+任务的最终结果明确保持未知，不使用“已经停止”或“不会执行”的错误承诺。
+
+恢复确认只原子更新日志中的确认状态，不重排、重放、应用、撤销或回滚任务。如果写入
+失败，内存恢复状态不提前清除。恢复要求存在时，HTTP 在创建任务前拒绝
+`apply_staged_patch`、`apply_patch`、`undo` 和 `rollback_revision`，返回 HTTP 409 /
+`recovery_review_required`；Blender Operator 也禁用对应入口。扫描、读取、暂存和丢弃等
+不会应用动画或几何变更的操作仍可用于检查；扫描可能为对象补齐 FaceLink 稳定 ID
+元数据。加载其他 `.blend` 以前会停止桥接；加载后清除临时
+暂存和会话回滚快照。首次保存或另存为改变工作区编号时也会停止桥接，用户需为当前文件
+手工重启。未知未来日志版本仍在启动阶段失败关闭并保留原文件。
+
+桥接协议、任务日志和界面状态各自独立版本化：当前桥接协议是 1.13（兼容 1.12），任务
+日志 schema 是 1.0，任务中心状态 schema 也是独立的 1.0。不能根据相同数字假设它们
+可以互换或互相降级。
+
+这一层不负责 Codex/ChatGPT 订阅登录或 API Key 存储，也不读取 `auth.json`。它只是
+Blender 内的桥接、任务和恢复界面。“本机桥接已就绪”不代表 AI 或任何认证方式已经
+连接；完整用户行为见
+[Blender 任务与恢复中心](TASK_CENTER.md)。
+
 协议 1.13 在这个本地边界上增加显式版本协商和关联诊断。每个 HTTP 请求有独立
 `request_id`；客户端工作流提供的随机关联种子经本次桥接 Token 做 HMAC 后，才作为
 `correlation_id` 写入任务生命周期和诊断事件，因此不会把调用方原始种子当成可回显

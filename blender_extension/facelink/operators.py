@@ -6,15 +6,29 @@ from bpy.types import Operator
 
 from . import overlay
 from .bridge import (
+    CancellationPersistenceError,
+    acknowledge_recovery,
     apply_staged_patch,
+    cancel_job,
     discard_staged_patch,
     get_staged_patch,
+    product_status,
     stage_patch,
     start_bridge,
     stop_bridge,
 )
 from .executor import list_revision_history, rollback_to_revision, undo_last_patch
+from .job_journal import JournalError, UnsupportedJournalVersion
+from .job_runtime import JobControlError
 from .snapshot import ensure_entity_id, scan_scene
+
+
+def _set_error(context, code, message):
+    state = context.window_manager.facelink
+    state.last_error_code = code
+    state.startup_error_version = ""
+    state.transition_code = ""
+    state.last_status = message
 
 
 class FACELINK_OT_start_bridge(Operator):
@@ -23,8 +37,35 @@ class FACELINK_OT_start_bridge(Operator):
     bl_description = "Start the authenticated localhost FaceLink bridge"
 
     def execute(self, context):
-        info = start_bridge()
-        context.window_manager.facelink.last_status = (
+        try:
+            info = start_bridge()
+        except UnsupportedJournalVersion as exc:
+            version = exc.requested or "a newer version"
+            message = f"Update FaceLink: existing task data uses schema {version}"
+            _set_error(context, "unsupported_journal_version", message)
+            context.window_manager.facelink.startup_error_version = exc.requested or ""
+            self.report({"ERROR"}, message)
+            return {"CANCELLED"}
+        except JournalError:
+            message = "Task recovery storage is unavailable; check the FaceLink state folder"
+            _set_error(context, "journal_unavailable", message)
+            self.report({"ERROR"}, message)
+            return {"CANCELLED"}
+        except OSError:
+            message = "Could not start the local bridge; check folder and network permissions"
+            _set_error(context, "bridge_initialization_failed", message)
+            self.report({"ERROR"}, message)
+            return {"CANCELLED"}
+        except Exception:
+            message = "FaceLink could not start safely; restart Blender and retry"
+            _set_error(context, "bridge_start_failed", message)
+            self.report({"ERROR"}, message)
+            return {"CANCELLED"}
+        state = context.window_manager.facelink
+        state.last_error_code = ""
+        state.startup_error_version = ""
+        state.transition_code = ""
+        state.last_status = (
             f"Running on 127.0.0.1:{info['port']} ({info['instance_id']})"
         )
         self.report({"INFO"}, "FaceLink bridge started")
@@ -35,10 +76,105 @@ class FACELINK_OT_stop_bridge(Operator):
     bl_idname = "facelink.stop_bridge"
     bl_label = "Stop Bridge"
 
+    def invoke(self, context, event):
+        if product_status()["active_job_count"]:
+            return context.window_manager.invoke_confirm(self, event)
+        return self.execute(context)
+
     def execute(self, context):
         stop_bridge()
-        context.window_manager.facelink.last_status = "Bridge stopped"
+        state = context.window_manager.facelink
+        state.last_error_code = ""
+        state.startup_error_version = ""
+        state.transition_code = ""
+        state.last_status = "Bridge stopped"
         self.report({"INFO"}, "FaceLink bridge stopped")
+        return {"FINISHED"}
+
+
+class FACELINK_OT_refresh_status(Operator):
+    bl_idname = "facelink.refresh_status"
+    bl_label = "Refresh FaceLink Status"
+    bl_description = "Refresh the local connection, task and recovery status"
+
+    def execute(self, context):
+        if context.area is not None:
+            context.area.tag_redraw()
+        self.report({"INFO"}, "FaceLink status refreshed")
+        return {"FINISHED"}
+
+
+class FACELINK_OT_cancel_job(Operator):
+    bl_idname = "facelink.cancel_job"
+    bl_label = "Cancel FaceLink Task"
+    bl_description = "Request cancellation at the next safe checkpoint"
+
+    job_id: StringProperty(name="Job ID", options={"HIDDEN", "SKIP_SAVE"})
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_confirm(self, event)
+
+    def execute(self, context):
+        try:
+            job = cancel_job(self.job_id)
+        except JobControlError as exc:
+            messages = {
+                "job_not_found": "The task is no longer available",
+                "job_not_cancellable": "The task has already finished",
+                "bridge_stopping": "The FaceLink bridge is not running",
+            }
+            message = messages.get(exc.code, "The task could not be cancelled safely")
+            _set_error(context, exc.code, message)
+            self.report({"ERROR"}, message)
+            return {"CANCELLED"}
+        except CancellationPersistenceError as exc:
+            message = (
+                "Cancellation was requested but not saved; check the final task result"
+                if exc.job_status == "running"
+                else "Queued task was removed, but its cancellation record was not saved"
+            )
+            _set_error(context, "journal_unavailable", message)
+            self.report({"ERROR"}, message)
+            return {"CANCELLED"}
+        except JournalError:
+            message = "The cancellation record could not be saved; check the task list"
+            _set_error(context, "journal_unavailable", message)
+            self.report({"ERROR"}, message)
+            return {"CANCELLED"}
+        state = context.window_manager.facelink
+        state.last_error_code = ""
+        if job["status"] == "running":
+            state.last_result = "Cancellation recorded; final outcome appears under Tasks"
+        else:
+            state.last_result = "Queued task cancelled"
+        self.report({"INFO"}, state.last_result)
+        return {"FINISHED"}
+
+
+class FACELINK_OT_acknowledge_recovery(Operator):
+    bl_idname = "facelink.acknowledge_recovery"
+    bl_label = "Confirm Recovery Review"
+    bl_description = "Confirm that recovery guidance was reviewed; this never replays a task"
+
+    @classmethod
+    def poll(cls, _context):
+        return product_status()["recovery"]["required"]
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_confirm(self, event)
+
+    def execute(self, context):
+        try:
+            acknowledge_recovery()
+        except (JobControlError, JournalError):
+            message = "Recovery review could not be saved; keep the scene unchanged and retry"
+            _set_error(context, "journal_unavailable", message)
+            self.report({"ERROR"}, message)
+            return {"CANCELLED"}
+        state = context.window_manager.facelink
+        state.last_error_code = ""
+        state.last_result = "Recovery reviewed; rescan before sending new work"
+        self.report({"INFO"}, state.last_result)
         return {"FINISHED"}
 
 
@@ -158,7 +294,10 @@ class FACELINK_OT_apply_staged_patch(Operator):
 
     @classmethod
     def poll(cls, _context):
-        return get_staged_patch()["staged"]
+        return (
+            get_staged_patch()["staged"]
+            and not product_status()["recovery"]["required"]
+        )
 
     def execute(self, context):
         result = apply_staged_patch()
@@ -212,7 +351,10 @@ class FACELINK_OT_undo_patch(Operator):
 
     @classmethod
     def poll(cls, _context):
-        return list_revision_history()["available_count"] > 0
+        return (
+            list_revision_history()["available_count"] > 0
+            and not product_status()["recovery"]["required"]
+        )
 
     def execute(self, context):
         result = undo_last_patch()
@@ -227,6 +369,10 @@ class FACELINK_OT_rollback_revision(Operator):
     bl_description = "Undo this FaceLink revision and every newer FaceLink revision"
 
     revision_id: StringProperty(name="Revision ID")
+
+    @classmethod
+    def poll(cls, _context):
+        return not product_status()["recovery"]["required"]
 
     def invoke(self, context, event):
         return context.window_manager.invoke_confirm(self, event)
@@ -243,6 +389,9 @@ class FACELINK_OT_rollback_revision(Operator):
 CLASSES = (
     FACELINK_OT_start_bridge,
     FACELINK_OT_stop_bridge,
+    FACELINK_OT_refresh_status,
+    FACELINK_OT_cancel_job,
+    FACELINK_OT_acknowledge_recovery,
     FACELINK_OT_scan_scene,
     FACELINK_OT_demo_patch,
     FACELINK_OT_copy_brief,

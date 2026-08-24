@@ -315,6 +315,58 @@ class JobRuntime:
             self._expire_queued_locked(time.monotonic())
             return self._version, [dict(job) for job in self._jobs.values()]
 
+    def task_center_view(self) -> dict[str, Any]:
+        """Return a content-free UI view without expiring, advancing or persisting jobs."""
+        with self._lock:
+            status_counts = {
+                status: sum(job["status"] == status for job in self._jobs.values())
+                for status in (
+                    "queued",
+                    "running",
+                    "succeeded",
+                    "failed",
+                    "cancelled",
+                    "timed_out",
+                    "interrupted",
+                )
+            }
+            queue_positions = {
+                job_id: position for position, job_id in enumerate(self._pending, start=1)
+            }
+            safe_fields = (
+                "job_id",
+                "type",
+                "status",
+                "checkpoint",
+                "error_code",
+                "cancel_requested",
+                "completed_after_cancel_request",
+                "completed_after_deadline",
+            )
+            jobs = []
+            for job_id, job in self._jobs.items():
+                projected = {field: job[field] for field in safe_fields if field in job}
+                if job_id in queue_positions:
+                    projected["queue_position"] = queue_positions[job_id]
+                jobs.append(projected)
+            return {
+                "version": self._version,
+                "runtime": {
+                    "pending": len(self._pending),
+                    "pending_capacity": self.pending_capacity,
+                    "retained": len(self._jobs),
+                    "retention_capacity": self.retention_capacity,
+                    "status_counts": status_counts,
+                    "cancel_requested": sum(
+                        job["status"] == "running"
+                        and job.get("cancel_requested") is True
+                        for job in self._jobs.values()
+                    ),
+                    "evicted_total": self._evicted_total,
+                },
+                "jobs": jobs,
+            }
+
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             self._expire_queued_locked(time.monotonic())

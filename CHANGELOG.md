@@ -25,6 +25,12 @@ the public API is experimental.
   an atomic, privacy-safe local JSON support report with no automatic upload.
 - Added Chinese compatibility/migration and threat-model documents covering bridge/data version
   boundaries, safe downgrade behavior, local trust limits and BYOK data egress.
+- 在 Blender 侧边栏增加有界的任务与恢复中心，显示连接、队列、活动/最近任务和稳定
+  启动错误，并支持排队任务取消与恢复检查确认。
+- 文件加载前以及首次保存或另存为改变工作区以后会停止桥接，避免新文件继续使用旧
+  `.blend` 的任务日志；文件加载同时清除临时暂存和仅限当前会话的回滚快照。
+- 恢复检查未确认时，Blender UI 禁用应用暂存、撤销和历史回滚；HTTP 还拒绝直接应用，
+  并在创建任务前返回稳定的 `recovery_review_required` 错误。
 
 ### Security
 
@@ -42,6 +48,19 @@ the public API is experimental.
   rejects malformed schemas without reflecting their content.
 - Client correlation seeds are never echoed or persisted directly; the bridge stores a
   session-derived HMAC identifier for troubleshooting instead.
+- 任务中心只读取有界、允许列表中的内存状态，不显示端口、路径、请求正文、结果、原始
+  异常或凭据；未知未来任务日志继续失败关闭并保留原文件。
+- 运行任务取消保持协作式安全检查点语义，不向 Blender 主线程注入异步异常；恢复确认
+  绝不自动重放、应用、撤销或回滚中断任务。
+- 任务面板仅在只读状态模型变化时重绘，桥接活动时约 0.5 秒检查一次，离线空闲时退避
+  到约 2 秒；“本机桥接已就绪”不再暗示 AI 或账号已经连接。
+- 取消状态写入日志失败时分别报告“排队任务已从本会话移除”和“运行任务仅请求取消”，
+  不再错误承诺运行任务已经停止；错误响应和界面均不回显底层异常或路径。
+
+### Fixed
+
+- 安装器报告验收不再硬编码 Blender 4.5，而是校验矩阵本次实际选择的版本，避免 4.2
+  和 5.2 功能通过却被 harness 误报失败。
 
 ## [0.3.9] - 2026-08-24
 
