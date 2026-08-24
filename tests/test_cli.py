@@ -105,6 +105,51 @@ def test_cli_doctor_writes_json_and_returns_failure(monkeypatch, tmp_path):
     assert json.loads(output_path.read_text(encoding="utf-8")) == report
 
 
+def test_cli_diagnostics_exports_locally_and_returns_success(monkeypatch, capsys, tmp_path):
+    output_path = tmp_path / "support.json"
+    captured = {}
+
+    def export(destination, **kwargs):
+        captured.update({"destination": destination, **kwargs})
+        return {
+            "diagnostic_id": "diag-" + "d" * 32,
+            "path": str(output_path.resolve()),
+            "bytes": 512,
+            "sha256": "a" * 64,
+            "uploaded": False,
+        }
+
+    monkeypatch.setattr(cli, "export_diagnostics", export)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "facelink",
+            "diagnostics",
+            "--out",
+            str(output_path),
+            "--blender-exe",
+            "blender-test.exe",
+            "--overwrite",
+        ],
+    )
+
+    cli.main()
+
+    assert captured == {
+        "destination": str(output_path),
+        "blender_exe": "blender-test.exe",
+        "overwrite": True,
+    }
+    assert json.loads(capsys.readouterr().out) == {
+        "diagnostic_id": "diag-" + "d" * 32,
+        "path": str(output_path.resolve()),
+        "bytes": 512,
+        "sha256": "a" * 64,
+        "uploaded": False,
+    }
+
+
 def test_cli_configure_mcp_writes_result(monkeypatch, tmp_path):
     output_path = tmp_path / "configured.json"
     captured = {}

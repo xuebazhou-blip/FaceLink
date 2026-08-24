@@ -19,6 +19,12 @@ the public API is experimental.
   transaction checkpoints.
 - Added authenticated startup-recovery status and acknowledgement endpoints. Interrupted work
   is reported with rescan or revision-history guidance and is never replayed automatically.
+- Added protocol 1.13 explicit health-bootstrap negotiation for exactly 1.12/1.13, per-request
+  IDs and HMAC-derived workflow correlation IDs across responses, jobs, errors and journals.
+- Added an authenticated, bounded Blender diagnostic endpoint plus `facelink diagnostics` for
+  an atomic, privacy-safe local JSON support report with no automatic upload.
+- Added Chinese compatibility/migration and threat-model documents covering bridge/data version
+  boundaries, safe downgrade behavior, local trust limits and BYOK data egress.
 
 ### Security
 
@@ -28,6 +34,14 @@ the public API is experimental.
   camera and audit state instead of injecting an unsafe asynchronous Blender exception.
 - Persisted job records exclude payloads, prompts, patch bodies, results, scene snapshots, raw
   errors, file paths and credentials; corrupt journals are quarantined instead of trusted.
+- Valid future journal schemas now fail closed without quarantine, downgrade, overwrite or
+  automatic replay; unsupported Scene Patch schemas fail before Blender scene mutation.
+- Shareable diagnostics use strict field allowlists, bounded events/jobs/size and a second
+  sensitive-pattern scan; they exclude paths, scene-facing names, request content and secrets.
+- Instance discovery deterministically opens at most 32 records, caps each record at 16 KiB and
+  rejects malformed schemas without reflecting their content.
+- Client correlation seeds are never echoed or persisted directly; the bridge stores a
+  session-derived HMAC identifier for troubleshooting instead.
 
 ## [0.3.9] - 2026-08-24
 

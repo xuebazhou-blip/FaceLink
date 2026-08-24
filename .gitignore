@@ -11,5 +11,6 @@ dist/
 build/
 *.egg-info/
 .env
+auth.json
 facelink-instance.json
 .test-instances/

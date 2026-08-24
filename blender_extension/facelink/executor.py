@@ -41,6 +41,22 @@ REVISION_STACK = []
 MAX_REVISIONS = 50
 MAX_AUDIT_ENTRIES = 100
 AUDIT_LOG_KEY = "facelink_revision_log"
+AUDIT_ENTRY_SCHEMA_VERSION = "1.0"
+SUPPORTED_PATCH_SCHEMA_VERSIONS = ("1.0", "1.1", "1.2", "1.3", "1.4")
+
+
+class UnsupportedSchemaError(ValueError):
+    def __init__(self, schema_kind, requested, supported):
+        super().__init__(f"Unsupported {schema_kind} schema version")
+        self.schema_kind = schema_kind
+        self.requested = (
+            requested
+            if isinstance(requested, str)
+            and 1 <= len(requested) <= 16
+            and all(character.isdigit() or character == "." for character in requested)
+            else None
+        )
+        self.supported = list(supported)
 
 
 def _assert_editable(obj):
@@ -688,8 +704,12 @@ def validate_patch(patch):
     """Validate a patch against the current scene without changing scene content."""
     if not isinstance(patch, dict):
         raise ValueError("Patch must be an object")
-    if patch.get("schema_version") not in {"1.0", "1.1", "1.2", "1.3", "1.4"}:
-        raise ValueError("Unsupported patch schema_version")
+    if patch.get("schema_version") not in SUPPORTED_PATCH_SCHEMA_VERSIONS:
+        raise UnsupportedSchemaError(
+            "scene_patch",
+            patch.get("schema_version"),
+            SUPPORTED_PATCH_SCHEMA_VERSIONS,
+        )
     operations = patch.get("operations")
     if not isinstance(operations, list):
         raise ValueError("Patch operations must be a list")
@@ -1065,6 +1085,7 @@ def _record_revision(revision, operations, warnings):
         operation_types[op] = operation_types.get(op, 0) + 1
     affected_objects = sorted(set(revision["objects"]) | set(revision["new_camera_names"]))
     entry = {
+        "schema_version": AUDIT_ENTRY_SCHEMA_VERSION,
         "revision_id": revision["revision_id"],
         "patch_id": revision["patch_id"],
         "source_title": revision["source_title"],

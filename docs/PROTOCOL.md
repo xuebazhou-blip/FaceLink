@@ -1,12 +1,16 @@
-# Local bridge protocol 1.12
+# Local bridge protocol 1.13
 
 The Blender extension writes one JSON discovery record per running Blender process. The
 directory is `${FACELINK_INSTANCE_DIR}` when configured, otherwise
-`${TEMP}/facelink/instances`.
+`${TEMP}/facelink/instances`. Protocol 1.13 deliberately keeps the discovery record on the
+1.12 field set so an unchanged 1.12 client can still parse it; protocol negotiation happens
+through authenticated health instead of a new required discovery field.
 
 All requests require `Authorization: Bearer <token>` from that record. Health includes the
 additive `facelink_version` field so sidecars can report extension/host version skew without
-reading or exposing the discovery token.
+reading or exposing the discovery token. Protocol 1.13 explicitly negotiates only versions
+`1.12` and `1.13`; the complete policy is documented in
+[COMPATIBILITY.md](COMPATIBILITY.md).
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -16,9 +20,45 @@ reading or exposing the discovery token.
 | `POST` | `/v1/jobs/{id}/cancel` | Cancel queued work or request a safe running cancellation |
 | `GET` | `/v1/recovery` | Inspect interrupted work from the previous bridge session |
 | `POST` | `/v1/recovery/acknowledge` | Acknowledge the current recovery report |
+| `GET` | `/v1/diagnostics` | Read bounded, allowlisted bridge support metadata |
 
 Supported jobs are `scan_scene`, `stage_patch`, `get_staged_patch`,
 `apply_staged_patch`, `discard_staged_patch`, `apply_patch` and `undo`.
+
+## 协议协商、关联编号与安全诊断
+
+`GET /v1/health` 是经过 Bearer Token 认证、但不受请求协议版本限制的启动入口。客户端
+读取响应体中的 `protocol_version` 和 `protocol_compatibility.supported_versions`，从双方
+明确支持的 `1.12`、`1.13` 中选择最高交集。其他请求必须通过
+`FaceLink-Protocol-Version` 请求头发送选定版本；省略该头只为旧客户端提供 `1.12`
+语义。格式非法时返回 HTTP 400 / `invalid_protocol_version`，无明确交集时返回 HTTP 426 /
+`unsupported_protocol_version`，并在读取任务正文或进入队列前拒绝。
+
+协议 1.13 给每个受支持的 `GET`/`POST` 响应生成独立的 `request_id`，并给一个客户端
+工作流提供 `correlation_id`。Python 客户端发送形如 `corr-<32 lowercase hex>` 的随机
+关联种子。
+桥接使用本次启动的 Bearer Token 对该种子做 HMAC，记录和返回派生后的关联编号，不
+回显调用方原种子；相同种子在同一次桥接会话内得到相同关联编号，桥接重启后会变化。
+服务端生成的编号同时出现在 JSON 响应及 `X-FaceLink-Request-ID`、
+`X-FaceLink-Correlation-ID` 响应头中，已接收任务的脱敏生命周期记录也保留这两个编号。
+关联编号只用于排错，不是身份验证或授权凭据。非法关联编号返回
+`invalid_correlation_id`。
+
+经过认证的 `GET /v1/diagnostics` 返回诊断结构 `1.0`，包括版本、能力、有界队列/恢复
+计数、最多 64 个脱敏任务以及最多 256 个脱敏请求事件。事件只记录时间、请求/关联/
+任务编号、`GET`/`POST`、模板化路由、HTTP 状态和稳定错误/任务状态；查询参数、具体
+未知路径、请求正文、任务 payload/result、场景内容、绝对路径、Token、Key 和原始异常
+均不进入事件缓冲区。该端点不会上传数据。
+
+用于对外分享时不要直接分享 `facelink doctor` 原始输出，而应运行：
+
+```powershell
+facelink diagnostics --out facelink-diagnostics.json
+```
+
+该命令在本地把 Doctor 结果和桥接诊断再次按严格允许列表投影，执行敏感模式扫描，
+以原子方式写出最多 1 MiB 的单个 JSON，且不会自动上传。完整隐私边界见
+[THREAT_MODEL.md](THREAT_MODEL.md)。
 
 ## Bounded jobs and stable errors
 
@@ -75,11 +115,15 @@ HTTP 429 responses also include `Retry-After: 1`. Request-level stable codes are
 `authentication_required`, `route_not_found`, `job_not_found`, `invalid_content_length`,
 `invalid_request_size`, `request_too_large`, `invalid_json`, `invalid_request`,
 `unsupported_job_type`, `invalid_job_payload`, `queue_full`, `job_registry_full`,
-`journal_unavailable` and `bridge_stopping`. Request bodies are limited to 4 MiB.
+`journal_unavailable`, `bridge_stopping`, `invalid_correlation_id`,
+`invalid_protocol_version` and `unsupported_protocol_version`. Request bodies are limited to
+4 MiB.
 
 A failed job record uses `invalid_job_payload` for missing or type-invalid payload data,
 `job_rejected` for a valid request rejected by scene-aware validation, and `internal_error` for
 an unexpected implementation failure. Unexpected exception text is not returned to the client.
+An unknown Scene Patch `schema_version` uses `unsupported_schema_version` and is rejected before
+scene mutation.
 The Python bridge client exposes these fields through `BridgeError`, which remains a
 `RuntimeError` subclass for compatibility with existing callers.
 
@@ -143,6 +187,12 @@ recovery response explicitly advises saving before cross-process recovery can be
 Writes use a same-directory temporary file, flush and atomic replacement. A malformed journal
 is preserved with a `.corrupt-<timestamp>` suffix and startup reports
 `recovery_journal_corrupt` instead of silently trusting or deleting it.
+
+A syntactically valid journal with an unsupported `schema_version`—future or older without an
+available migrator—is not treated as corruption. The extension fails closed during bridge
+startup and leaves the original bytes in place: it does not quarantine, overwrite, downgrade
+or replay that journal. Use the FaceLink version that created it after backing up the state
+directory; never edit only the version string to bypass this guard.
 
 Lifecycle checkpoints are `accepted`, `main_thread_started`, `transaction_committed` and
 `terminal`. Patch execution persists `transaction_committed` only after the Blender revision
@@ -403,7 +453,9 @@ guard.
 Each successful apply receives a unique `revision_id`. Audit metadata—including patch ID,
 title, operation types, affected objects, warnings, timestamps and applied/reverted status—is
 stored as JSON on the Blender Scene and therefore survives `.blend` save/load. Up to 100
-audit entries are retained.
+audit entries are retained. New entries declare `schema_version: "1.0"`; older dictionary
+entries without that field remain displayable. Because the audit contains scene-facing names,
+it is not part of the privacy-safe diagnostic format.
 
 The actual rollback snapshots contain live Blender datablock references and remain in memory,
 with a maximum of 50 revisions. After reopening a `.blend`, history entries remain visible

@@ -2,6 +2,7 @@ import hashlib
 import http.client
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -19,30 +20,67 @@ state_root = PROJECT / ".cache" / "bridge-state" / str(os.getpid())
 os.environ["FACELINK_INSTANCE_DIR"] = str(instance_root)
 os.environ["FACELINK_STATE_DIR"] = str(state_root)
 
+from facelink.job_journal import UnsupportedJournalVersion  # noqa: E402
+
 import facelink as blender_addon  # noqa: E402
 from facelink import bridge  # noqa: E402
 from facelink import executor as blender_executor  # noqa: E402
 
+REQUEST_ID_PATTERN = re.compile(r"^req-[0-9a-f]{16}$")
+CORRELATION_ID_PATTERN = re.compile(r"^corr-[0-9a-f]{32}$")
 
-def request_json_response(method, url, token, payload=None, raw_data=None):
+
+def request_json_response_with_headers(
+    method,
+    url,
+    token,
+    payload=None,
+    raw_data=None,
+    extra_headers=None,
+):
     data = raw_data
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    headers.update(extra_headers or {})
     request = urllib.request.Request(
         url,
         data=data,
         method=method,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        },
+        headers=headers,
     )
     with urllib.request.urlopen(request, timeout=3) as response:
-        return response.status, json.loads(response.read().decode("utf-8"))
+        return (
+            response.status,
+            json.loads(response.read().decode("utf-8")),
+            response.headers,
+        )
 
 
-def request_json(method, url, token, payload=None, raw_data=None):
-    return request_json_response(method, url, token, payload, raw_data)[1]
+def request_json_response(method, url, token, payload=None, raw_data=None, extra_headers=None):
+    status, response, _headers = request_json_response_with_headers(
+        method,
+        url,
+        token,
+        payload,
+        raw_data,
+        extra_headers,
+    )
+    return status, response
+
+
+def request_json(method, url, token, payload=None, raw_data=None, extra_headers=None):
+    return request_json_response(
+        method,
+        url,
+        token,
+        payload,
+        raw_data,
+        extra_headers,
+    )[1]
 
 
 def expect_http_error(status, function, *, error_code=None):
@@ -58,13 +96,31 @@ def expect_http_error(status, function, *, error_code=None):
         raise AssertionError(f"Expected HTTP {status}")
 
 
-def request_with_declared_size(port, token, declared_size):
+def assert_response_envelope(payload, headers):
+    assert REQUEST_ID_PATTERN.fullmatch(payload["request_id"]), payload
+    assert CORRELATION_ID_PATTERN.fullmatch(payload["correlation_id"]), payload
+    assert headers["X-FaceLink-Request-ID"] == payload["request_id"]
+    assert headers["X-FaceLink-Correlation-ID"] == payload["correlation_id"]
+
+
+def request_with_declared_size(
+    port,
+    token,
+    declared_size,
+    *,
+    protocol_version=None,
+    correlation_id=None,
+):
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
     try:
         connection.putrequest("POST", "/v1/jobs")
         connection.putheader("Authorization", f"Bearer {token}")
         connection.putheader("Content-Type", "application/json")
         connection.putheader("Content-Length", str(declared_size))
+        if protocol_version is not None:
+            connection.putheader("FaceLink-Protocol-Version", protocol_version)
+        if correlation_id is not None:
+            connection.putheader("X-FaceLink-Correlation-ID", correlation_id)
         connection.endheaders()
         response = connection.getresponse()
         return response.status, json.loads(response.read().decode("utf-8"))
@@ -72,10 +128,15 @@ def request_with_declared_size(port, token, declared_size):
         connection.close()
 
 
-def wait_job(base_url, token, job_id):
+def wait_job(base_url, token, job_id, *, extra_headers=None):
     deadline = time.monotonic() + 8
     while time.monotonic() < deadline:
-        job = request_json("GET", f"{base_url}/v1/jobs/{job_id}", token)
+        job = request_json(
+            "GET",
+            f"{base_url}/v1/jobs/{job_id}",
+            token,
+            extra_headers=extra_headers,
+        )
         if job["status"] in {
             "succeeded",
             "failed",
@@ -88,11 +149,25 @@ def wait_job(base_url, token, job_id):
     raise TimeoutError(job_id)
 
 
-def submit(base_url, token, job_type, payload=None, timeout_ms=None):
+def submit(
+    base_url,
+    token,
+    job_type,
+    payload=None,
+    timeout_ms=None,
+    *,
+    extra_headers=None,
+):
     request = {"type": job_type, "payload": payload or {}}
     if timeout_ms is not None:
         request["timeout_ms"] = timeout_ms
-    return request_json("POST", f"{base_url}/v1/jobs", token, request)["job_id"]
+    return request_json(
+        "POST",
+        f"{base_url}/v1/jobs",
+        token,
+        request,
+        extra_headers=extra_headers,
+    )["job_id"]
 
 
 def fingerprint_snapshot(snapshot, entity_ids):
@@ -136,12 +211,122 @@ def client_flow(result_box):
         record = json.loads(record_path.read_text(encoding="utf-8"))
         base_url = f"http://127.0.0.1:{record['port']}"
         token = record["token"]
+        assert "protocol_version" not in record
 
-        expect_http_error(
+        client_correlation = "corr-0123456789abcdef0123456789abcdef"
+        status, bootstrap_health, bootstrap_headers = request_json_response_with_headers(
+            "GET",
+            f"{base_url}/v1/health",
+            token,
+            extra_headers={
+                "FaceLink-Protocol-Version": "99.invalid",
+                "X-FaceLink-Correlation-ID": client_correlation,
+            },
+        )
+        assert status == 200
+        assert bootstrap_health["protocol_version"] == "1.13"
+        assert bootstrap_headers["FaceLink-Protocol-Version"] == "1.13"
+        assert bootstrap_health["correlation_id"] != client_correlation
+        assert_response_envelope(bootstrap_health, bootstrap_headers)
+
+        for accepted_version in (None, "1.12", "1.13"):
+            headers = {"X-FaceLink-Correlation-ID": client_correlation}
+            if accepted_version is not None:
+                headers["FaceLink-Protocol-Version"] = accepted_version
+            response_status, response_payload, response_headers = (
+                request_json_response_with_headers(
+                    "GET",
+                    f"{base_url}/v1/recovery",
+                    token,
+                    extra_headers=headers,
+                )
+            )
+            assert response_status == 200
+            assert_response_envelope(response_payload, response_headers)
+            assert response_payload["correlation_id"] == bootstrap_health["correlation_id"]
+            assert response_headers["FaceLink-Protocol-Version"] == (
+                accepted_version or "1.12"
+            )
+
+        for rejected_version in ("1.11", "1.14", "2.0"):
+            rejected_payload, rejected_headers = expect_http_error(
+                426,
+                lambda version=rejected_version: request_json(
+                    "GET",
+                    f"{base_url}/v1/recovery",
+                    token,
+                    extra_headers={"FaceLink-Protocol-Version": version},
+                ),
+                error_code="unsupported_protocol_version",
+            )
+            assert_response_envelope(rejected_payload, rejected_headers)
+            assert rejected_headers["FaceLink-Protocol-Version"] == "1.13"
+            assert rejected_payload["details"] == {
+                "requested": rejected_version,
+                "supported_versions": ["1.12", "1.13"],
+                "min_supported": "1.12",
+                "max_supported": "1.13",
+            }
+            assert rejected_payload["retryable"] is False
+
+        for malformed_version in (
+            "1",
+            "01.13",
+            "1.013",
+            "v1.13",
+            "1234567890.13",
+        ):
+            malformed_payload, malformed_headers = expect_http_error(
+                400,
+                lambda version=malformed_version: request_json(
+                    "GET",
+                    f"{base_url}/v1/recovery",
+                    token,
+                    extra_headers={"FaceLink-Protocol-Version": version},
+                ),
+                error_code="invalid_protocol_version",
+            )
+            assert_response_envelope(malformed_payload, malformed_headers)
+            assert "requested" not in malformed_payload["details"]
+
+        invalid_correlation_payload, invalid_correlation_headers = expect_http_error(
+            400,
+            lambda: request_json(
+                "GET",
+                f"{base_url}/v1/health",
+                token,
+                extra_headers={"X-FaceLink-Correlation-ID": "private-log-injection"},
+            ),
+            error_code="invalid_correlation_id",
+        )
+        assert_response_envelope(invalid_correlation_payload, invalid_correlation_headers)
+        assert "private-log-injection" not in json.dumps(invalid_correlation_payload)
+
+        runtime_before_protocol_rejection = bridge.Runtime.job_runtime.snapshot()
+        status, early_rejection = request_with_declared_size(
+            record["port"],
+            token,
+            bridge.MAX_REQUEST_BYTES + 1,
+            protocol_version="2.0",
+        )
+        assert status == 426
+        assert early_rejection["error_code"] == "unsupported_protocol_version"
+        status, early_malformed = request_with_declared_size(
+            record["port"],
+            token,
+            0,
+            protocol_version="1",
+        )
+        assert status == 400
+        assert early_malformed["error_code"] == "invalid_protocol_version"
+        assert bridge.Runtime.job_runtime.snapshot() == runtime_before_protocol_rejection
+
+        auth_payload, auth_headers = expect_http_error(
             401,
             lambda: request_json("GET", f"{base_url}/v1/health", "wrong-token"),
             error_code="authentication_required",
         )
+        assert_response_envelope(auth_payload, auth_headers)
         expect_http_error(
             404,
             lambda: request_json("GET", f"{base_url}/v1/jobs/not-found", token),
@@ -199,7 +384,10 @@ def client_flow(result_box):
             error_code="unsupported_job_type",
         )
 
-        health = request_json("GET", f"{base_url}/v1/health", token)
+        _, health, health_headers = request_json_response_with_headers(
+            "GET", f"{base_url}/v1/health", token
+        )
+        assert_response_envelope(health, health_headers)
         assert {"timeline_diagnostics", "viewport_preview"} <= set(health["capabilities"])
         assert {
             "navigation_mesh_paths",
@@ -224,7 +412,28 @@ def client_flow(result_box):
             "persistent_job_journal",
             "startup_recovery",
         } <= set(health["capabilities"])
-        assert health["protocol_version"] == "1.12"
+        assert health["protocol_version"] == "1.13"
+        assert {
+            "correlation_ids",
+            "sanitized_diagnostics",
+            "protocol_negotiation",
+        } <= set(health["capabilities"])
+        assert health["protocol_compatibility"] == {
+            "min_supported": "1.12",
+            "max_supported": "1.13",
+            "supported_versions": ["1.12", "1.13"],
+            "legacy_default": "1.12",
+            "request_header": "FaceLink-Protocol-Version",
+            "minor_versions_are_additive": True,
+        }
+        assert health["schema_versions"]["scene_patch"]["accept"] == [
+            "1.0",
+            "1.1",
+            "1.2",
+            "1.3",
+            "1.4",
+        ]
+        assert health_headers["FaceLink-Protocol-Version"] == "1.13"
         assert health["job_control"] == {
             "cancel_endpoint": "/v1/jobs/{id}/cancel",
             "max_timeout_ms": 3_600_000,
@@ -240,6 +449,148 @@ def client_flow(result_box):
         assert health["job_runtime"]["retention_capacity"] == 256
         assert health["job_runtime"]["pending"] == 0
         assert health["job_runtime"]["cancel_requested"] == 0
+
+        private_prompt = "FACELINK_PRIVATE_DIAGNOSTIC_PROMPT"
+        private_key = "sk-" + "D" * 40
+        query_correlation = "corr-11111111111111111111111111111111"
+        submit_status, submitted_job, submitted_headers = request_json_response_with_headers(
+            "POST",
+            f"{base_url}/v1/jobs",
+            token,
+            {
+                "type": "scan_scene",
+                "payload": {"prompt": private_prompt, "api_key": private_key},
+            },
+            extra_headers={
+                "FaceLink-Protocol-Version": "1.13",
+                "X-FaceLink-Correlation-ID": client_correlation,
+            },
+        )
+        assert submit_status == 202
+        assert_response_envelope(submitted_job, submitted_headers)
+        diagnostic_job_id = submitted_job["job_id"]
+        submission_request_id = submitted_job["request_id"]
+        submission_correlation_id = submitted_job["correlation_id"]
+        assert submitted_job["submission_request_id"] == submission_request_id
+        assert submitted_job["job_correlation_id"] == submission_correlation_id
+        assert submission_correlation_id == bootstrap_health["correlation_id"]
+        diagnostic_job = wait_job(
+            base_url,
+            token,
+            diagnostic_job_id,
+            extra_headers={
+                "FaceLink-Protocol-Version": "1.13",
+                "X-FaceLink-Correlation-ID": query_correlation,
+            },
+        )
+        assert diagnostic_job["status"] == "succeeded"
+        assert diagnostic_job["job_correlation_id"] == submission_correlation_id
+        assert diagnostic_job["correlation_id"] != submission_correlation_id
+        assert diagnostic_job["submission_request_id"] == submission_request_id
+        assert diagnostic_job["request_id"] != submission_request_id
+        _, queried_job, queried_headers = request_json_response_with_headers(
+            "GET",
+            f"{base_url}/v1/jobs/{diagnostic_job_id}",
+            token,
+            extra_headers={
+                "FaceLink-Protocol-Version": "1.13",
+                "X-FaceLink-Correlation-ID": query_correlation,
+            },
+        )
+        assert_response_envelope(queried_job, queried_headers)
+        query_correlation_id = queried_job["correlation_id"]
+        assert queried_job["job_correlation_id"] == submission_correlation_id
+        assert queried_job["submission_request_id"] == submission_request_id
+        assert query_correlation_id == diagnostic_job["correlation_id"]
+        assert query_correlation_id != submission_correlation_id
+
+        expect_http_error(
+            401,
+            lambda: request_json("GET", f"{base_url}/v1/diagnostics", "wrong-token"),
+            error_code="authentication_required",
+        )
+        _, diagnostics, diagnostic_headers = request_json_response_with_headers(
+            "GET",
+            f"{base_url}/v1/diagnostics",
+            token,
+            extra_headers={
+                "FaceLink-Protocol-Version": "1.13",
+                "X-FaceLink-Correlation-ID": client_correlation,
+            },
+        )
+        assert_response_envelope(diagnostics, diagnostic_headers)
+        assert diagnostics["schema_version"] == "1.0"
+        assert diagnostics["events"]["capacity"] == 256
+        assert diagnostics["events"]["events"]
+        assert diagnostics["events"]["retained"] == len(
+            diagnostics["events"]["events"]
+        )
+        assert diagnostics["events"]["retained"] <= 256
+        assert diagnostics["recent_jobs"]
+        assert len(diagnostics["recent_jobs"]) <= 64
+        diagnostic_record = next(
+            job for job in diagnostics["recent_jobs"] if job["job_id"] == diagnostic_job_id
+        )
+        assert diagnostic_record["status"] == "succeeded"
+        assert diagnostic_record["submission_request_id"] == submission_request_id
+        assert diagnostic_record["job_correlation_id"] == submission_correlation_id
+        submitted_event = next(
+            event
+            for event in diagnostics["events"]["events"]
+            if event.get("job_id") == diagnostic_job_id
+            and event["method"] == "POST"
+            and event["route"] == "/v1/jobs"
+        )
+        assert submitted_event["request_id"] == submission_request_id
+        assert submitted_event["correlation_id"] == submission_correlation_id
+        queried_event = next(
+            event
+            for event in diagnostics["events"]["events"]
+            if event.get("job_id") == diagnostic_job_id
+            and event["method"] == "GET"
+            and event["request_id"] == queried_job["request_id"]
+        )
+        assert queried_event["correlation_id"] == query_correlation_id
+        assert all(
+            event["route"]
+            in {
+                "/v1/health",
+                "/v1/jobs",
+                "/v1/jobs/{id}",
+                "/v1/jobs/{id}/cancel",
+                "/v1/recovery",
+                "/v1/recovery/acknowledge",
+                "/v1/diagnostics",
+                "/unmatched",
+            }
+            for event in diagnostics["events"]["events"]
+        )
+        diagnostic_text = json.dumps(diagnostics, ensure_ascii=False)
+        for secret in (
+            token,
+            client_correlation,
+            query_correlation,
+            private_prompt,
+            private_key,
+            str(instance_root),
+            str(state_root),
+            "Bridge Actor",
+            "Bridge Obstacle",
+        ):
+            assert secret not in diagnostic_text
+        journal_text = bridge.Runtime.job_journal.path.read_text(encoding="utf-8")
+        assert private_prompt not in journal_text
+        assert private_key not in journal_text
+        assert client_correlation not in journal_text
+        assert query_correlation not in journal_text
+        journal_payload = json.loads(journal_text)
+        journal_record = next(
+            job for job in journal_payload["jobs"] if job["job_id"] == diagnostic_job_id
+        )
+        assert journal_record["submission_request_id"] == submission_request_id
+        assert journal_record["job_correlation_id"] == submission_correlation_id
+        assert query_correlation_id not in journal_text
+
         scan_ids = [submit(base_url, token, "scan_scene") for _ in range(3)]
         assert len(set(scan_ids)) == 3
         scans = [wait_job(base_url, token, job_id) for job_id in scan_ids]
@@ -251,6 +602,132 @@ def client_flow(result_box):
         assert snapshot["navigation_environment_fingerprint"].startswith("nav-")
         assert len(snapshot["navigation_meshes"]) == 1
         actor = next(item for item in snapshot["entities"] if item["name"] == "Bridge Actor")
+
+        audit_before_schema_rejections = bpy.context.scene.get(
+            blender_executor.AUDIT_LOG_KEY
+        )
+        revisions_before_schema_rejections = list(blender_executor.REVISION_STACK)
+        actor_object = bpy.data.objects["Bridge Actor"]
+        actor_location_before_schema_rejections = tuple(actor_object.location)
+        actions_before_schema_rejections = set(bpy.data.actions.keys())
+        scene_timing_before_schema_rejections = (
+            bpy.context.scene.frame_start,
+            bpy.context.scene.frame_end,
+            bpy.context.scene.frame_current,
+            bpy.context.scene.render.fps,
+            bpy.context.scene.render.fps_base,
+        )
+
+        def actor_animation_state():
+            animation = actor_object.animation_data
+            if animation is None or animation.action is None:
+                return None
+            action = animation.action
+            return (
+                action.name,
+                tuple(
+                    (
+                        curve.data_path,
+                        curve.array_index,
+                        tuple(
+                            (float(point.co[0]), float(point.co[1]))
+                            for point in curve.keyframe_points
+                        ),
+                    )
+                    for curve in action.fcurves
+                ),
+            )
+
+        animation_before_schema_rejections = actor_animation_state()
+        private_schema_value = "PRIVATE_SCHEMA_SECRET"
+        invalid_schema_values = (
+            "0.9",
+            "1.5",
+            "2.0",
+            None,
+            14,
+            private_schema_value,
+        )
+        for index, invalid_schema in enumerate(invalid_schema_values):
+            invalid_patch = {
+                "patch_id": f"unsupported-schema-{index}",
+                "source_title": "must not mutate",
+                "operations": [
+                    {
+                        "op": "keyframe_transform",
+                        "entity_id": actor["id"],
+                        "payload": {
+                            "frames": [
+                                {"frame": 1, "location": [0, 0, 0]},
+                                {"frame": 5, "location": [9, 8, 7]},
+                            ],
+                            "space": "WORLD",
+                        },
+                    }
+                ],
+            }
+            if invalid_schema is not None:
+                invalid_patch["schema_version"] = invalid_schema
+            rejected_schema_job = wait_job(
+                base_url,
+                token,
+                submit(
+                    base_url,
+                    token,
+                    "apply_patch",
+                    {"patch": invalid_patch},
+                ),
+            )
+            assert rejected_schema_job["status"] == "failed"
+            assert rejected_schema_job["error_code"] == "unsupported_schema_version"
+            assert rejected_schema_job["details"]["schema_kind"] == "scene_patch"
+            assert rejected_schema_job["details"]["supported"] == [
+                "1.0",
+                "1.1",
+                "1.2",
+                "1.3",
+                "1.4",
+            ]
+            expected_requested = (
+                invalid_schema
+                if isinstance(invalid_schema, str)
+                and all(character.isdigit() or character == "." for character in invalid_schema)
+                else None
+            )
+            assert rejected_schema_job["details"]["requested"] == expected_requested
+            assert private_schema_value not in json.dumps(rejected_schema_job)
+        assert bridge.Runtime.staged_patch is None
+        assert bridge.Runtime.staged_summary is None
+        assert bpy.context.scene.get(blender_executor.AUDIT_LOG_KEY) == (
+            audit_before_schema_rejections
+        )
+        assert blender_executor.REVISION_STACK == revisions_before_schema_rejections
+        assert tuple(bpy.data.objects["Bridge Actor"].location) == (
+            actor_location_before_schema_rejections
+        )
+        assert set(bpy.data.actions.keys()) == actions_before_schema_rejections
+        assert actor_animation_state() == animation_before_schema_rejections
+        assert (
+            bpy.context.scene.frame_start,
+            bpy.context.scene.frame_end,
+            bpy.context.scene.frame_current,
+            bpy.context.scene.render.fps,
+            bpy.context.scene.render.fps_base,
+        ) == scene_timing_before_schema_rejections
+
+        legacy_entry = {
+            "revision_id": "rev-legacy-entry",
+            "patch_id": "legacy-patch",
+            "status": "reverted",
+        }
+        bpy.context.scene[blender_executor.AUDIT_LOG_KEY] = json.dumps([legacy_entry])
+        legacy_history = bridge.list_revision_history()
+        assert legacy_history["entries"][0]["revision_id"] == "rev-legacy-entry"
+        assert "schema_version" not in legacy_history["entries"][0]
+        if audit_before_schema_rejections is None:
+            del bpy.context.scene[blender_executor.AUDIT_LOG_KEY]
+        else:
+            bpy.context.scene[blender_executor.AUDIT_LOG_KEY] = audit_before_schema_rejections
 
         composition_patch = {
             "schema_version": "1.2",
@@ -415,6 +892,7 @@ def client_flow(result_box):
         history = history_job["result"]
         assert history["available_count"] == 1
         assert [entry["status"] for entry in history["entries"]] == ["applied", "reverted"]
+        assert all(entry["schema_version"] == "1.0" for entry in history["entries"])
         first_revision_id = apply_job["result"]["receipt"]["revision_id"]
         rollback_job = wait_job(
             base_url,
@@ -448,6 +926,13 @@ def client_flow(result_box):
             rollback_via_bridge=True,
             failed_job_error=failed_job["error"],
             failed_job_error_code=failed_job["error_code"],
+            protocol_negotiation=True,
+            previous_protocol_compatibility=True,
+            unsupported_protocol_rejected_before_body=True,
+            correlation_chain=True,
+            sanitized_diagnostics=True,
+            unsupported_schema_zero_mutation=True,
+            revision_audit_schema=True,
         )
     except Exception as exc:
         result_box.update(status="failed", error=str(exc), traceback=traceback.format_exc())
@@ -782,6 +1267,67 @@ assert stopped_journal["clean_shutdown"] is True
 assert stopped_journal["recovery"]["required"] is False
 assert "FACELINK_PRIVATE_RECOVERY_PROMPT" not in journal_path.read_text(encoding="utf-8")
 assert "FACELINK_PRIVATE_RECOVERY_KEY" not in journal_path.read_text(encoding="utf-8")
+
+original_instance_writer = bridge._write_instance_record
+
+
+def fail_instance_discovery_write(_path, _record):
+    raise OSError("injected discovery write failure")
+
+
+bridge._write_instance_record = fail_instance_discovery_write
+try:
+    bridge.start_bridge()
+except OSError as exc:
+    assert "injected discovery write failure" in str(exc)
+else:
+    raise AssertionError("Bridge unexpectedly survived a failed discovery-record write")
+finally:
+    bridge._write_instance_record = original_instance_writer
+assert bridge.Runtime.server is None
+assert bridge.Runtime.thread is None
+assert bridge.Runtime.instance_file is None
+assert bridge.Runtime.token is None
+assert bridge.Runtime.job_journal is None
+assert not list(instance_root.glob("*.json"))
+
+restart_after_failure = bridge.start_bridge()
+assert restart_after_failure["port"] > 0
+restart_instance_file = Path(bridge.Runtime.instance_file)
+assert restart_instance_file.exists()
+bridge.stop_bridge()
+assert not restart_instance_file.exists()
+assert bridge.is_running() is False
+
+last_good_journal = journal_path.read_bytes()
+future_journal = (
+    json.dumps(
+        {
+            "schema_version": "2.0",
+            "workspace_id": seed_workspace_id,
+            "jobs": [],
+            "future_private_field": "preserve-exactly",
+        },
+        separators=(",", ":"),
+    )
+    + "\r\n"
+).encode("utf-8")
+journal_path.write_bytes(future_journal)
+try:
+    bridge.start_bridge()
+except UnsupportedJournalVersion as exc:
+    assert exc.requested == "2.0"
+else:
+    raise AssertionError("Bridge unexpectedly opened a future task journal")
+assert journal_path.read_bytes() == future_journal
+assert bridge.Runtime.server is None
+assert bridge.Runtime.thread is None
+assert bridge.Runtime.instance_file is None
+assert bridge.Runtime.token is None
+assert bridge.Runtime.job_journal is None
+assert not list(instance_root.glob("*.json"))
+journal_path.write_bytes(last_good_journal)
+
 result.update(
     suite="blender_bridge_acceptance",
     blender_version=bpy.app.version_string,
@@ -799,6 +1345,9 @@ result.update(
     recovery_acknowledgement_http=True,
     persistent_journal_privacy=True,
     clean_shutdown_journal=True,
+    failed_start_cleanup=True,
+    restart_after_failed_start=True,
+    future_journal_bridge_fail_closed=True,
 )
 report_path = os.environ.get("FACELINK_TEST_REPORT")
 if report_path:

@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import threading
 import time
 import uuid
@@ -12,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 JOURNAL_SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION_PATTERN = re.compile(r"^(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})$")
 MAX_JOURNAL_JOBS = 256
 RECOVERY_STATUSES = frozenset({"queued", "running", "interrupted"})
 MUTATING_JOB_TYPES = frozenset(
@@ -19,6 +21,8 @@ MUTATING_JOB_TYPES = frozenset(
 )
 SAFE_RECORD_FIELDS = (
     "job_id",
+    "submission_request_id",
+    "job_correlation_id",
     "type",
     "status",
     "created_at",
@@ -44,6 +48,21 @@ SAFE_RECORD_FIELDS = (
 
 class JournalError(RuntimeError):
     pass
+
+
+class UnsupportedJournalVersion(JournalError):
+    def __init__(self, requested: Any) -> None:
+        self.requested = (
+            requested
+            if isinstance(requested, str)
+            and 1 <= len(requested) <= 16
+            and all(character.isdigit() or character == "." for character in requested)
+            else None
+        )
+        super().__init__(
+            "Unsupported task journal schema. Upgrade FaceLink; "
+            "the original journal was left unchanged."
+        )
 
 
 def workspace_identity(blend_filepath: str, process_id: int) -> tuple[str, bool]:
@@ -128,7 +147,7 @@ class JobJournal:
                     previous = self._read_payload()
                 except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
                     corrupt_reason = type(exc).__name__
-                    self._quarantine_corrupt_file()
+                    self._quarantine_file("corrupt")
             if corrupt_reason:
                 self._recovery = {
                     "required": True,
@@ -204,8 +223,14 @@ class JobJournal:
         payload = json.loads(self.path.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
             raise TypeError("Journal root must be an object")
-        if payload.get("schema_version") != JOURNAL_SCHEMA_VERSION:
-            raise ValueError("Unsupported journal schema")
+        schema_version = payload.get("schema_version")
+        if (
+            not isinstance(schema_version, str)
+            or SCHEMA_VERSION_PATTERN.fullmatch(schema_version) is None
+        ):
+            raise ValueError("Journal schema_version is missing or malformed")
+        if schema_version != JOURNAL_SCHEMA_VERSION:
+            raise UnsupportedJournalVersion(schema_version)
         if payload.get("workspace_id") != self.workspace_id:
             raise ValueError("Journal workspace mismatch")
         if not isinstance(payload.get("jobs"), list):
@@ -285,27 +310,30 @@ class JobJournal:
             "guidance": guidance,
         }
 
-    def _quarantine_corrupt_file(self) -> None:
-        suffix = f".corrupt-{time.time_ns()}"
+    def _quarantine_file(self, reason: str) -> None:
+        suffix = f".{reason}-{time.time_ns()}"
         target = self.path.with_name(self.path.name + suffix)
         try:
             os.replace(self.path, target)
         except OSError as exc:
-            raise JournalError("Could not preserve the corrupt task journal.") from exc
+            raise JournalError("Could not preserve the previous task journal.") from exc
 
     def _write_payload(self, payload: dict[str, Any]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_name(f".{self.path.name}.{uuid.uuid4().hex}.tmp")
         encoded = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
         try:
-            with temporary.open("x", encoding="utf-8", newline="\n") as handle:
+            descriptor = os.open(
+                temporary,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+            )
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
                 handle.write(encoded)
                 handle.write("\n")
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temporary, self.path)
-            if os.name != "nt":
-                os.chmod(self.path, 0o600)
         except OSError as exc:
             raise JournalError("Could not persist the FaceLink task journal.") from exc
         finally:

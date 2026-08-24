@@ -1,7 +1,9 @@
 import copy
+import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import tempfile
 import threading
@@ -14,14 +16,22 @@ from pathlib import Path
 import bpy
 
 from . import overlay
+from .diagnostic_events import DiagnosticEventBuffer
 from .executor import (
+    SUPPORTED_PATCH_SCHEMA_VERSIONS,
+    UnsupportedSchemaError,
     apply_patch,
     list_revision_history,
     rollback_to_revision,
     summarize_patch,
     undo_last_patch,
 )
-from .job_journal import JobJournal, JournalError, workspace_identity
+from .job_journal import (
+    JobJournal,
+    JournalError,
+    sanitize_job_records,
+    workspace_identity,
+)
 from .job_runtime import (
     JobAdmissionError,
     JobControlError,
@@ -34,6 +44,11 @@ from .snapshot import scan_scene
 MAX_REQUEST_BYTES = 4 * 1024 * 1024
 MAX_JOB_TIMEOUT_MS = 60 * 60 * 1000
 JOBS_PER_TICK = 8
+PROTOCOL_VERSION = "1.13"
+SUPPORTED_PROTOCOL_VERSIONS = ("1.12", "1.13")
+PROTOCOL_VERSION_PATTERN = re.compile(r"^(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})$")
+CORRELATION_ID_PATTERN = re.compile(r"^corr-[0-9a-f]{32}$")
+MAX_DIAGNOSTIC_JOBS = 64
 SUPPORTED_JOB_TYPES = frozenset(
     {
         "scan_scene",
@@ -70,6 +85,7 @@ class Runtime:
     journal_lock = threading.Lock()
     lifecycle_lock = threading.Lock()
     stopping = False
+    diagnostic_events = DiagnosticEventBuffer()
     static_health = {}
     staged_patch = None
     staged_summary = None
@@ -79,7 +95,30 @@ def _instance_directory():
     override = os.environ.get("FACELINK_INSTANCE_DIR")
     root = Path(override) if override else Path(tempfile.gettempdir()) / "facelink" / "instances"
     root.mkdir(parents=True, exist_ok=True)
+    if os.name != "nt":
+        os.chmod(root, 0o700)
     return root
+
+
+def _write_instance_record(path, record):
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(record, indent=2))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _state_directory():
@@ -138,6 +177,30 @@ def _health_payload():
     }
 
 
+def _diagnostic_payload():
+    job_runtime = Runtime.job_runtime.snapshot()
+    _persist_job_journal()
+    _version, records = Runtime.job_runtime.records_with_version()
+    recovery = _recovery_status() or {}
+    return {
+        "schema_version": "1.0",
+        "facelink_version": Runtime.static_health.get("facelink_version"),
+        "protocol_version": PROTOCOL_VERSION,
+        "blender_version": bpy.app.version_string,
+        "capabilities": sorted(Runtime.static_health.get("capabilities", [])),
+        "job_runtime": job_runtime,
+        "recovery": {
+            "required": recovery.get("required", False),
+            "reason": recovery.get("reason", "none"),
+            "unclean_shutdown": recovery.get("unclean_shutdown", False),
+            "interrupted_job_count": len(recovery.get("interrupted_jobs", [])),
+            "persistent_workspace": recovery.get("persistent_workspace", False),
+        },
+        "recent_jobs": sanitize_job_records(records)[-MAX_DIAGNOSTIC_JOBS:],
+        "events": Runtime.diagnostic_events.snapshot(),
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "FaceLink/0.3.9"
 
@@ -149,16 +212,119 @@ class Handler(BaseHTTPRequestHandler):
         expected = f"Bearer {Runtime.token}"
         return hmac.compare_digest(supplied, expected)
 
+    def _prepare_request(self):
+        self.request_id = "req-" + uuid.uuid4().hex[:16]
+        supplied_correlation = self.headers.get("X-FaceLink-Correlation-ID")
+        self.correlation_id = "corr-" + uuid.uuid4().hex
+        self._correlation_valid = supplied_correlation is None or (
+            CORRELATION_ID_PATTERN.fullmatch(supplied_correlation) is not None
+        )
+        if supplied_correlation is not None and self._correlation_valid:
+            digest = hmac.new(
+                Runtime.token.encode("utf-8"),
+                supplied_correlation.encode("ascii"),
+                hashlib.sha256,
+            ).hexdigest()[:32]
+            self.correlation_id = "corr-" + digest
+
+        supplied_protocol = self.headers.get("FaceLink-Protocol-Version")
+        self.negotiated_protocol = supplied_protocol or SUPPORTED_PROTOCOL_VERSIONS[0]
+        self._protocol_error = None
+        if supplied_protocol is None:
+            return
+        match = PROTOCOL_VERSION_PATTERN.fullmatch(supplied_protocol)
+        if match is None:
+            self._protocol_error = (
+                400,
+                "invalid_protocol_version",
+                "The client protocol version must use major.minor integer notation.",
+            )
+            return
+        if supplied_protocol not in SUPPORTED_PROTOCOL_VERSIONS:
+            self._protocol_error = (
+                426,
+                "unsupported_protocol_version",
+                "The requested client protocol version is not supported by this bridge.",
+            )
+
+    def _request_contract_valid(self, *, check_protocol=True):
+        if not self._correlation_valid:
+            self._send_error(
+                400,
+                "invalid_correlation_id",
+                "The correlation ID must be a FaceLink-formatted random identifier.",
+            )
+            return False
+        if check_protocol and self._protocol_error is not None:
+            status, code, message = self._protocol_error
+            details = {
+                "supported_versions": list(SUPPORTED_PROTOCOL_VERSIONS),
+                "min_supported": SUPPORTED_PROTOCOL_VERSIONS[0],
+                "max_supported": SUPPORTED_PROTOCOL_VERSIONS[-1],
+            }
+            if status == 426:
+                details["requested"] = self.negotiated_protocol
+            self._send_error(
+                status,
+                code,
+                message,
+                details=details,
+            )
+            return False
+        return True
+
     def _send(self, status, payload, *, headers=None):
-        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        response_payload = dict(payload)
+        response_payload.setdefault("request_id", self.request_id)
+        response_payload.setdefault("correlation_id", self.correlation_id)
+        data = json.dumps(response_payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-FaceLink-Request-ID", self.request_id)
+        self.send_header("X-FaceLink-Correlation-ID", self.correlation_id)
+        response_protocol = getattr(self, "negotiated_protocol", PROTOCOL_VERSION)
+        if self.path == "/v1/health" or response_protocol not in SUPPORTED_PROTOCOL_VERSIONS:
+            response_protocol = PROTOCOL_VERSION
+        self.send_header("FaceLink-Protocol-Version", response_protocol)
         for name, value in (headers or {}).items():
             self.send_header(name, value)
         self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.wfile.write(data)
+        finally:
+            try:
+                Runtime.diagnostic_events.record(
+                    request_id=self.request_id,
+                    correlation_id=self.correlation_id,
+                    method=self.command,
+                    path=self.path,
+                    status=status,
+                    error_code=(
+                        response_payload.get("error_code")
+                        if isinstance(response_payload.get("error_code"), str)
+                        else None
+                    ),
+                    job_id=(
+                        response_payload.get("job_id")
+                        if isinstance(response_payload.get("job_id"), str)
+                        else None
+                    ),
+                    job_type=(
+                        response_payload.get("type")
+                        if isinstance(response_payload.get("type"), str)
+                        else None
+                    ),
+                    job_status=(
+                        response_payload.get("status")
+                        if isinstance(response_payload.get("status"), str)
+                        else None
+                    ),
+                )
+            except ValueError:
+                pass
 
     def _send_error(
         self,
@@ -277,12 +443,15 @@ class Handler(BaseHTTPRequestHandler):
         self._send(202 if job["status"] == "running" else 200, job)
 
     def do_GET(self):
+        self._prepare_request()
         if not self._authorized():
             self._send_error(
                 401,
                 "authentication_required",
                 "A valid FaceLink bridge bearer token is required.",
             )
+            return
+        if not self._request_contract_valid(check_protocol=self.path != "/v1/health"):
             return
         if self.path == "/v1/health":
             try:
@@ -297,6 +466,17 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/v1/recovery":
             self._send(200, _recovery_status())
+            return
+        if self.path == "/v1/diagnostics":
+            try:
+                self._send(200, _diagnostic_payload())
+            except JournalError:
+                self._send_error(
+                    503,
+                    "journal_unavailable",
+                    "The task journal could not be persisted.",
+                    retryable=True,
+                )
             return
         if self.path.startswith("/v1/jobs/"):
             job_id = self.path.rsplit("/", 1)[-1]
@@ -322,12 +502,15 @@ class Handler(BaseHTTPRequestHandler):
         self._send_error(404, "route_not_found", "The requested bridge route does not exist.")
 
     def do_POST(self):
+        self._prepare_request()
         if not self._authorized():
             self._send_error(
                 401,
                 "authentication_required",
                 "A valid FaceLink bridge bearer token is required.",
             )
+            return
+        if not self._request_contract_valid():
             return
         if self.path == "/v1/recovery/acknowledge":
             with Runtime.lifecycle_lock:
@@ -371,7 +554,14 @@ class Handler(BaseHTTPRequestHandler):
                     )
                     return
                 job_id = "job-" + uuid.uuid4().hex[:16]
-                Runtime.job_runtime.submit(job_id, job_type, payload, timeout_ms=timeout_ms)
+                accepted_job = Runtime.job_runtime.submit(
+                    job_id,
+                    job_type,
+                    payload,
+                    timeout_ms=timeout_ms,
+                    request_id=self.request_id,
+                    correlation_id=self.correlation_id,
+                )
                 try:
                     _persist_job_journal()
                 except JournalError:
@@ -383,7 +573,7 @@ class Handler(BaseHTTPRequestHandler):
                         retryable=True,
                     )
                     return
-            self._send(202, {"job_id": job_id, "status": "queued"})
+            self._send(202, accepted_job)
         except RequestError as exc:
             self._send_error(exc.status, exc.code, str(exc), details=exc.details)
         except JobAdmissionError as exc:
@@ -448,6 +638,17 @@ def _process_jobs():
                 job_id,
                 code="invalid_job_payload",
                 message=str(exc),
+            )
+        except UnsupportedSchemaError as exc:
+            Runtime.job_runtime.mark_failed(
+                job_id,
+                code="unsupported_schema_version",
+                message="The requested data schema is not supported by this Blender bridge.",
+                details={
+                    "schema_kind": exc.schema_kind,
+                    "requested": exc.requested,
+                    "supported": exc.supported,
+                },
             )
         except ValueError as exc:
             Runtime.job_runtime.mark_failed(
@@ -565,11 +766,45 @@ def connection_info():
     }
 
 
-def start_bridge():
-    if Runtime.server:
-        return connection_info()
+def _cleanup_failed_bridge_start():
+    server = Runtime.server
+    thread = Runtime.thread
+    Runtime.stopping = True
+    if server is not None and thread is not None and thread.is_alive():
+        server.shutdown()
+        thread.join(timeout=1.0)
+    if server is not None:
+        server.server_close()
+    if bpy.app.timers.is_registered(_process_jobs):
+        bpy.app.timers.unregister(_process_jobs)
+    if Runtime.instance_file is not None:
+        try:
+            Runtime.instance_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+    if Runtime.job_journal is not None:
+        try:
+            _persist_job_journal(clean_shutdown=True, force=True)
+        except JournalError:
+            pass
+    Runtime.server = None
+    Runtime.thread = None
+    Runtime.instance_file = None
+    Runtime.token = None
+    Runtime.instance_id = None
+    Runtime.session_id = None
+    Runtime.job_journal = None
+    Runtime.persisted_job_version = None
+    Runtime.static_health = {}
+    Runtime.job_runtime.clear()
+    Runtime.diagnostic_events.clear()
+    Runtime.stopping = False
+
+
+def _start_bridge_once():
     Runtime.token = secrets.token_urlsafe(32)
     Runtime.stopping = False
+    Runtime.diagnostic_events.clear()
     Runtime.instance_id = f"blender-{os.getpid()}"
     Runtime.session_id = "session-" + uuid.uuid4().hex
     Runtime.job_runtime.clear()
@@ -588,7 +823,7 @@ def start_bridge():
     Runtime.static_health = {
         "ok": True,
         "facelink_version": "0.3.9",
-        "protocol_version": "1.12",
+        "protocol_version": PROTOCOL_VERSION,
         "instance_id": Runtime.instance_id,
         "blender_version": bpy.app.version_string,
         "capabilities": [
@@ -626,6 +861,9 @@ def start_bridge():
             "safe_job_cancellation",
             "persistent_job_journal",
             "startup_recovery",
+            "correlation_ids",
+            "sanitized_diagnostics",
+            "protocol_negotiation",
         ],
         "job_control": {
             "cancel_endpoint": "/v1/jobs/{id}/cancel",
@@ -637,11 +875,41 @@ def start_bridge():
             "acknowledge_endpoint": "/v1/recovery/acknowledge",
             "automatic_replay": False,
         },
+        "protocol_compatibility": {
+            "min_supported": SUPPORTED_PROTOCOL_VERSIONS[0],
+            "max_supported": SUPPORTED_PROTOCOL_VERSIONS[-1],
+            "supported_versions": list(SUPPORTED_PROTOCOL_VERSIONS),
+            "legacy_default": SUPPORTED_PROTOCOL_VERSIONS[0],
+            "request_header": "FaceLink-Protocol-Version",
+            "minor_versions_are_additive": True,
+        },
+        "schema_versions": {
+            "scene_snapshot": {
+                "write": "1.4",
+            },
+            "scene_patch": {
+                "accept": list(SUPPORTED_PATCH_SCHEMA_VERSIONS),
+                "preferred": "1.4",
+            },
+            "job_journal": {
+                "read": ["1.0"],
+                "write": "1.0",
+            },
+            "revision_audit_entry": {
+                "read": ["legacy", "1.0"],
+                "write": "1.0",
+            },
+            "sanitized_diagnostics": {
+                "write": "1.0",
+            },
+        },
+        "diagnostic_control": {
+            "endpoint": "/v1/diagnostics",
+            "max_events": Runtime.diagnostic_events.capacity,
+            "max_recent_jobs": MAX_DIAGNOSTIC_JOBS,
+            "contains_request_content": False,
+        },
     }
-    Runtime.thread = threading.Thread(
-        target=Runtime.server.serve_forever, name="FaceLinkBridge", daemon=True
-    )
-    Runtime.thread.start()
     record = {
         "instance_id": Runtime.instance_id,
         "pid": os.getpid(),
@@ -651,10 +919,24 @@ def start_bridge():
         "blender_version": bpy.app.version_string,
     }
     Runtime.instance_file = _instance_directory() / f"{Runtime.instance_id}.json"
-    Runtime.instance_file.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    _write_instance_record(Runtime.instance_file, record)
+    Runtime.thread = threading.Thread(
+        target=Runtime.server.serve_forever, name="FaceLinkBridge", daemon=True
+    )
+    Runtime.thread.start()
     if not bpy.app.timers.is_registered(_process_jobs):
         bpy.app.timers.register(_process_jobs, first_interval=0.05, persistent=True)
     return connection_info()
+
+
+def start_bridge():
+    if Runtime.server:
+        return connection_info()
+    try:
+        return _start_bridge_once()
+    except Exception:
+        _cleanup_failed_bridge_start()
+        raise
 
 
 def stop_bridge():

@@ -83,6 +83,52 @@ def test_submit_take_and_success_transition_preserve_contract(monkeypatch):
     assert runtime.start_next() is None
 
 
+def test_submission_correlation_ids_survive_the_complete_job_lifecycle(monkeypatch):
+    runtime = job_runtime.JobRuntime()
+    request_id = "req-0123456789abcdef"
+    correlation_id = "corr-0123456789abcdef0123456789abcdef"
+    monkeypatch.setattr(job_runtime.time, "time", lambda: 20.0)
+
+    queued = runtime.submit(
+        "job-correlated",
+        "apply_patch",
+        {"private": "work-item-only"},
+        created_at=10.0,
+        request_id=request_id,
+        correlation_id=correlation_id,
+    )
+    assert queued["submission_request_id"] == request_id
+    assert queued["job_correlation_id"] == correlation_id
+
+    assert runtime.start_next() == (
+        "job-correlated",
+        "apply_patch",
+        {"private": "work-item-only"},
+    )
+    runtime.set_checkpoint(
+        "job-correlated",
+        "transaction_committed",
+        {"revision_id": "rev-1"},
+    )
+    runtime.mark_succeeded("job-correlated", {"ok": True})
+
+    completed = runtime.get("job-correlated")
+    assert completed["submission_request_id"] == request_id
+    assert completed["job_correlation_id"] == correlation_id
+    _, records = runtime.records_with_version()
+    assert records[0]["submission_request_id"] == request_id
+    assert records[0]["job_correlation_id"] == correlation_id
+
+
+def test_omitted_submission_correlation_ids_do_not_create_empty_metadata():
+    runtime = job_runtime.JobRuntime()
+
+    queued = runtime.submit("job-1", "scan_scene", {})
+
+    assert "submission_request_id" not in queued
+    assert "job_correlation_id" not in queued
+
+
 def test_failed_transition_uses_stable_error_shape(monkeypatch):
     runtime = job_runtime.JobRuntime()
     monkeypatch.setattr(job_runtime.time, "time", lambda: 42.0)

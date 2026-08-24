@@ -11,10 +11,18 @@ from pathlib import Path
 from typing import Any, Literal
 
 from . import __version__
-from .bridge_client import BlenderInstance, BridgeClient, discover_instances, instance_directory
+from .bridge_client import (
+    BlenderInstance,
+    BridgeClient,
+    discover_instances_with_metadata,
+    instance_directory,
+    protocol_compatibility,
+)
 
 MINIMUM_BLENDER_VERSION = (4, 2, 0)
 BLENDER_DOWNLOAD_URL = "https://www.blender.org/download/lts/"
+MAX_BRIDGE_PROBES = 32
+BRIDGE_PROBE_TIMEOUT = 0.4
 Status = Literal["pass", "warning", "fail"]
 
 
@@ -155,6 +163,8 @@ def probe_blender(candidate: BlenderCandidate) -> dict[str, Any]:
 
 
 def _instance_payload(instance: BlenderInstance, health: dict[str, Any]) -> dict[str, Any]:
+    contract = health.get("protocol_compatibility")
+    advertised = contract.get("supported_versions") if isinstance(contract, dict) else None
     return {
         "instance_id": instance.instance_id,
         "scene_name": instance.scene_name,
@@ -162,19 +172,25 @@ def _instance_payload(instance: BlenderInstance, health: dict[str, Any]) -> dict
         "protocol_version": health.get("protocol_version"),
         "facelink_version": health.get("facelink_version"),
         "capabilities": sorted(str(value) for value in health.get("capabilities", [])),
+        "protocol_compatibility": protocol_compatibility(
+            health.get("protocol_version"), advertised
+        ),
     }
 
 
-def _probe_instances() -> tuple[list[dict[str, Any]], int]:
-    records = discover_instances(verify=False)
+def _probe_instances() -> tuple[list[dict[str, Any]], int, int]:
+    discovery = discover_instances_with_metadata(verify=False)
+    records = list(discovery.instances)
+    selected = records[:MAX_BRIDGE_PROBES]
     live: list[dict[str, Any]] = []
-    for instance in records:
+    for instance in selected:
         try:
-            health = BridgeClient(instance).health(timeout=0.8)
+            health = BridgeClient(instance).health(timeout=BRIDGE_PROBE_TIMEOUT)
         except Exception:  # A diagnostic must survive malformed/stale local records.
             continue
         live.append(_instance_payload(instance, health))
-    return live, len(records) - len(live)
+    unprobed = len(records) - len(selected) + discovery.skipped_candidate_count
+    return live, len(selected) - len(live), unprobed
 
 
 def _directory_check(path: Path) -> DiagnosticCheck:
@@ -268,13 +284,35 @@ def diagnose_environment(blender_exe: str | Path | None = None) -> dict[str, Any
 
     discovery_dir = instance_directory().resolve(strict=False)
     checks.append(_directory_check(discovery_dir))
-    live_instances, stale_records = _probe_instances()
-    if live_instances:
+    live_instances, stale_records, unprobed_records = _probe_instances()
+    compatible_instances = [
+        item
+        for item in live_instances
+        if item["protocol_compatibility"]["compatible"] is True
+    ]
+    if compatible_instances:
         checks.append(
             DiagnosticCheck(
                 "blender_bridge",
                 "pass",
-                f"Connected to {len(live_instances)} live FaceLink Blender instance(s).",
+                (
+                    f"Connected to {len(compatible_instances)} compatible "
+                    "FaceLink Blender instance(s)."
+                ),
+            )
+        )
+    elif live_instances:
+        checks.append(
+            DiagnosticCheck(
+                "blender_bridge",
+                "warning",
+                (
+                    "Running FaceLink Blender bridges were found, but their protocols "
+                    "are incompatible."
+                ),
+                remediation=(
+                    "Upgrade the FaceLink host and Blender extension to compatible versions."
+                ),
             )
         )
     else:
@@ -308,7 +346,7 @@ def diagnose_environment(blender_exe: str | Path | None = None) -> dict[str, Any
 
     payload_checks = [item.payload() for item in checks]
     hard_failure = any(item.status == "fail" for item in checks)
-    bridge_ready = bool(live_instances)
+    bridge_ready = bool(compatible_instances)
     mcp_ready = not hard_failure and bool(launcher) and bridge_ready
     return {
         "schema_version": "1.0",
@@ -333,6 +371,8 @@ def diagnose_environment(blender_exe: str | Path | None = None) -> dict[str, Any
             "instance_directory": str(discovery_dir),
             "live_instances": live_instances,
             "stale_record_count": stale_records,
+            "unprobed_record_count": unprobed_records,
+            "probe_limit": MAX_BRIDGE_PROBES,
         },
         "provider": {"openai_api_key_configured": api_key_configured},
     }

@@ -108,6 +108,29 @@ def test_sanitizer_rejects_non_finite_values_and_incomplete_records():
     assert "deadline_at" not in sanitized[0]
 
 
+def test_sanitizer_preserves_only_safe_submission_correlation_metadata():
+    request_id = "req-0123456789abcdef"
+    correlation_id = "corr-0123456789abcdef0123456789abcdef"
+    records = [
+        _running_job(
+            submission_request_id=request_id,
+            job_correlation_id=correlation_id,
+            payload={"prompt": "PRIVATE_PROMPT"},
+            result={"api_key": "PRIVATE_KEY"},
+            details={"authorization": "PRIVATE_BEARER"},
+        )
+    ]
+
+    sanitized = job_journal.sanitize_job_records(records)
+
+    assert sanitized[0]["submission_request_id"] == request_id
+    assert sanitized[0]["job_correlation_id"] == correlation_id
+    encoded = json.dumps(sanitized)
+    assert "PRIVATE_PROMPT" not in encoded
+    assert "PRIVATE_KEY" not in encoded
+    assert "PRIVATE_BEARER" not in encoded
+
+
 def test_unclean_restart_reports_jobs_without_replaying_them(tmp_path):
     path = tmp_path / "journal.json"
     previous = _journal(path, "previous")
@@ -140,6 +163,34 @@ def test_unclean_restart_reports_jobs_without_replaying_them(tmp_path):
     assert recovered["job-committed"]["may_have_committed_changes"] is True
     assert recovered["job-committed"]["may_have_partial_changes"] is False
     assert json.loads(path.read_text(encoding="utf-8"))["jobs"] == []
+
+
+def test_submission_correlation_ids_survive_persistence_and_recovery(tmp_path):
+    path = tmp_path / "journal.json"
+    request_id = "req-fedcba9876543210"
+    correlation_id = "corr-fedcba9876543210fedcba9876543210"
+    previous = _journal(path, "previous")
+    previous.start()
+    previous.persist(
+        [
+            _running_job(
+                submission_request_id=request_id,
+                job_correlation_id=correlation_id,
+                payload={"secret": "must-not-persist"},
+            )
+        ]
+    )
+
+    persisted = json.loads(path.read_text(encoding="utf-8"))["jobs"][0]
+    assert persisted["submission_request_id"] == request_id
+    assert persisted["job_correlation_id"] == correlation_id
+    assert "must-not-persist" not in path.read_text(encoding="utf-8")
+
+    recovery = _journal(path, "current").start()
+
+    recovered = recovery["interrupted_jobs"][0]
+    assert recovered["submission_request_id"] == request_id
+    assert recovered["job_correlation_id"] == correlation_id
 
 
 def test_clean_shutdown_without_active_work_requires_no_recovery(tmp_path):
@@ -224,6 +275,69 @@ def test_corrupt_journal_is_quarantined_and_replaced(tmp_path):
     assert len(quarantined) == 1
     assert quarantined[0].read_text(encoding="utf-8") == '{"broken":'
     assert json.loads(path.read_text(encoding="utf-8"))["session_id"] == "current"
+
+
+def test_future_journal_schema_is_not_quarantined_or_overwritten(tmp_path):
+    path = tmp_path / "journal.json"
+    original = (
+        b'{"schema_version":"2.0","workspace_id":"blend-workspace",'
+        b'"jobs":[],"future_private_field":"preserve-exactly"}\r\n'
+    )
+    path.write_bytes(original)
+    journal = _journal(path, "current")
+
+    with pytest.raises(
+        job_journal.UnsupportedJournalVersion, match="Unsupported"
+    ) as captured:
+        journal.start()
+
+    assert captured.value.requested == "2.0"
+    assert path.read_bytes() == original
+    assert list(tmp_path.glob("journal.json.corrupt-*")) == []
+    assert list(tmp_path.glob("*.tmp")) == []
+    with pytest.raises(job_journal.JournalError, match="has not been started"):
+        journal.persist([])
+
+
+def test_valid_older_unknown_journal_schema_is_preserved_for_explicit_migration(tmp_path):
+    path = tmp_path / "journal.json"
+    original = (
+        b'{"schema_version":"0.9","workspace_id":"blend-workspace","jobs":[]}\n'
+    )
+    path.write_bytes(original)
+
+    with pytest.raises(job_journal.UnsupportedJournalVersion) as captured:
+        _journal(path, "current").start()
+
+    assert captured.value.requested == "0.9"
+    assert path.read_bytes() == original
+    assert list(tmp_path.glob("journal.json.corrupt-*")) == []
+
+
+@pytest.mark.parametrize(
+    "schema_value",
+    ["__missing__", None, [], {}, "garbage", "1", "01.0", "1.00", "1234567890.0"],
+)
+def test_missing_or_malformed_journal_schema_is_quarantined_as_corrupt(
+    tmp_path, schema_value
+):
+    path = tmp_path / "journal.json"
+    payload = {
+        "workspace_id": "blend-workspace",
+        "jobs": [],
+    }
+    if schema_value != "__missing__":
+        payload["schema_version"] = schema_value
+    original = (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
+    path.write_bytes(original)
+
+    recovery = _journal(path, "current").start()
+
+    assert recovery["reason"] == "journal_corrupt"
+    quarantined = list(tmp_path.glob("journal.json.corrupt-*"))
+    assert len(quarantined) == 1
+    assert quarantined[0].read_bytes() == original
+    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == "1.0"
 
 
 def test_carried_recovery_is_resanitized_before_a_new_session(tmp_path):

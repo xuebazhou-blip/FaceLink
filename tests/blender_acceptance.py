@@ -2965,6 +2965,7 @@ def test_corrupt_audit_log_recovers_on_next_successful_patch():
     assert history["available_count"] == 1
     assert len(history["entries"]) == 1
     assert history["entries"][0]["revision_id"] == receipt["revision_id"]
+    assert history["entries"][0]["schema_version"] == "1.0"
     assert history["entries"][0]["rollback_available"] is True
     assert isinstance(json.loads(bpy.context.scene[AUDIT_LOG_KEY]), list)
     undo_last_patch()

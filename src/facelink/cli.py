@@ -8,6 +8,7 @@ from typing import Any
 from .bridge_client import BridgeClient, discover_instances, select_instance
 from .compiler import compile_shot
 from .configurator import configure_codex_mcp
+from .diagnostic_export import export_diagnostics
 from .diagnostics import diagnose_environment, render_doctor_report
 from .models import RetargetProfile, ScenePatch, SceneSnapshot, ShotSpec
 from .provider import plan_with_openai
@@ -48,6 +49,13 @@ def _parser() -> argparse.ArgumentParser:
     doctor.add_argument("--blender-exe", help="Probe an explicit Blender executable")
     doctor.add_argument("--json", action="store_true", help="Print machine-readable JSON")
     doctor.add_argument("--out", help="Write the machine-readable report to a JSON file")
+
+    diagnostics = commands.add_parser(
+        "diagnostics", help="Export a privacy-safe support report without uploading it"
+    )
+    diagnostics.add_argument("--out", required=True, help="Destination .json file")
+    diagnostics.add_argument("--blender-exe", help="Probe an explicit Blender executable")
+    diagnostics.add_argument("--overwrite", action="store_true")
 
     configure_mcp = commands.add_parser(
         "configure-mcp",
@@ -150,6 +158,15 @@ def main() -> None:
             print(render_doctor_report(report))
         if not report["ok"]:
             raise SystemExit(1)
+    elif args.command == "diagnostics":
+        _write_json(
+            export_diagnostics(
+                args.out,
+                blender_exe=args.blender_exe,
+                overwrite=args.overwrite,
+            ),
+            None,
+        )
     elif args.command == "configure-mcp":
         result = configure_codex_mcp(
             args.mcp_launcher,

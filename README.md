@@ -33,6 +33,12 @@ video baked outside Blender.
 - runs a localhost-only authenticated bridge between the MCP process and Blender;
 - supports Blender-side stage/review/apply/discard, persistent audit history and safe
   rollback to a selected current-session revision.
+- persists a bounded, payload-free task lifecycle journal for explicit startup recovery and
+  never replays interrupted work automatically;
+- negotiates local bridge protocol 1.12/1.13 explicitly and attaches request/correlation IDs
+  to jobs and stable errors for cross-layer troubleshooting;
+- exposes an authenticated, bounded diagnostic endpoint and a separate privacy-safe local JSON
+  export without automatic upload;
 - rejects internally overlapping transform/action timelines, warns before overwriting
   existing keyframes and rejects colliding FaceLink NLA clips;
 - previews staged world-space motion paths and predicted camera frustums directly in the
@@ -67,6 +73,10 @@ video baked outside Blender.
 The Blender 4.0.2 installation found on the development machine predates the extension
 baseline. FaceLink's source can still be loaded there for smoke testing, but 4.0 is not a
 declared supported version.
+
+桥接协议、数据结构和升级/降级并不跟产品版本共用一个编号。当前未发布代码的桥接协议
+为 1.13，只明确兼容 1.12 和 1.13；详见
+[兼容性与迁移政策](docs/COMPATIBILITY.md)。
 
 ## Install the alpha release
 
@@ -113,8 +123,19 @@ After starting FaceLink's bridge in Blender, validate the complete setup:
 facelink doctor --blender-exe C:\path\to\blender.exe
 ```
 
-The diagnostic never prints API keys or the Blender bridge bearer token. A missing API key is
-only a warning because an MCP client can use its own model.
+Doctor 不打印 API Key 或 Blender 桥接 Bearer Token；缺少 API Key 只是警告，因为 MCP
+客户端可以使用自己的模型。不过 Doctor 面向本机排错，仍可能显示 Blender、MCP 启动器
+和发现目录的绝对路径，不应原样公开分享。需要生成支持附件时使用：
+
+```powershell
+facelink diagnostics --out facelink-diagnostics.json
+```
+
+该命令只在本地原子写出最多 1 MiB 的单个 JSON，默认不覆盖已有文件，也不会自动上传。
+它通过严格允许列表排除绝对路径、场景/对象/骨骼/Action 名称、brief/prompt、请求
+payload/result、原始异常、Token、API Key 和私钥；只保留版本、能力、计数、状态、稳定
+错误码及随机关联编号。分享前仍应人工打开检查。隐私边界见
+[威胁模型](docs/THREAT_MODEL.md)。
 
 To install the two components manually, continue below.
 
@@ -302,6 +323,12 @@ older revision also rolls back every newer FaceLink revision to preserve a linea
 An API key is optional when an MCP client performs the language-model planning itself.
 ChatGPT subscriptions and OpenAI API billing are separate; a ChatGPT membership is not an
 API key. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the trust boundary.
+
+使用 BYOK 规划时，FaceLink 会把用户 brief、序列化 Scene Snapshot 和可选重定向配置发给
+所配置的 OpenAI 兼容端点；这些内容可能包含场景、对象、骨骼、Action 名称和变换。
+API Key 不会进入 `.blend`、任务日志或安全诊断包，但远端提供商、代理及自定义
+`base_url` 的数据政策仍由用户负责审查。MCP 客户端也可能按自身政策把工具输入/输出
+发送给其模型提供商。
 
 ## Navigation workflow
 

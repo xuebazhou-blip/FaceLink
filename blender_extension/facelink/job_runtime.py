@@ -135,6 +135,8 @@ class JobRuntime:
         *,
         timeout_ms: int | None = None,
         created_at: float | None = None,
+        request_id: str | None = None,
+        correlation_id: str | None = None,
     ) -> dict[str, Any]:
         with self._lock:
             monotonic_now = time.monotonic()
@@ -171,6 +173,10 @@ class JobRuntime:
                     deadline_at=wall_now + timeout_ms / 1000,
                 )
                 self._deadlines[job_id] = monotonic_now + timeout_ms / 1000
+            if request_id is not None:
+                record["submission_request_id"] = request_id
+            if correlation_id is not None:
+                record["job_correlation_id"] = correlation_id
             self._jobs[job_id] = record
             self._work_items[job_id] = (job_type, payload)
             self._pending.append(job_id)

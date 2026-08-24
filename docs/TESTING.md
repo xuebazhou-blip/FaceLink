@@ -13,10 +13,21 @@ and human CLI contracts, installer hash validation and the Windows installer's n
 `-PlanOnly` result. A release smoke test installs the built wheel into a clean off-repository
 virtual environment before publication.
 
+Bridge-instance discovery separately proves that only the deterministic first 32 candidate
+records are opened, every record is capped at 16 KiB before JSON decoding, oversized or malformed
+records fail closed, and Doctor reports candidates skipped by the discovery bound.
+
 The repository privacy gate scans every tracked or release-bound file as raw and UTF-16-like
 content. It rejects high-risk provider/private-key signatures, the former public author email
 and known development-machine roots. Blender demo acceptance separately rejects saved Windows
 user directories and requires a relative render path inside the checked-in `.blend`.
+
+协议 1.13 的诊断导出测试使用运行时拼接的 API Key、Bearer Token、邮箱、Windows/Unix/
+UNC 用户路径、场景名称、对象名称、payload、结果和原始异常作为“投毒”输入，要求最终
+JSON 只保留允许列表字段，且这些敏感值逐字节不存在。测试同时覆盖 1 MiB/32 实例/
+64 任务/256 事件边界、`.json` 后缀、默认禁止覆盖、原子替换失败时旧文件保持不变、
+临时文件清理、确定性哈希及 `uploaded: false`。这些测试降低回归风险，但不取代用户在
+分享诊断包前的人工检查。
 
 The Windows acceptance run builds the Python distributions and Blender ZIP, embeds them into
 the WinForms setup EXE, extracts them through the real setup executable, verifies both embedded
@@ -98,9 +109,23 @@ human-readable summary.
   object-motion-bake capability, protocol 1.10 bounded jobs and stable errors, protocol 1.11
   deadlines and safe cancellation, protocol 1.12 atomic bounded journals, corrupt-journal
   quarantine, startup recovery, explicit acknowledgement, no automatic replay, checkpoint
-  rollback and persisted-record privacy, and
-  preview diagnostics, Undo and discovery
-  cleanup.
+  rollback and persisted-record privacy, preview diagnostics, Undo and discovery cleanup.
+- Protocol 1.13 compatibility acceptance must cover authenticated health bootstrap; legacy
+  no-header `1.12`; explicit `1.12` and `1.13`; highest-overlap selection; malformed, older,
+  future-minor and future-major rejection before request-body parsing or queue mutation; and
+  stable HTTP/error-code behavior. It must also prove that every success and error carries
+  matching body/header request and correlation IDs, request IDs are per-request, a valid client
+  correlation seed is never echoed or persisted, and its HMAC-derived server ID links the jobs
+  created in the same bridge session.
+- Diagnostic bridge acceptance must require authentication, template paths without query or
+  unknown-path content, a 256-event eviction boundary, at most 64 recent sanitized jobs and no
+  request body, result, scene name/path, token, provider key or raw exception in memory,
+  endpoint output, journal or shareable export. Concurrent event recording must remain bounded.
+- Migration acceptance must distinguish malformed journals from valid future schemas. Malformed
+  data is quarantined; a future journal version must fail closed with its exact bytes unchanged,
+  no `.corrupt-*` rename and no replacement file. Unsupported Scene Patch schemas must return
+  `unsupported_schema_version` with zero scene mutation. New audit entries must carry schema
+  `1.0` while legacy versionless entries remain readable.
 - The built ZIP must install, enable and load from each Blender version's isolated portable
   extension repository.
 - The checked-in demo `.blend` must open in the primary Blender version with its FaceLink ID,
@@ -120,3 +145,8 @@ acceptance means the implemented direct and
 self-contained evaluated deform-skeleton pose-bakes and editing surface behave as specified;
 it does not mean FaceLink solves motion generation, general
 character retargeting or cinematic judgment.
+
+Passing the security/diagnostic gates also does not prove isolation from a malicious process
+running as the same operating-system account, an arbitrary Blender Add-on, an administrator or
+kernel compromise, a compromised MCP/model provider, or HTTP connection-exhaustion attacks.
+Those residual risks are documented in [THREAT_MODEL.md](THREAT_MODEL.md).

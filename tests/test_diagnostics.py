@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import facelink.diagnostics as diagnostics
-from facelink.bridge_client import BlenderInstance
+from facelink.bridge_client import BlenderInstance, InstanceDiscovery
 from facelink.diagnostics import BlenderCandidate
 
 
@@ -18,6 +18,18 @@ def _instance(tmp_path: Path) -> BlenderInstance:
         scene_name="Previs",
         blender_version="4.5.12 LTS",
         file_path=tmp_path / "blender-42.json",
+    )
+
+
+def _discovery(
+    *instances: BlenderInstance,
+    skipped: int = 0,
+) -> InstanceDiscovery:
+    return InstanceDiscovery(
+        tuple(instances),
+        len(instances) + skipped,
+        skipped,
+        max(len(instances), 32),
     )
 
 
@@ -163,14 +175,18 @@ def test_doctor_full_report_is_ready_and_never_exposes_secrets(monkeypatch, tmp_
         "which",
         lambda name: str(launcher) if name == "facelink-mcp" else None,
     )
-    monkeypatch.setattr(diagnostics, "discover_instances", lambda verify=False: [instance])
+    monkeypatch.setattr(
+        diagnostics,
+        "discover_instances_with_metadata",
+        lambda verify=False: _discovery(instance, skipped=3),
+    )
     monkeypatch.setattr(
         diagnostics.BridgeClient,
         "health",
         lambda self, timeout=0.8: {
             "ok": True,
             "facelink_version": "0.3.9",
-            "protocol_version": "1.9",
+            "protocol_version": "1.12",
             "capabilities": ["stage_patch", "scan_scene"],
         },
     )
@@ -185,6 +201,8 @@ def test_doctor_full_report_is_ready_and_never_exposes_secrets(monkeypatch, tmp_
         "scan_scene",
         "stage_patch",
     ]
+    assert report["bridge"]["unprobed_record_count"] == 3
+    assert report["bridge"]["probe_limit"] == diagnostics.MAX_BRIDGE_PROBES
     encoded = json.dumps(report)
     assert "must-never-leak" not in encoded
     assert "sk-never-print-this" not in encoded
@@ -196,7 +214,11 @@ def test_doctor_distinguishes_required_failures_from_optional_warnings(monkeypat
     monkeypatch.setattr(diagnostics, "find_blender_candidates", lambda _explicit=None: [])
     monkeypatch.setattr(diagnostics.shutil, "which", lambda _name: None)
     monkeypatch.setattr(diagnostics.sys, "executable", str(tmp_path / "missing-python.exe"))
-    monkeypatch.setattr(diagnostics, "discover_instances", lambda verify=False: [])
+    monkeypatch.setattr(
+        diagnostics,
+        "discover_instances_with_metadata",
+        lambda verify=False: _discovery(),
+    )
 
     report = diagnostics.diagnose_environment()
     checks = _checks(report)
@@ -221,7 +243,11 @@ def test_doctor_counts_stale_records_without_failing(monkeypatch, tmp_path):
         blender_version="4.2.0",
         file_path=tmp_path / "stale.json",
     )
-    monkeypatch.setattr(diagnostics, "discover_instances", lambda verify=False: [live, stale])
+    monkeypatch.setattr(
+        diagnostics,
+        "discover_instances_with_metadata",
+        lambda verify=False: _discovery(live, stale),
+    )
 
     def health(self, timeout=0.8):
         if self.instance.instance_id == "stale":
@@ -229,9 +255,116 @@ def test_doctor_counts_stale_records_without_failing(monkeypatch, tmp_path):
         return {"protocol_version": "1.9", "capabilities": []}
 
     monkeypatch.setattr(diagnostics.BridgeClient, "health", health)
-    instances, stale_count = diagnostics._probe_instances()
+    instances, stale_count, unprobed_count = diagnostics._probe_instances()
     assert [item["instance_id"] for item in instances] == ["blender-42"]
+    assert instances[0]["protocol_compatibility"]["compatible"] is False
+    assert instances[0]["protocol_compatibility"]["error_code"] == (
+        "unsupported_protocol_version"
+    )
     assert stale_count == 1
+    assert unprobed_count == 0
+
+
+def test_doctor_keeps_reachable_incompatible_bridge_visible_but_not_ready(
+    monkeypatch, tmp_path
+):
+    blender = tmp_path / "blender.exe"
+    blender.write_bytes(b"")
+    launcher = tmp_path / "facelink-mcp"
+    launcher.write_bytes(b"")
+    instance = _instance(tmp_path)
+    monkeypatch.setenv("FACELINK_INSTANCE_DIR", str(tmp_path / "instances"))
+    monkeypatch.setattr(
+        diagnostics,
+        "find_blender_candidates",
+        lambda _explicit=None: [BlenderCandidate(blender, "test")],
+    )
+    monkeypatch.setattr(
+        diagnostics,
+        "probe_blender",
+        lambda candidate: {
+            "path": str(candidate.path),
+            "source": candidate.source,
+            "available": True,
+            "supported": True,
+            "version": "4.5.12",
+        },
+    )
+    monkeypatch.setattr(
+        diagnostics.shutil,
+        "which",
+        lambda name: str(launcher) if name == "facelink-mcp" else None,
+    )
+    monkeypatch.setattr(
+        diagnostics,
+        "discover_instances_with_metadata",
+        lambda verify=False: _discovery(instance),
+    )
+    monkeypatch.setattr(
+        diagnostics.BridgeClient,
+        "health",
+        lambda self, timeout=0.8: {
+            "ok": True,
+            "protocol_version": "1.14",
+            "protocol_compatibility": {"supported_versions": ["1.14"]},
+            "capabilities": ["scan_scene"],
+        },
+    )
+
+    report = diagnostics.diagnose_environment(blender)
+    bridge_check = _checks(report)["blender_bridge"]
+
+    assert report["bridge"]["stale_record_count"] == 0
+    assert len(report["bridge"]["live_instances"]) == 1
+    assert report["bridge"]["live_instances"][0]["protocol_compatibility"][
+        "compatible"
+    ] is False
+    assert bridge_check["status"] == "warning"
+    assert "incompatible" in bridge_check["summary"]
+    assert report["readiness"]["mcp"] is False
+
+
+def test_bridge_probe_is_bounded_when_many_stale_records_accumulate(
+    monkeypatch, tmp_path
+):
+    records = [
+        BlenderInstance(
+            instance_id=f"blender-{index:08d}",
+            pid=index,
+            port=index + 1000,
+            token="never-export",
+            scene_name="Private",
+            blender_version="4.5.12 LTS",
+            file_path=tmp_path / f"{index}.json",
+        )
+        for index in range(100)
+    ]
+    calls = []
+
+    class OfflineClient:
+        def __init__(self, instance):
+            self.instance = instance
+
+        def health(self, timeout):
+            calls.append((self.instance.instance_id, timeout))
+            raise OSError("offline")
+
+    monkeypatch.setattr(
+        diagnostics,
+        "discover_instances_with_metadata",
+        lambda verify=False: _discovery(*records, skipped=17),
+    )
+    monkeypatch.setattr(diagnostics, "BridgeClient", OfflineClient)
+
+    live, stale_count, unprobed_count = diagnostics._probe_instances()
+
+    assert live == []
+    assert stale_count == diagnostics.MAX_BRIDGE_PROBES
+    assert unprobed_count == 100 - diagnostics.MAX_BRIDGE_PROBES + 17
+    assert len(calls) == diagnostics.MAX_BRIDGE_PROBES
+    assert {timeout for _instance_id, timeout in calls} == {
+        diagnostics.BRIDGE_PROBE_TIMEOUT
+    }
 
 
 def test_render_doctor_report_contains_actions_but_not_machine_details():
