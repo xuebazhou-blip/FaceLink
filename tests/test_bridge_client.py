@@ -235,3 +235,79 @@ def test_submit_rejects_success_response_without_job_id(monkeypatch, instance):
     with pytest.raises(BridgeError, match="without returning a job ID") as captured:
         BridgeClient(instance).submit_job("scan_scene")
     assert captured.value.code == "invalid_response"
+
+
+def test_submit_sends_optional_server_deadline(monkeypatch, instance):
+    response = Mock()
+    response.json.return_value = {"job_id": "job-1", "status": "queued"}
+    post = Mock(return_value=response)
+    monkeypatch.setattr(bridge_module.httpx, "post", post)
+
+    assert BridgeClient(instance).submit_job("scan_scene", timeout_ms=2500) == "job-1"
+
+    assert post.call_args.kwargs["json"] == {
+        "type": "scan_scene",
+        "payload": {},
+        "timeout_ms": 2500,
+    }
+
+
+def test_cancel_job_uses_authenticated_control_endpoint(monkeypatch, instance):
+    response = Mock()
+    response.json.return_value = {
+        "job_id": "job-1",
+        "status": "cancelled",
+        "error_code": "job_cancelled",
+    }
+    post = Mock(return_value=response)
+    monkeypatch.setattr(bridge_module.httpx, "post", post)
+
+    cancelled = BridgeClient(instance).cancel_job("job-1")
+
+    assert cancelled["status"] == "cancelled"
+    assert post.call_args.args[0].endswith("/v1/jobs/job-1/cancel")
+    assert post.call_args.kwargs["headers"] == {"Authorization": "Bearer secret"}
+    assert "json" not in post.call_args.kwargs
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_code", "retryable"),
+    [
+        ("cancelled", "job_cancelled", False),
+        ("timed_out", "job_timed_out", True),
+    ],
+)
+def test_wait_for_job_surfaces_cancel_and_deadline_terminal_states(
+    monkeypatch, instance, status, expected_code, retryable
+):
+    client = BridgeClient(instance)
+    monkeypatch.setattr(
+        client,
+        "get_job",
+        lambda _job_id: {
+            "status": status,
+            "error": f"Job {status}.",
+            "error_code": expected_code,
+            "retryable": retryable,
+        },
+    )
+
+    with pytest.raises(BridgeError, match=status) as captured:
+        client.wait_for_job("job-1")
+
+    assert captured.value.code == expected_code
+    assert captured.value.retryable is retryable
+
+
+def test_run_job_keeps_poll_timeout_separate_from_server_deadline(monkeypatch, instance):
+    client = BridgeClient(instance)
+    submit = Mock(return_value="job-1")
+    wait = Mock(return_value={"ok": True})
+    monkeypatch.setattr(client, "submit_job", submit)
+    monkeypatch.setattr(client, "wait_for_job", wait)
+
+    assert client.run_job(
+        "scan_scene", timeout=7.5, job_timeout_ms=5000
+    ) == {"ok": True}
+    submit.assert_called_once_with("scan_scene", None, timeout_ms=5000)
+    wait.assert_called_once_with("job-1", timeout=7.5)

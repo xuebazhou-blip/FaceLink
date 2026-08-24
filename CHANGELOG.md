@@ -11,11 +11,17 @@ the public API is experimental.
   terminal-record eviction and live capacity metrics.
 - Added protocol 1.10 stable request and job error codes, retry metadata and a structured
   `BridgeError` client exception while preserving the legacy error string.
+- Added protocol 1.11 server-side job deadlines, immediate queued-job cancellation and
+  cooperative safe-checkpoint cancellation for running Blender jobs.
+- Added client cancellation and deadline controls with explicit cancelled, timed-out and
+  completion-wins lifecycle metadata.
 
 ### Security
 
 - Unexpected Blender exceptions now return a generic internal error instead of exposing raw
   implementation details to bridge clients.
+- Running patch cancellation uses the existing revision transaction to restore scene, animation,
+  camera and audit state instead of injecting an unsafe asynchronous Blender exception.
 
 ## [0.3.9] - 2026-08-24
 

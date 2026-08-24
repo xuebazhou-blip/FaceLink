@@ -19,9 +19,10 @@ os.environ["FACELINK_INSTANCE_DIR"] = str(instance_root)
 
 import facelink as blender_addon  # noqa: E402
 from facelink import bridge  # noqa: E402
+from facelink import executor as blender_executor  # noqa: E402
 
 
-def request_json(method, url, token, payload=None, raw_data=None):
+def request_json_response(method, url, token, payload=None, raw_data=None):
     data = raw_data
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
@@ -35,7 +36,11 @@ def request_json(method, url, token, payload=None, raw_data=None):
         },
     )
     with urllib.request.urlopen(request, timeout=3) as response:
-        return json.loads(response.read().decode("utf-8"))
+        return response.status, json.loads(response.read().decode("utf-8"))
+
+
+def request_json(method, url, token, payload=None, raw_data=None):
+    return request_json_response(method, url, token, payload, raw_data)[1]
 
 
 def expect_http_error(status, function, *, error_code=None):
@@ -69,19 +74,17 @@ def wait_job(base_url, token, job_id):
     deadline = time.monotonic() + 8
     while time.monotonic() < deadline:
         job = request_json("GET", f"{base_url}/v1/jobs/{job_id}", token)
-        if job["status"] in {"succeeded", "failed"}:
+        if job["status"] in {"succeeded", "failed", "cancelled", "timed_out"}:
             return job
         time.sleep(0.01)
     raise TimeoutError(job_id)
 
 
-def submit(base_url, token, job_type, payload=None):
-    return request_json(
-        "POST",
-        f"{base_url}/v1/jobs",
-        token,
-        {"type": job_type, "payload": payload or {}},
-    )["job_id"]
+def submit(base_url, token, job_type, payload=None, timeout_ms=None):
+    request = {"type": job_type, "payload": payload or {}}
+    if timeout_ms is not None:
+        request["timeout_ms"] = timeout_ms
+    return request_json("POST", f"{base_url}/v1/jobs", token, request)["job_id"]
 
 
 def fingerprint_snapshot(snapshot, entity_ids):
@@ -146,6 +149,17 @@ def client_flow(result_box):
             ),
             error_code="unsupported_job_type",
         )
+        for invalid_timeout in (0, True, 3_600_001):
+            expect_http_error(
+                400,
+                lambda value=invalid_timeout: request_json(
+                    "POST",
+                    f"{base_url}/v1/jobs",
+                    token,
+                    {"type": "scan_scene", "payload": {}, "timeout_ms": value},
+                ),
+                error_code="invalid_job_timeout",
+            )
         expect_http_error(
             400,
             lambda: request_json("POST", f"{base_url}/v1/jobs", token, raw_data=b"not-json"),
@@ -194,11 +208,22 @@ def client_flow(result_box):
             "rig_fingerprint",
         } <= set(health["capabilities"])
         assert health["facelink_version"] == "0.3.9"
-        assert {"bounded_job_queue", "stable_error_codes"} <= set(health["capabilities"])
-        assert health["protocol_version"] == "1.10"
+        assert {
+            "bounded_job_queue",
+            "stable_error_codes",
+            "job_deadlines",
+            "safe_job_cancellation",
+        } <= set(health["capabilities"])
+        assert health["protocol_version"] == "1.11"
+        assert health["job_control"] == {
+            "cancel_endpoint": "/v1/jobs/{id}/cancel",
+            "max_timeout_ms": 3_600_000,
+            "running_cancellation": "cooperative_safe_checkpoints",
+        }
         assert health["job_runtime"]["pending_capacity"] == 128
         assert health["job_runtime"]["retention_capacity"] == 256
         assert health["job_runtime"]["pending"] == 0
+        assert health["job_runtime"]["cancel_requested"] == 0
         scan_ids = [submit(base_url, token, "scan_scene") for _ in range(3)]
         assert len(set(scan_ids)) == 3
         scans = [wait_job(base_url, token, job_id) for job_id in scan_ids]
@@ -463,6 +488,29 @@ assert status == 413
 assert oversized_payload["error_code"] == "request_too_large"
 assert oversized_payload["details"]["max_bytes"] == bridge.MAX_REQUEST_BYTES
 bridge.Runtime.job_runtime = bridge.JobRuntime(pending_capacity=2, retention_capacity=2)
+cancel_probe = submit(probe_base_url, probe_token, "scan_scene")
+cancelled_status, cancelled_probe = request_json_response(
+    "POST",
+    f"{probe_base_url}/v1/jobs/{cancel_probe}/cancel",
+    probe_token,
+)
+assert cancelled_status == 200
+assert cancelled_probe["status"] == "cancelled"
+assert cancelled_probe["error_code"] == "job_cancelled"
+assert request_json(
+    "POST", f"{probe_base_url}/v1/jobs/{cancel_probe}/cancel", probe_token
+)["status"] == "cancelled"
+assert request_json("GET", f"{probe_base_url}/v1/health", probe_token)["job_runtime"][
+    "pending"
+] == 0
+timeout_probe = submit(probe_base_url, probe_token, "scan_scene", timeout_ms=20)
+timed_out_probe = wait_job(probe_base_url, probe_token, timeout_probe)
+assert timed_out_probe["status"] == "timed_out"
+assert timed_out_probe["error_code"] == "job_timed_out"
+assert timed_out_probe["retryable"] is True
+assert bridge._process_jobs() == 0.05
+
+bridge.Runtime.job_runtime = bridge.JobRuntime(pending_capacity=2, retention_capacity=2)
 probe_ids = [submit(probe_base_url, probe_token, "scan_scene") for _ in range(2)]
 overload_payload, overload_headers = expect_http_error(
     429,
@@ -483,6 +531,13 @@ assert all(
     == "succeeded"
     for job_id in probe_ids
 )
+expect_http_error(
+    409,
+    lambda: request_json(
+        "POST", f"{probe_base_url}/v1/jobs/{probe_ids[1]}/cancel", probe_token
+    ),
+    error_code="job_not_cancellable",
+)
 submit(probe_base_url, probe_token, "scan_scene")
 expired_payload, _expired_headers = expect_http_error(
     404,
@@ -493,6 +548,126 @@ assert "expired" in expired_payload["error"]
 probe_health = request_json("GET", f"{probe_base_url}/v1/health", probe_token)
 assert probe_health["job_runtime"]["retained"] == 2
 assert probe_health["job_runtime"]["evicted_total"] == 1
+
+# Prove that a running HTTP cancellation is observed after a real Blender mutation and that
+# apply_patch restores the captured revision before the job becomes cancelled.
+bridge.Runtime.job_runtime = bridge.JobRuntime()
+actor = bpy.data.objects["Bridge Actor"]
+actor_id = actor["facelink_id"]
+cancel_patch = {
+    "schema_version": "1.0",
+    "patch_id": "bridge-running-cancel",
+    "source_title": "Bridge running cancellation",
+    "operations": [
+        {
+            "op": "keyframe_transform",
+            "entity_id": actor_id,
+            "payload": {
+                "frames": [
+                    {"frame": 1, "location": [0, 0, 0]},
+                    {"frame": 5, "location": [9, 0, 0]},
+                ]
+            },
+        }
+    ],
+}
+operation_applied = threading.Event()
+cancel_completed = threading.Event()
+cancel_result = {}
+original_keyframe_transform = blender_executor._keyframe_transform
+
+
+def controlled_keyframe_transform(entity_id, payload):
+    result = original_keyframe_transform(entity_id, payload)
+    operation_applied.set()
+    if not cancel_completed.wait(timeout=3):
+        raise TimeoutError("Running cancellation request did not complete")
+    return result
+
+
+blender_executor._keyframe_transform = controlled_keyframe_transform
+running_cancel_id = submit(
+    probe_base_url,
+    probe_token,
+    "apply_patch",
+    {"patch": cancel_patch},
+)
+
+
+def cancel_running_job():
+    try:
+        if not operation_applied.wait(timeout=3):
+            raise TimeoutError("Blender operation did not reach the cancellation checkpoint")
+        status, payload = request_json_response(
+            "POST",
+            f"{probe_base_url}/v1/jobs/{running_cancel_id}/cancel",
+            probe_token,
+        )
+        cancel_result.update(payload, http_status=status)
+    finally:
+        cancel_completed.set()
+
+
+cancel_thread = threading.Thread(target=cancel_running_job, daemon=True)
+cancel_thread.start()
+try:
+    bridge._process_jobs()
+finally:
+    blender_executor._keyframe_transform = original_keyframe_transform
+cancel_thread.join(timeout=1)
+assert not cancel_thread.is_alive()
+assert cancel_result["status"] == "running"
+assert cancel_result["cancel_requested"] is True
+assert cancel_result["http_status"] == 202
+running_cancelled = request_json(
+    "GET", f"{probe_base_url}/v1/jobs/{running_cancel_id}", probe_token
+)
+assert running_cancelled["status"] == "cancelled"
+assert running_cancelled["error_code"] == "job_cancelled"
+assert actor.animation_data is None
+assert tuple(round(value, 4) for value in actor.location) == (0.0, 0.0, 0.0)
+assert bridge.list_revision_history()["entries"] == []
+
+# An interrupted replacement stage must restore both prior metadata and overlay geometry.
+first_stage = bridge.stage_patch(cancel_patch)
+first_geometry = bridge.overlay.preview_geometry()
+assert first_stage["staged"] is True
+replacement_patch = cancel_patch | {
+    "patch_id": "bridge-interrupted-replacement",
+    "operations": [
+        cancel_patch["operations"][0]
+        | {
+            "payload": {
+                "frames": [
+                    {"frame": 1, "location": [0, 0, 0]},
+                    {"frame": 5, "location": [3, 4, 0]},
+                ]
+            }
+        }
+    ],
+}
+assert bridge.overlay.build_preview_geometry(replacement_patch) != first_geometry
+stage_checks = {"count": 0}
+
+
+def interrupt_replacement_stage():
+    stage_checks["count"] += 1
+    if stage_checks["count"] == 3:
+        raise bridge.JobInterruption.cancelled()
+
+
+try:
+    bridge.stage_patch(
+        replacement_patch,
+        check_interrupted=interrupt_replacement_stage,
+    )
+except bridge.JobInterruption as exc:
+    assert exc.code == "job_cancelled"
+else:
+    raise AssertionError("Interrupted replacement staging unexpectedly succeeded")
+assert bridge.get_staged_patch()["patch"]["patch_id"] == "bridge-running-cancel"
+assert bridge.overlay.preview_geometry() == first_geometry
+bridge.clear_staged_patch()
 bridge.Runtime.job_runtime = bridge.JobRuntime()
 if not bpy.app.timers.is_registered(bridge._process_jobs):
     bpy.app.timers.register(bridge._process_jobs, first_interval=0.05, persistent=True)
@@ -525,6 +700,10 @@ result.update(
     bounded_queue_http=True,
     stable_error_codes_http=True,
     completed_job_eviction_http=True,
+    queued_cancellation_http=True,
+    queued_deadline_http=True,
+    running_cancellation_rollback=True,
+    interrupted_stage_restore=True,
 )
 report_path = os.environ.get("FACELINK_TEST_REPORT")
 if report_path:

@@ -1552,25 +1552,34 @@ def _ensure_camera(payload):
     return camera
 
 
-def apply_patch(patch):
-    operations = validate_patch(patch)
+def apply_patch(patch, *, check_interrupted=None):
+    def checkpoint():
+        if check_interrupted is not None:
+            check_interrupted()
 
+    checkpoint()
+    operations = validate_patch(patch)
+    checkpoint()
     revision = _capture_revision(patch, operations)
-    _prepare_animation_edits(operations)
     changed = set()
-    composition = analyze_patch_composition(patch)
-    composition_warnings = [item["message"] for item in composition["warnings"]]
-    warnings = list(
-        dict.fromkeys(
-            [
-                *patch.get("warnings", []),
-                *_existing_animation_warnings(operations),
-                *composition_warnings,
-            ]
-        )
-    )
     try:
+        checkpoint()
+        _prepare_animation_edits(operations)
+        checkpoint()
+        composition = analyze_patch_composition(patch)
+        composition_warnings = [item["message"] for item in composition["warnings"]]
+        warnings = list(
+            dict.fromkeys(
+                [
+                    *patch.get("warnings", []),
+                    *_existing_animation_warnings(operations),
+                    *composition_warnings,
+                ]
+            )
+        )
+        checkpoint()
         for operation in operations:
+            checkpoint()
             op = operation["op"]
             entity_id = operation.get("entity_id")
             payload = operation.get("payload", {})
@@ -1588,6 +1597,8 @@ def apply_patch(patch):
                 changed.add(ensure_entity_id(_play_clip(entity_id, payload)))
             elif op == "ensure_camera":
                 changed.add(ensure_entity_id(_ensure_camera(payload)))
+            checkpoint()
+        checkpoint()
         _record_revision(revision, operations, warnings)
     except Exception:
         _restore_revision(revision, restore_audit=True)

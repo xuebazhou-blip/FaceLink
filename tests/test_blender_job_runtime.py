@@ -66,8 +66,7 @@ def test_submit_take_and_success_transition_preserve_contract(monkeypatch):
         "status": "queued",
         "created_at": 10.0,
     }
-    assert runtime.take_nowait() == ("job-1", "scan_scene", {"frame": 1})
-    runtime.mark_running("job-1")
+    assert runtime.start_next() == ("job-1", "scan_scene", {"frame": 1})
     runtime.mark_succeeded("job-1", {"entities": []})
 
     assert runtime.get("job-1") == {
@@ -77,15 +76,14 @@ def test_submit_take_and_success_transition_preserve_contract(monkeypatch):
         "finished_at": 30.0,
         "result": {"entities": []},
     }
-    assert runtime.take_nowait() is None
+    assert runtime.start_next() is None
 
 
 def test_failed_transition_uses_stable_error_shape(monkeypatch):
     runtime = job_runtime.JobRuntime()
     monkeypatch.setattr(job_runtime.time, "time", lambda: 42.0)
     runtime.submit("job-1", "stage_patch", {})
-    runtime.take_nowait()
-    runtime.mark_running("job-1")
+    runtime.start_next()
     runtime.mark_failed(
         "job-1",
         code="invalid_job_payload",
@@ -129,8 +127,7 @@ def test_registry_full_never_evicts_queued_or_running_jobs():
     runtime = job_runtime.JobRuntime(pending_capacity=3, retention_capacity=2)
     runtime.submit("job-1", "scan_scene", {})
     runtime.submit("job-2", "scan_scene", {})
-    runtime.take_nowait()
-    runtime.mark_running("job-1")
+    runtime.start_next()
 
     with pytest.raises(job_runtime.JobAdmissionError) as captured:
         runtime.submit("job-3", "scan_scene", {})
@@ -146,8 +143,7 @@ def test_new_admission_prunes_only_the_oldest_terminal_record():
     for index in range(1, 4):
         runtime.submit(f"job-{index}", "scan_scene", {})
     for index in range(1, 4):
-        assert runtime.take_nowait()[0] == f"job-{index}"
-        runtime.mark_running(f"job-{index}")
+        assert runtime.start_next()[0] == f"job-{index}"
         runtime.mark_succeeded(f"job-{index}", {"index": index})
 
     runtime.submit("job-4", "scan_scene", {})
@@ -161,7 +157,15 @@ def test_new_admission_prunes_only_the_oldest_terminal_record():
         "pending_capacity": 3,
         "retained": 3,
         "retention_capacity": 3,
-        "status_counts": {"queued": 1, "running": 0, "succeeded": 2, "failed": 0},
+        "status_counts": {
+            "queued": 1,
+            "running": 0,
+            "succeeded": 2,
+            "failed": 0,
+            "cancelled": 0,
+            "timed_out": 0,
+        },
+        "cancel_requested": 0,
         "evicted_total": 1,
     }
 
@@ -171,17 +175,17 @@ def test_duplicate_job_id_is_rejected_without_mutating_the_queue():
     runtime.submit("job-1", "scan_scene", {"first": True})
     with pytest.raises(ValueError, match="already exists"):
         runtime.submit("job-1", "undo", {"second": True})
-    assert runtime.take_nowait() == ("job-1", "scan_scene", {"first": True})
-    assert runtime.take_nowait() is None
+    assert runtime.start_next() == ("job-1", "scan_scene", {"first": True})
+    assert runtime.start_next() is None
 
 
 def test_invalid_state_transitions_and_unknown_jobs_fail_closed():
     runtime = job_runtime.JobRuntime()
     runtime.submit("job-1", "scan_scene", {})
-    with pytest.raises(RuntimeError, match="cannot transition from queued"):
+    with pytest.raises(RuntimeError, match="cannot finish from queued"):
         runtime.mark_succeeded("job-1", {})
     with pytest.raises(KeyError, match="missing"):
-        runtime.mark_running("missing")
+        runtime.raise_if_interrupted("missing")
 
 
 def test_clear_removes_records_pending_work_and_eviction_metrics():
@@ -189,13 +193,21 @@ def test_clear_removes_records_pending_work_and_eviction_metrics():
     runtime.submit("job-1", "scan_scene", {})
     runtime.clear()
     assert runtime.get("job-1") is None
-    assert runtime.take_nowait() is None
+    assert runtime.start_next() is None
     assert runtime.snapshot() == {
         "pending": 0,
         "pending_capacity": 1,
         "retained": 0,
         "retention_capacity": 1,
-        "status_counts": {"queued": 0, "running": 0, "succeeded": 0, "failed": 0},
+        "status_counts": {
+            "queued": 0,
+            "running": 0,
+            "succeeded": 0,
+            "failed": 0,
+            "cancelled": 0,
+            "timed_out": 0,
+        },
+        "cancel_requested": 0,
         "evicted_total": 0,
     }
 
@@ -219,6 +231,154 @@ def test_concurrent_admission_is_bounded_atomic_and_non_duplicating():
     assert snapshot["pending"] == 32
     assert snapshot["retained"] == 32
     accepted_ids = []
-    while (item := runtime.take_nowait()) is not None:
+    while (item := runtime.start_next()) is not None:
         accepted_ids.append(item[0])
     assert len(accepted_ids) == len(set(accepted_ids)) == 32
+
+
+def test_queued_cancel_is_immediate_idempotent_and_frees_capacity():
+    runtime = job_runtime.JobRuntime(pending_capacity=1, retention_capacity=4)
+    runtime.submit("job-1", "scan_scene", {})
+
+    cancelled = runtime.cancel("job-1")
+
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["error_code"] == "job_cancelled"
+    assert cancelled["retryable"] is False
+    assert cancelled["cancelled_at"] == cancelled["finished_at"]
+    assert runtime.start_next() is None
+    assert runtime.cancel("job-1") == cancelled
+    runtime.submit("job-2", "scan_scene", {})
+    assert runtime.snapshot()["pending"] == 1
+
+
+def test_running_cancel_requests_interruption_at_a_safe_checkpoint():
+    runtime = job_runtime.JobRuntime()
+    runtime.submit("job-1", "apply_patch", {})
+    runtime.start_next()
+
+    requested = runtime.cancel("job-1")
+
+    assert requested["status"] == "running"
+    assert requested["cancel_requested"] is True
+    with pytest.raises(job_runtime.JobInterruption) as captured:
+        runtime.raise_if_interrupted("job-1")
+    assert captured.value.status == "cancelled"
+    assert captured.value.code == "job_cancelled"
+    runtime.mark_interrupted("job-1", captured.value)
+    assert runtime.get("job-1")["status"] == "cancelled"
+    assert runtime.snapshot()["cancel_requested"] == 0
+
+
+def test_completion_wins_if_cancel_arrives_after_the_last_safe_checkpoint():
+    runtime = job_runtime.JobRuntime()
+    runtime.submit("job-1", "undo", {})
+    runtime.start_next()
+    runtime.cancel("job-1")
+
+    runtime.mark_succeeded("job-1", {"undone": True})
+
+    completed = runtime.get("job-1")
+    assert completed["status"] == "succeeded"
+    assert completed["completed_after_cancel_request"] is True
+    with pytest.raises(job_runtime.JobControlError) as captured:
+        runtime.cancel("job-1")
+    assert captured.value.code == "job_not_cancellable"
+    assert captured.value.details == {"job_id": "job-1", "status": "succeeded"}
+
+
+def test_unknown_cancel_returns_none_and_failed_job_is_not_cancellable():
+    runtime = job_runtime.JobRuntime()
+    assert runtime.cancel("missing") is None
+    runtime.submit("job-1", "scan_scene", {})
+    runtime.start_next()
+    runtime.mark_failed("job-1", code="job_rejected", message="Rejected.")
+    with pytest.raises(job_runtime.JobControlError, match="already finished"):
+        runtime.cancel("job-1")
+
+
+def test_queued_deadline_expires_without_dispatch_and_frees_capacity(monkeypatch):
+    clock = {"monotonic": 10.0, "wall": 100.0}
+    monkeypatch.setattr(job_runtime.time, "monotonic", lambda: clock["monotonic"])
+    monkeypatch.setattr(job_runtime.time, "time", lambda: clock["wall"])
+    runtime = job_runtime.JobRuntime(pending_capacity=1, retention_capacity=4)
+    queued = runtime.submit("job-1", "scan_scene", {}, timeout_ms=500)
+    assert queued["timeout_ms"] == 500
+    assert queued["deadline_at"] == 100.5
+
+    clock.update(monotonic=10.5, wall=100.5)
+    expired = runtime.get("job-1")
+
+    assert expired["status"] == "timed_out"
+    assert expired["error_code"] == "job_timed_out"
+    assert expired["retryable"] is True
+    assert expired["timed_out_at"] == 100.5
+    assert runtime.start_next() is None
+    runtime.submit("job-2", "scan_scene", {})
+
+
+def test_running_deadline_interrupts_at_checkpoint(monkeypatch):
+    clock = {"monotonic": 10.0}
+    monkeypatch.setattr(job_runtime.time, "monotonic", lambda: clock["monotonic"])
+    runtime = job_runtime.JobRuntime()
+    runtime.submit("job-1", "apply_patch", {}, timeout_ms=100)
+    runtime.start_next()
+    clock["monotonic"] = 10.1
+
+    with pytest.raises(job_runtime.JobInterruption) as captured:
+        runtime.raise_if_interrupted("job-1")
+
+    assert captured.value.status == "timed_out"
+    assert captured.value.retryable is True
+    runtime.mark_interrupted("job-1", captured.value)
+    assert runtime.get("job-1")["status"] == "timed_out"
+
+
+def test_completion_after_deadline_is_reported_as_success_with_metadata(monkeypatch):
+    clock = {"monotonic": 10.0}
+    monkeypatch.setattr(job_runtime.time, "monotonic", lambda: clock["monotonic"])
+    runtime = job_runtime.JobRuntime()
+    runtime.submit("job-1", "undo", {}, timeout_ms=100)
+    runtime.start_next()
+    clock["monotonic"] = 10.2
+
+    runtime.mark_succeeded("job-1", {"undone": True})
+
+    completed = runtime.get("job-1")
+    assert completed["status"] == "succeeded"
+    assert completed["completed_after_deadline"] is True
+
+
+def test_cancelled_and_timed_out_records_are_terminal_and_prunable(monkeypatch):
+    clock = {"monotonic": 1.0}
+    monkeypatch.setattr(job_runtime.time, "monotonic", lambda: clock["monotonic"])
+    runtime = job_runtime.JobRuntime(pending_capacity=2, retention_capacity=2)
+    runtime.submit("cancelled", "scan_scene", {})
+    runtime.cancel("cancelled")
+    runtime.submit("timed-out", "scan_scene", {}, timeout_ms=1)
+    clock["monotonic"] = 1.001
+    assert runtime.get("timed-out")["status"] == "timed_out"
+
+    runtime.submit("new", "scan_scene", {})
+
+    assert runtime.get("cancelled") is None
+    assert runtime.get("timed-out")["status"] == "timed_out"
+    assert runtime.snapshot()["evicted_total"] == 1
+
+
+def test_cancel_start_race_has_one_safe_terminal_outcome():
+    for index in range(50):
+        runtime = job_runtime.JobRuntime()
+        job_id = f"job-{index}"
+        runtime.submit(job_id, "apply_patch", {})
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            start_future = pool.submit(runtime.start_next)
+            cancel_future = pool.submit(runtime.cancel, job_id)
+            started = start_future.result()
+            cancelled = cancel_future.result()
+        if started is not None:
+            assert cancelled["cancel_requested"] is True
+            with pytest.raises(job_runtime.JobInterruption) as captured:
+                runtime.raise_if_interrupted(job_id)
+            runtime.mark_interrupted(job_id, captured.value)
+        assert runtime.get(job_id)["status"] == "cancelled"

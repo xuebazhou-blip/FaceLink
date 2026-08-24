@@ -89,11 +89,14 @@ human-readable summary.
 - Bridge acceptance must pass: localhost binding, bearer authentication, malformed requests,
   concurrent jobs, a real HTTP 429 at the pending-job boundary, non-blocking overload rejection,
   terminal-only record eviction, health capacity metrics, stable request/job errors, legacy
-  client error compatibility, protocol 1.1 fingerprint agreement, main-thread dispatch, failed-job
+  client error compatibility, queued cancellation and deadline expiry, cancel/start race safety,
+  running cancellation after a real Blender mutation, transactional cancellation rollback,
+  completion-wins metadata, protocol 1.1 fingerprint agreement, main-thread dispatch, failed-job
   reporting, protocol 1.2 history/rollback, protocol 1.3 navigation snapshots, protocol 1.4
   composition diagnostics, protocol 1.5 rig/action capabilities, protocol 1.6 rest-geometry
   guards, protocol 1.7 sampled-pose-bake, protocol 1.8 evaluated-pose-bake, protocol 1.9
-  object-motion-bake capability, protocol 1.10 bounded jobs and stable errors, and
+  object-motion-bake capability, protocol 1.10 bounded jobs and stable errors, protocol 1.11
+  deadlines and safe cancellation, and
   preview diagnostics, Undo and discovery
   cleanup.
 - The built ZIP must install, enable and load from each Blender version's isolated portable

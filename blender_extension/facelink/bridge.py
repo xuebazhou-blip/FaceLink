@@ -7,6 +7,7 @@ import tempfile
 import threading
 import traceback
 import uuid
+from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -20,10 +21,17 @@ from .executor import (
     summarize_patch,
     undo_last_patch,
 )
-from .job_runtime import JobAdmissionError, JobRuntime, error_payload
+from .job_runtime import (
+    JobAdmissionError,
+    JobControlError,
+    JobInterruption,
+    JobRuntime,
+    error_payload,
+)
 from .snapshot import scan_scene
 
 MAX_REQUEST_BYTES = 4 * 1024 * 1024
+MAX_JOB_TIMEOUT_MS = 60 * 60 * 1000
 JOBS_PER_TICK = 8
 SUPPORTED_JOB_TYPES = frozenset(
     {
@@ -164,7 +172,35 @@ class Handler(BaseHTTPRequestHandler):
                 "invalid_job_payload",
                 "The job payload must be a JSON object.",
             )
-        return job_type, payload
+        timeout_ms = request.get("timeout_ms")
+        if timeout_ms is not None and (
+            isinstance(timeout_ms, bool)
+            or not isinstance(timeout_ms, int)
+            or not 1 <= timeout_ms <= MAX_JOB_TIMEOUT_MS
+        ):
+            raise RequestError(
+                400,
+                "invalid_job_timeout",
+                "timeout_ms must be an integer from 1 through 3600000.",
+                min_timeout_ms=1,
+                max_timeout_ms=MAX_JOB_TIMEOUT_MS,
+            )
+        return job_type, payload, timeout_ms
+
+    def _cancel_job(self, job_id):
+        try:
+            job = Runtime.job_runtime.cancel(job_id)
+        except JobControlError as exc:
+            self._send_error(409, exc.code, str(exc), details=exc.details)
+            return
+        if job is None:
+            self._send_error(
+                404,
+                "job_not_found",
+                "The Blender job does not exist or its completed record has expired.",
+            )
+            return
+        self._send(202 if job["status"] == "running" else 200, job)
 
     def do_GET(self):
         if not self._authorized():
@@ -199,13 +235,20 @@ class Handler(BaseHTTPRequestHandler):
                 "A valid FaceLink bridge bearer token is required.",
             )
             return
+        parts = self.path.split("/")
+        if len(parts) == 6 and parts[1:3] == ["v1", "jobs"] and parts[4:] == ["cancel", ""]:
+            self._cancel_job(parts[3])
+            return
+        if len(parts) == 5 and parts[1:3] == ["v1", "jobs"] and parts[4] == "cancel":
+            self._cancel_job(parts[3])
+            return
         if self.path != "/v1/jobs":
             self._send_error(404, "route_not_found", "The requested bridge route does not exist.")
             return
         try:
-            job_type, payload = self._read_job_request()
+            job_type, payload, timeout_ms = self._read_job_request()
             job_id = "job-" + uuid.uuid4().hex[:16]
-            Runtime.job_runtime.submit(job_id, job_type, payload)
+            Runtime.job_runtime.submit(job_id, job_type, payload, timeout_ms=timeout_ms)
             self._send(202, {"job_id": job_id, "status": "queued"})
         except RequestError as exc:
             self._send_error(exc.status, exc.code, str(exc), details=exc.details)
@@ -219,31 +262,37 @@ class Handler(BaseHTTPRequestHandler):
 
 def _process_jobs():
     for _ in range(JOBS_PER_TICK):
-        pending = Runtime.job_runtime.take_nowait()
+        pending = Runtime.job_runtime.start_next()
         if pending is None:
             break
         job_id, job_type, payload = pending
-        Runtime.job_runtime.mark_running(job_id)
+        checkpoint = partial(Runtime.job_runtime.raise_if_interrupted, job_id)
         try:
+            checkpoint()
             if job_type == "scan_scene":
                 result = scan_scene()
+                checkpoint()
             elif job_type == "stage_patch":
-                result = stage_patch(payload["patch"])
+                result = stage_patch(payload["patch"], check_interrupted=checkpoint)
             elif job_type == "get_staged_patch":
                 result = get_staged_patch()
+                checkpoint()
             elif job_type == "apply_staged_patch":
-                result = apply_staged_patch()
+                result = apply_staged_patch(check_interrupted=checkpoint)
             elif job_type == "discard_staged_patch":
                 result = discard_staged_patch()
             elif job_type == "apply_patch":
-                result = apply_patch(payload["patch"])
+                result = apply_patch(payload["patch"], check_interrupted=checkpoint)
             elif job_type == "undo":
                 result = undo_last_patch()
             elif job_type == "list_revisions":
                 result = list_revision_history()
+                checkpoint()
             elif job_type == "rollback_revision":
                 result = rollback_to_revision(payload["revision_id"])
             Runtime.job_runtime.mark_succeeded(job_id, result)
+        except JobInterruption as exc:
+            Runtime.job_runtime.mark_interrupted(job_id, exc)
         except KeyError as exc:
             field = exc.args[0] if exc.args else "unknown"
             Runtime.job_runtime.mark_failed(
@@ -277,10 +326,25 @@ def is_running():
     return Runtime.server is not None
 
 
-def stage_patch(patch):
+def stage_patch(patch, *, check_interrupted=None):
+    def checkpoint():
+        if check_interrupted is not None:
+            check_interrupted()
+
+    checkpoint()
     summary = summarize_patch(patch)
-    summary["preview"] = overlay.set_preview(patch)
+    checkpoint()
     previous = Runtime.staged_summary
+    previous_patch = Runtime.staged_patch
+    summary["preview"] = overlay.set_preview(patch)
+    try:
+        checkpoint()
+    except Exception:
+        if previous_patch is None:
+            overlay.clear_preview()
+        else:
+            overlay.set_preview(previous_patch)
+        raise
     Runtime.staged_patch = copy.deepcopy(patch)
     Runtime.staged_summary = copy.deepcopy(summary)
     return {
@@ -298,12 +362,12 @@ def get_staged_patch():
     }
 
 
-def apply_staged_patch():
+def apply_staged_patch(*, check_interrupted=None):
     if Runtime.staged_patch is None:
         raise ValueError("No FaceLink patch is staged for review")
     patch = Runtime.staged_patch
     summary = Runtime.staged_summary
-    receipt = apply_patch(patch)
+    receipt = apply_patch(patch, check_interrupted=check_interrupted)
     clear_staged_patch()
     return {"staged": False, "summary": summary, "receipt": receipt}
 
@@ -343,7 +407,7 @@ def start_bridge():
     Runtime.static_health = {
         "ok": True,
         "facelink_version": "0.3.9",
-        "protocol_version": "1.10",
+        "protocol_version": "1.11",
         "instance_id": Runtime.instance_id,
         "blender_version": bpy.app.version_string,
         "capabilities": [
@@ -377,7 +441,14 @@ def start_bridge():
             "undo",
             "bounded_job_queue",
             "stable_error_codes",
+            "job_deadlines",
+            "safe_job_cancellation",
         ],
+        "job_control": {
+            "cancel_endpoint": "/v1/jobs/{id}/cancel",
+            "max_timeout_ms": MAX_JOB_TIMEOUT_MS,
+            "running_cancellation": "cooperative_safe_checkpoints",
+        },
     }
     Runtime.thread = threading.Thread(
         target=Runtime.server.serve_forever, name="FaceLinkBridge", daemon=True

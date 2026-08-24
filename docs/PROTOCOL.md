@@ -1,4 +1,4 @@
-# Local bridge protocol 1.10
+# Local bridge protocol 1.11
 
 The Blender extension writes one JSON discovery record per running Blender process. The
 directory is `${FACELINK_INSTANCE_DIR}` when configured, otherwise
@@ -35,9 +35,17 @@ health response contains a point-in-time `job_runtime` object:
 {
   "pending": 2,
   "pending_capacity": 128,
-  "retained": 7,
+  "retained": 9,
   "retention_capacity": 256,
-  "status_counts": {"queued": 2, "running": 0, "succeeded": 4, "failed": 1},
+  "status_counts": {
+    "queued": 2,
+    "running": 0,
+    "succeeded": 4,
+    "failed": 1,
+    "cancelled": 1,
+    "timed_out": 1
+  },
+  "cancel_requested": 0,
   "evicted_total": 3
 }
 ```
@@ -70,6 +78,50 @@ A failed job record uses `invalid_job_payload` for missing or type-invalid paylo
 an unexpected implementation failure. Unexpected exception text is not returned to the client.
 The Python bridge client exposes these fields through `BridgeError`, which remains a
 `RuntimeError` subclass for compatibility with existing callers.
+
+## Deadlines and safe cancellation
+
+Protocol 1.11 adds `job_deadlines` and `safe_job_cancellation`. A submit request may contain an
+optional top-level `timeout_ms` integer from 1 through 3,600,000. The deadline begins when the
+bridge admits the job, so it includes queue wait. The accepted job record echoes `timeout_ms`
+and an informational Unix `deadline_at`; expiry decisions use a monotonic clock and are not
+affected by wall-clock adjustments.
+
+```json
+{
+  "type": "apply_patch",
+  "payload": {"patch": {}},
+  "timeout_ms": 30000
+}
+```
+
+`POST /v1/jobs/{id}/cancel` controls an accepted job and requires the same bearer token as all
+other bridge calls. A queued job is removed immediately, releases its queue slot and becomes
+`cancelled` with `error_code: job_cancelled`. Repeating cancellation for a `cancelled` or
+`timed_out` job is idempotent. An unknown or expired ID returns `job_not_found`; a succeeded or
+failed job returns HTTP 409 with `job_not_cancellable`.
+
+A running job returns HTTP 202 with `cancel_requested: true`. Blender scene access is not
+forcefully interrupted because asynchronous exceptions can corrupt a `.blend` transaction.
+Instead, patch application checks cancellation and deadlines before and after each ordinary
+operation. Interruption raises inside the existing transaction, restores the captured scene,
+Action, camera and audit state, then records `cancelled` or `timed_out`. Staging restores the
+previous preview if interrupted, and read-only jobs check again after their scan.
+
+Some short commit operations such as Undo, revision rollback and staged-patch discard have no
+safe intermediate point. If cancellation or expiry races with their final commit, the completed
+mutation wins and the job remains `succeeded`; its record adds `completed_after_cancel_request`
+or `completed_after_deadline`. FaceLink never reports such a committed mutation as cancelled.
+This also applies to the tiny race after the final transactional checkpoint.
+
+The health `job_control` object publishes the maximum timeout, cancellation endpoint and
+`cooperative_safe_checkpoints` policy. Python clients use `submit_job(..., timeout_ms=...)`,
+`cancel_job(job_id)` or `run_job(..., job_timeout_ms=...)`. A client's polling timeout remains
+separate and does not silently create a server deadline.
+
+Protocol 1.11 adds request/control errors `invalid_job_timeout` and `job_not_cancellable`, plus
+terminal job errors `job_cancelled` and `job_timed_out`. Deadline terminal errors are retryable;
+explicit cancellation is not.
 
 Protocol 1.2 also supports `list_revisions` and `rollback_revision`. The rollback payload is
 `{"revision_id":"rev-..."}`. A rollback restores the selected revision's pre-apply state and

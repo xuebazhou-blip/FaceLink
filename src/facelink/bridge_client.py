@@ -135,11 +135,20 @@ class BridgeClient:
         )
         return _response_json(response)
 
-    def submit_job(self, job_type: str, payload: dict[str, Any] | None = None) -> str:
+    def submit_job(
+        self,
+        job_type: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        timeout_ms: int | None = None,
+    ) -> str:
+        request = {"type": job_type, "payload": payload or {}}
+        if timeout_ms is not None:
+            request["timeout_ms"] = timeout_ms
         response = httpx.post(
             f"{self.instance.base_url}/v1/jobs",
             headers=self._headers,
-            json={"type": job_type, "payload": payload or {}},
+            json=request,
             timeout=3.0,
         )
         result = _response_json(response)
@@ -150,6 +159,14 @@ class BridgeClient:
                 code="invalid_response",
             )
         return job_id
+
+    def cancel_job(self, job_id: str) -> dict[str, Any]:
+        response = httpx.post(
+            f"{self.instance.base_url}/v1/jobs/{job_id}/cancel",
+            headers=self._headers,
+            timeout=3.0,
+        )
+        return _response_json(response)
 
     def get_job(self, job_id: str) -> dict[str, Any]:
         response = httpx.get(
@@ -171,10 +188,15 @@ class BridgeClient:
                         code="invalid_response",
                     )
                 return job["result"]
-            if status == "failed":
+            if status in {"failed", "cancelled", "timed_out"}:
+                fallback_codes = {
+                    "failed": "job_failed",
+                    "cancelled": "job_cancelled",
+                    "timed_out": "job_timed_out",
+                }
                 raise BridgeError(
                     str(job.get("error", "Blender job failed")),
-                    code=str(job.get("error_code") or "job_failed"),
+                    code=str(job.get("error_code") or fallback_codes[status]),
                     retryable=job.get("retryable") is True,
                     details=job.get("details") if isinstance(job.get("details"), dict) else None,
                     retry_after_ms=(
@@ -193,9 +215,17 @@ class BridgeClient:
         raise TimeoutError(f"Blender job {job_id} did not finish within {timeout:g}s")
 
     def run_job(
-        self, job_type: str, payload: dict[str, Any] | None = None, timeout: float = 30.0
+        self,
+        job_type: str,
+        payload: dict[str, Any] | None = None,
+        timeout: float = 30.0,
+        *,
+        job_timeout_ms: int | None = None,
     ) -> dict[str, Any]:
-        return self.wait_for_job(self.submit_job(job_type, payload), timeout=timeout)
+        return self.wait_for_job(
+            self.submit_job(job_type, payload, timeout_ms=job_timeout_ms),
+            timeout=timeout,
+        )
 
 
 def select_instance(instance_id: str | None = None) -> BlenderInstance:
