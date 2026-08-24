@@ -13,6 +13,11 @@ and human CLI contracts, installer hash validation and the Windows installer's n
 `-PlanOnly` result. A release smoke test installs the built wheel into a clean off-repository
 virtual environment before publication.
 
+The repository privacy gate scans every tracked or release-bound file as raw and UTF-16-like
+content. It rejects high-risk provider/private-key signatures, the former public author email
+and known development-machine roots. Blender demo acceptance separately rejects saved Windows
+user directories and requires a relative render path inside the checked-in `.blend`.
+
 The Windows acceptance run builds the Python distributions and Blender ZIP, embeds them into
 the WinForms setup EXE, extracts them through the real setup executable, verifies both embedded
 hashes and checks that `-PlanOnly` creates no install directory. MCP configuration tests cover

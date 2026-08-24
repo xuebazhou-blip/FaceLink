@@ -12,11 +12,14 @@ if (-not $BlenderExe) {
     if ($command) { $BlenderExe = $command.Source }
 }
 if (-not $BlenderExe) {
-    $developmentRoot = 'E:\CodexData\Apps\Blender-4.5-LTS'
-    if (Test-Path -LiteralPath $developmentRoot) {
-        $BlenderExe = Get-ChildItem -LiteralPath $developmentRoot -Filter blender.exe -File -Recurse |
-            Sort-Object FullName -Descending |
-            Select-Object -First 1 -ExpandProperty FullName
+    $roots = @(
+        (Join-Path $env:ProgramFiles 'Blender Foundation'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\Blender Foundation')
+    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Container) }
+    foreach ($root in $roots) {
+        $BlenderExe = Get-ChildItem -LiteralPath $root -Filter blender.exe -File -Recurse |
+            Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+        if ($BlenderExe) { break }
     }
 }
 if (-not $BlenderExe -or -not (Test-Path -LiteralPath $BlenderExe)) {

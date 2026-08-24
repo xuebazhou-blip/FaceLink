@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 import bpy
@@ -35,6 +36,15 @@ def main() -> None:
         for curve in curves
         for point in curve.keyframe_points
     )
+    file_browser_directories = []
+    for screen in bpy.data.screens:
+        for area in screen.areas:
+            params = getattr(area.spaces.active, "params", None)
+            if area.type == "FILE_BROWSER" and params:
+                directory = bytes(params.directory).decode(errors="replace")
+                file_browser_directories.append(directory)
+                assert re.search(r"^[A-Za-z]:\\Users\\", directory, re.IGNORECASE) is None
+    assert scene.render.filepath.startswith("//")
 
     report = {
         "status": "passed",
@@ -45,6 +55,8 @@ def main() -> None:
         "fcurves": len(curves),
         "keyframe_values": keyframe_values,
         "editable": True,
+        "saved_paths_sanitized": True,
+        "file_browser_directories": file_browser_directories,
     }
     report_path = os.environ.get("FACELINK_TEST_REPORT")
     if report_path:

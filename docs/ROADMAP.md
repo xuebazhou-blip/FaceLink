@@ -108,13 +108,20 @@
 - Isolated Python host installation plus optional official Blender extension installation
 - Explicit non-bundling policy for Blender to preserve release size and version choice
 
-## v0.3.8 — current product-onboarding release
+## v0.3.8 — completed product-onboarding release
 
 - Single-file WinForms installer with embedded, checksum-verified FaceLink payloads
 - Safe managed MCP configuration for ChatGPT Desktop and local Codex clients
 - Automatic backup, idempotent updates and refusal of unmanaged configuration collisions
 - Real FaceLink-generated Blender animation demo with editable `.blend` source
 - Installer compilation, embedded-payload plan and report verification in acceptance
+
+## v0.3.9 — current privacy-hardening release
+
+- Public screenshots and Blender demo assets contain no development-machine user path
+- Development scripts use explicit inputs and conventional discovery instead of private paths
+- Repository privacy regression checks cover tracked text and binary release content
+- New commits use the GitHub noreply identity without rewriting already published history
 
 ## v0.3.x — remaining useful intelligence
 

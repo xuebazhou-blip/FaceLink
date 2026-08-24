@@ -70,8 +70,8 @@ declared supported version.
 
 ## Install the alpha release
 
-Download `FaceLink-Setup-0.3.8.exe` from the
-[FaceLink 0.3.8 Alpha release](https://github.com/xuebazhou-blip/FaceLink/releases/tag/v0.3.8),
+Download `FaceLink-Setup-0.3.9.exe` from the
+[FaceLink 0.3.9 Alpha release](https://github.com/xuebazhou-blip/FaceLink/releases/tag/v0.3.9),
 open it, choose **Check setup**, then **Install FaceLink**.
 
 This alpha EXE is not yet code-signed, so Windows SmartScreen may show an unknown-publisher
@@ -94,8 +94,8 @@ For a manual Windows install, keep the four raw release files together and run:
 
 ```powershell
 .\install-windows.ps1 `
-  -WheelPath .\facelink-0.3.8-py3-none-any.whl `
-  -ExtensionZipPath .\facelink-0.3.8.zip `
+  -WheelPath .\facelink-0.3.9-py3-none-any.whl `
+  -ExtensionZipPath .\facelink-0.3.9.zip `
   -ChecksumsPath .\SHA256SUMS.txt
 ```
 
@@ -119,14 +119,14 @@ only a warning because an MCP client can use its own model.
 To install the two components manually, continue below.
 
 In Blender 4.2 or newer, open **Edit → Preferences → Get Extensions → Install from Disk**,
-select `facelink-0.3.8.zip`, enable FaceLink, open the **FaceLink** tab in the 3D Viewport
+select `facelink-0.3.9.zip`, enable FaceLink, open the **FaceLink** tab in the 3D Viewport
 sidebar and press **Start Bridge**.
 
 Install the Python host in an isolated Python 3.11-or-newer environment:
 
 ```powershell
 py -3.11 -m venv .venv
-.\.venv\Scripts\python -m pip install .\facelink-0.3.8-py3-none-any.whl
+.\.venv\Scripts\python -m pip install .\facelink-0.3.9-py3-none-any.whl
 .\.venv\Scripts\facelink-mcp
 ```
 
@@ -136,8 +136,9 @@ MCP client configuration and the safe stage/review/apply workflow.
 ## Install for development
 
 ```powershell
-cd E:\FaceLink
-$env:UV_CACHE_DIR='E:\CodexData\Work\FaceLink\uv-cache'
+git clone https://github.com/xuebazhou-blip/FaceLink.git
+cd FaceLink
+$env:UV_CACHE_DIR = Join-Path $PWD '.cache\uv'
 uv sync --extra dev
 uv run pytest
 ```
@@ -159,7 +160,7 @@ $env:FACELINK_BLENDER_EXE='C:\path\to\Blender\blender.exe' # optional if on PATH
 ```
 
 Then in Blender 4.5: **Edit → Preferences → Get Extensions → Install from Disk**, choose
-`dist/facelink-0.3.8.zip`, enable FaceLink, and open the **FaceLink** tab in the 3D Viewport
+`dist/facelink-0.3.9.zip`, enable FaceLink, and open the **FaceLink** tab in the 3D Viewport
 sidebar. Press **Start Bridge**.
 
 Run the MCP server:
@@ -171,9 +172,10 @@ uv run facelink-mcp
 Safely create or update the shared local ChatGPT Desktop/Codex configuration:
 
 ```powershell
+$projectRoot = (Resolve-Path .).Path
 uv run facelink configure-mcp `
-  --mcp-launcher E:\FaceLink\.venv\Scripts\facelink-mcp.exe `
-  --instance-dir E:\CodexData\Work\FaceLink\instances
+  --mcp-launcher (Join-Path $projectRoot '.venv\Scripts\facelink-mcp.exe') `
+  --instance-dir (Join-Path $projectRoot '.facelink\instances')
 ```
 
 FaceLink backs up an existing `~/.codex/config.toml`, preserves unrelated settings and owns
@@ -181,11 +183,11 @@ only its clearly marked block. The resulting OpenAI-compatible configuration is 
 
 ```toml
 [mcp_servers.facelink]
-command = "E:\\FaceLink\\.venv\\Scripts\\facelink-mcp.exe"
+command = "C:\\path\\to\\FaceLink\\.venv\\Scripts\\facelink-mcp.exe"
 enabled = true
 
 [mcp_servers.facelink.env]
-FACELINK_INSTANCE_DIR = "E:\\CodexData\\Work\\FaceLink\\instances"
+FACELINK_INSTANCE_DIR = "C:\\path\\to\\FaceLink\\.facelink\\instances"
 ```
 
 The ChatGPT desktop app, Codex CLI and Codex IDE extension share this local configuration.
@@ -342,7 +344,7 @@ docs/                  Architecture, protocol and development notes
 
 ## Project status
 
-Version 0.3.8 is a creator-review alpha, not yet a production animation system. It performs
+Version 0.3.9 is a creator-review alpha, not yet a production animation system. It performs
 bounded transform-aware pose baking for reviewed mappings and can evaluate existing constraints
 and drivers when every dependency stays on the explicit source armature. It can also transfer
 unparented, unconstrained Armature-object motion without moving the target's starting placement.

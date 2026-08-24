@@ -1,3 +1,7 @@
+param(
+    [string]$BlenderExe = $env:FACELINK_BLENDER_EXE
+)
+
 $ErrorActionPreference = 'Stop'
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
@@ -6,17 +10,20 @@ if ($manifestText -notmatch '(?m)^version\s*=\s*"([^"]+)"') {
     throw 'Could not read the FaceLink extension version from blender_manifest.toml.'
 }
 $extensionPackage = Join-Path $projectRoot "dist\facelink-$($Matches[1]).zip"
-$blender = $env:FACELINK_BLENDER_EXE
+$blender = $BlenderExe
 if (-not $blender) {
     $command = Get-Command blender -ErrorAction SilentlyContinue
     if ($command) { $blender = $command.Source }
 }
 if (-not $blender) {
-    $developmentRoot = 'E:\CodexData\Apps\Blender-4.5-LTS'
-    if (Test-Path -LiteralPath $developmentRoot) {
-        $blender = Get-ChildItem -LiteralPath $developmentRoot -Filter blender.exe -File -Recurse |
-            Sort-Object FullName -Descending |
-            Select-Object -First 1 -ExpandProperty FullName
+    $roots = @(
+        (Join-Path $env:ProgramFiles 'Blender Foundation'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\Blender Foundation')
+    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Container) }
+    foreach ($root in $roots) {
+        $blender = Get-ChildItem -LiteralPath $root -Filter blender.exe -File -Recurse |
+            Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+        if ($blender) { break }
     }
 }
 if (-not $blender) { throw 'Set FACELINK_BLENDER_EXE to Blender 4.5 LTS blender.exe.' }

@@ -69,7 +69,7 @@ def test_cli_instances_prints_discovered_blender(monkeypatch, capsys, tmp_path):
 def test_cli_doctor_prints_human_report(monkeypatch, capsys):
     report = {
         "ok": True,
-        "facelink_version": "0.3.8",
+        "facelink_version": "0.3.9",
         "checks": [],
         "readiness": {"mcp": True, "byok": False},
     }
@@ -79,7 +79,7 @@ def test_cli_doctor_prints_human_report(monkeypatch, capsys):
     cli.main()
 
     output = capsys.readouterr().out
-    assert "FaceLink Doctor 0.3.8" in output
+    assert "FaceLink Doctor 0.3.9" in output
     assert "MCP ready: yes" in output
 
 
@@ -87,7 +87,7 @@ def test_cli_doctor_writes_json_and_returns_failure(monkeypatch, tmp_path):
     output_path = tmp_path / "doctor.json"
     report = {
         "ok": False,
-        "facelink_version": "0.3.8",
+        "facelink_version": "0.3.9",
         "checks": [],
         "readiness": {"mcp": False, "byok": False},
     }

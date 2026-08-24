@@ -24,8 +24,22 @@ foreach ($item in @($CscExe, $source, $wheel, $extension, $installerScript)) {
     }
 }
 
-$wheelHash = (Get-FileHash -LiteralPath $wheel -Algorithm SHA256).Hash.ToLowerInvariant()
-$extensionHash = (Get-FileHash -LiteralPath $extension -Algorithm SHA256).Hash.ToLowerInvariant()
+function Get-Sha256([string]$Path) {
+    $stream = [IO.File]::OpenRead($Path)
+    try {
+        $algorithm = [Security.Cryptography.SHA256]::Create()
+        try {
+            return -join ($algorithm.ComputeHash($stream) | ForEach-Object { $_.ToString('x2') })
+        } finally {
+            $algorithm.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
+    }
+}
+
+$wheelHash = Get-Sha256 $wheel
+$extensionHash = Get-Sha256 $extension
 $payloadText = @(
     "$wheelHash  $([IO.Path]::GetFileName($wheel))"
     "$extensionHash  $([IO.Path]::GetFileName($extension))"

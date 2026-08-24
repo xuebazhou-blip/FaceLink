@@ -188,7 +188,7 @@ namespace FaceLinkSetup
         private readonly Button check = new Button();
         private readonly Button install = new Button();
 
-        public SetupForm()
+        public SetupForm(string initialInstallRoot = null)
         {
             Text = "FaceLink Setup";
             Font = new Font("Segoe UI", 9F);
@@ -215,10 +215,12 @@ namespace FaceLinkSetup
             blender.PlaceholderTextCompat("Auto-detect Blender 4.2 or newer");
             AddPathRow("Python executable", python, 144, true);
             python.PlaceholderTextCompat("Auto-detect Python 3.11 or newer");
-            installRoot.Text = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "FaceLink"
-            );
+            installRoot.Text = String.IsNullOrWhiteSpace(initialInstallRoot)
+                ? Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "FaceLink"
+                )
+                : initialInstallRoot;
             AddPathRow("Install folder", installRoot, 194, false);
 
             installExtension.Text = "Install and enable the Blender extension";
@@ -452,7 +454,9 @@ namespace FaceLinkSetup
             if (String.IsNullOrWhiteSpace(output)) return 64;
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            using (SetupForm form = new SetupForm())
+            string installRoot = Option(args, "--install-root");
+            if (String.IsNullOrWhiteSpace(installRoot)) installRoot = @"C:\Apps\FaceLink";
+            using (SetupForm form = new SetupForm(installRoot))
             {
                 form.ShowInTaskbar = false;
                 form.Opacity = 0;

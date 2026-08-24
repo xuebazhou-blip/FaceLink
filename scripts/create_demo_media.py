@@ -145,7 +145,7 @@ def build_scene():
     target.data.materials.append(orange)
 
     path_points = [(-4.2, -2.4), (-1.5, -2.4), (-1.5, 1.8), (3.8, 1.8)]
-    for start, end in zip(path_points, path_points[1:], strict=True):
+    for start, end in zip(path_points, path_points[1:], strict=False):
         start_v = Vector((start[0], start[1], 0.035))
         end_v = Vector((end[0], end[1], 0.035))
         distance = (end_v - start_v).length
@@ -241,6 +241,15 @@ def main():
         receipt, keyframe_count = build_scene()
         scene = bpy.context.scene
         blend_path = ASSETS / "facelink-demo.blend"
+        scene.render.filepath = "//renders/frame_"
+        for screen in bpy.data.screens:
+            for area in screen.areas:
+                if area.type == "FILE_BROWSER" and getattr(area.spaces.active, "params", None):
+                    # Blender stores this value in a fixed-size buffer. Use a neutral relative
+                    # path longer than common user directories so no previous bytes survive.
+                    area.spaces.active.params.directory = (
+                        b"//public-demo/no-private-user-directory/"
+                    )
         bpy.context.preferences.filepaths.save_version = 0
         bpy.ops.wm.save_as_mainfile(filepath=str(blend_path))
         scene.render.filepath = str(FRAMES / "frame_")

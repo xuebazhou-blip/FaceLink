@@ -1,6 +1,6 @@
 param(
     [string]$BlenderExe = $env:FACELINK_BLENDER_EXE,
-    [string]$FfmpegExe = 'D:\tools\ffmpeg-2025-07-12-git-35a6de137a-essentials_build\ffmpeg-2025-07-12-git-35a6de137a-essentials_build\bin\ffmpeg.exe'
+    [string]$FfmpegExe = $env:FACELINK_FFMPEG_EXE
 )
 
 $ErrorActionPreference = 'Stop'
@@ -12,7 +12,11 @@ if (-not $BlenderExe) {
 if (-not $BlenderExe -or -not (Test-Path -LiteralPath $BlenderExe -PathType Leaf)) {
     throw 'Pass Blender 4.5 LTS with -BlenderExe.'
 }
-if (-not (Test-Path -LiteralPath $FfmpegExe -PathType Leaf)) {
+if (-not $FfmpegExe) {
+    $command = Get-Command ffmpeg -ErrorAction SilentlyContinue
+    if ($command) { $FfmpegExe = $command.Source }
+}
+if (-not $FfmpegExe -or -not (Test-Path -LiteralPath $FfmpegExe -PathType Leaf)) {
     throw 'Pass an ffmpeg executable with -FfmpegExe.'
 }
 

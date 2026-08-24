@@ -13,11 +13,26 @@ $env:TEMP = $tempRoot
 $env:TMP = $tempRoot
 
 if (-not $BlenderExe -or $BlenderExe.Count -eq 0) {
-    $BlenderExe = @(
-        'E:\CodexData\Apps\Blender-4.2-LTS\blender-4.2.23-stable+v42.d0cbe84903e8-windows.amd64-release\blender.exe',
-        'E:\CodexData\Apps\Blender-4.5-LTS\blender-4.5.12-stable+v45.84afd5f785f7-windows.amd64-release\blender.exe',
-        'E:\CodexData\Apps\Blender-5.2\blender-5.2.0-stable+v52.fbe6228777e7-windows.amd64-release\blender.exe'
-    ) | Where-Object { Test-Path -LiteralPath $_ }
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    if ($env:FACELINK_BLENDER_MATRIX) {
+        $env:FACELINK_BLENDER_MATRIX -split ';' |
+            Where-Object { $_ } | ForEach-Object { $candidates.Add($_) }
+    }
+    if ($env:FACELINK_BLENDER_EXE) { $candidates.Add($env:FACELINK_BLENDER_EXE) }
+    $command = Get-Command blender -ErrorAction SilentlyContinue
+    if ($command) { $candidates.Add($command.Source) }
+    $roots = @(
+        (Join-Path $env:ProgramFiles 'Blender Foundation'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\Blender Foundation')
+    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Container) }
+    foreach ($root in $roots) {
+        Get-ChildItem -LiteralPath $root -Filter blender.exe -File -Recurse |
+            ForEach-Object { $candidates.Add($_.FullName) }
+    }
+    $BlenderExe = $candidates |
+        Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+        ForEach-Object { (Resolve-Path -LiteralPath $_).Path } |
+        Sort-Object -Unique
 }
 if (-not $BlenderExe -or $BlenderExe.Count -eq 0) {
     throw 'No Blender executable found. Pass one or more paths with -BlenderExe.'

@@ -5,6 +5,23 @@ the public API is experimental.
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-08-24
+
+### Changed
+
+- Sanitized the public installer screenshot and editable Blender demo so they contain no
+  development-machine user directory.
+- Replaced development-machine Blender and FFmpeg paths with explicit parameters, environment
+  variables, PATH lookup and conventional installation discovery.
+- Switched project documentation examples to portable, repository-relative paths.
+
+### Security
+
+- Added a repository privacy regression test for credential signatures, personal email and
+  development-machine paths in tracked release content.
+- Future FaceLink commits use the GitHub-generated noreply identity; historical commits remain
+  unchanged to avoid a destructive public-history rewrite.
+
 ## [0.3.8] - 2026-08-21
 
 ### Added
@@ -72,7 +89,8 @@ the public API is experimental.
 
 - Added deterministic navigation and collision preflight for single-level previs scenes.
 
-[Unreleased]: https://github.com/xuebazhou-blip/FaceLink/compare/v0.3.8...HEAD
+[Unreleased]: https://github.com/xuebazhou-blip/FaceLink/compare/v0.3.9...HEAD
+[0.3.9]: https://github.com/xuebazhou-blip/FaceLink/releases/tag/v0.3.9
 [0.3.8]: https://github.com/xuebazhou-blip/FaceLink/releases/tag/v0.3.8
 [0.3.7]: https://github.com/xuebazhou-blip/FaceLink/releases/tag/v0.3.7
 [0.3.6]: https://github.com/xuebazhou-blip/FaceLink/releases/tag/v0.3.6
