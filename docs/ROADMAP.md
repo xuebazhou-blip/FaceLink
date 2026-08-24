@@ -21,7 +21,7 @@ FaceLink 生成的物体、摄像机、动作、NLA 片段和关键帧，都必�
 FaceLink 1.0 至少要让第一次使用的用户完成下面这条流程：
 
 1. 安装 FaceLink，并自动找到电脑中的 Blender。
-2. 连接一个受支持的 AI 客户端，或者填写自己的 API 密钥。
+2. 选择使用已有的 Codex/ChatGPT 订阅，或者填写自己的 API 密钥。
 3. 用自然语言描述一个镜头。
 4. 在 Blender 中查看 FaceLink 准备做出的修改。
 5. 确认修改并生成可编辑动画。
@@ -165,10 +165,13 @@ v0.7 将提供可以公开分发的小型、中型和大型测试场景生成器
 
 ### 6.3 AI 客户端和模型提供商
 
-- **会员或客户端模型方式：** 本地 MCP 客户端使用自己已经能够使用的模型，FaceLink
-  不保存模型 API 密钥。
-- **用户自带密钥方式：** OpenAI 适配器继续作为官方参考实现。密钥放在宿主环境或者
-  操作系统凭据存储中，不能写入 `.blend` 文件。
+- **Codex/ChatGPT 订阅方式：** 作为普通用户的推荐入口。FaceLink 通过 Codex 官方
+  App Server 检查登录状态、发起浏览器或设备码登录并使用订阅额度；也可以继续由已经
+  登录的本地 MCP 客户端调用 FaceLink。FaceLink 不直接读取、解析或复制 `auth.json`，
+  登录令牌的保存和刷新全部交给 Codex。
+- **用户自带 API 密钥方式：** OpenAI 适配器继续作为官方参考实现。密钥只能放在操作
+  系统凭据存储中，不能写入 `.blend`、普通配置文件、日志或诊断包。API 调用按用户的
+  OpenAI API 账户单独计费，不使用 ChatGPT 订阅额度。
 - **其他模型扩展方式：** 提供清楚的规划器接口，使其他模型提供商可以接入，同时不改变
   编译器和 Blender 执行器的安全边界。
 - **远程方式：** 可以提供一个用户自行部署的流式 HTTP MCP 网关。公开发布 ChatGPT
@@ -224,6 +227,15 @@ v0.7 将提供可以公开分发的小型、中型和大型测试场景生成器
 需要完成：
 
 - 围绕“连接、描述、预览、应用、历史记录”重新设计 Blender 侧边栏；
+- 在“连接 AI”界面提供两个同等完整的入口：“使用 Codex/ChatGPT 订阅”和“使用
+  API Key”，普通用户不需要理解 MCP、令牌文件或者环境变量；
+- 订阅入口通过 Codex App Server 查询账号状态：已经登录时直接复用 Codex 管理的登录
+  会话，未登录时弹出官方浏览器授权或设备码授权，并显示当前账号类型和可用额度状态；
+- API Key 入口提供填写、连接测试、更换和清除操作，只能通过操作系统凭据存储保存；
+- 明确禁止 FaceLink 自己打开、解析、复制或备份 `auth.json`。FaceLink 只能通过 Codex
+  官方接口使用登录状态，并且任何日志、错误提示和诊断包都不能包含令牌或 API Key；
+- 在 Codex 未安装、App Server 无法启动、登录过期、用户退出、订阅达到限额或 API Key
+  无效时，显示可操作的解决步骤，并允许用户安全切换另一种登录方式；
 - 显示连接状态、当前 Blender 实例、任务进度、安全取消和恢复提示；
 - 用结构化列表显示将要修改的对象、帧范围、警告和阻塞错误；
 - 让用户容易查看运动路径、摄像机构图和修改前后对象；
@@ -237,6 +249,11 @@ v0.7 将提供可以公开分发的小型、中型和大型测试场景生成器
 版本退出条件：
 
 - 在一台干净电脑上，从安装到完成演示不需要终端；
+- 已登录 Codex 的用户可以直接使用订阅完成一次扫描、规划、暂存和应用流程；未登录用户
+  可以从 FaceLink 界面发起官方授权，完成后不重启 Blender 就能继续；
+- 只填写 API Key 的用户也能完成同一条核心流程，并能安全更换或清除密钥；
+- 自动测试必须覆盖两种入口、登录过期、取消登录、限额、无效密钥、方式切换和重新连接；
+  隐私测试必须证明源码不会直接读取 `auth.json`，所有输出都不会泄露令牌或 API Key；
 - 至少观察 5 名第一次使用的代表性用户，其中至少 4 名在没有维护者帮助的情况下
   完成演示；所有阻塞使用的问题必须解决；
 - 每一个会修改场景的操作都有明确的检查或确认状态；
@@ -369,6 +386,8 @@ FaceLink 只有满足下面所有条件以后才能发布 1.0。
 ### 14.3 界面与产品质量条件
 
 - Blender 界面状态完整、响应及时、术语一致，核心工作流可以使用键盘操作；
+- “使用 Codex/ChatGPT 订阅”和“填写 API Key”两条连接路径都达到正式支持标准；
+  订阅路径由 Codex 官方接口管理登录，FaceLink 不直接接触 `auth.json` 中的令牌；
 - 第一次运行演示、上下文帮助、诊断和恢复不需要终端；
 - 安装、更新、修复和卸载功能完整，在操作系统支持时必须经过签名；
 - 发布说明必须列出支持版本、破坏性变化、已知限制和回退步骤。
@@ -421,6 +440,8 @@ FaceLink 只有满足下面所有条件以后才能发布 1.0。
 - [Blender 当前维护的 LTS 版本](https://www.blender.org/download/lts/)
 - [Blender 扩展、依赖和本地数据使用说明](https://docs.blender.org/manual/en/4.2/advanced/extensions/addons.html)
 - [OpenAI 关于 ChatGPT 和 Codex 使用 MCP 的说明](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)
+- [OpenAI 关于 Codex 订阅登录、API Key 和凭据存储的说明](https://learn.chatgpt.com/docs/auth)
+- [OpenAI 关于在产品中集成 Codex App Server 的说明](https://learn.chatgpt.com/docs/app-server)
 - [OpenAI 关于生产环境 MCP 与插件端点的要求](https://developers.openai.com/plugins/build/mcp-server)
 - [OpenAI 插件身份认证说明](https://developers.openai.com/plugins/build/auth)
 - [MCP 2025-11-25 身份认证规范](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization)
