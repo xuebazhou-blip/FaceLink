@@ -109,6 +109,40 @@ def test_bridge_client_sends_bearer_auth(monkeypatch, instance):
     response.raise_for_status.assert_called_once()
 
 
+def test_recovery_status_uses_authenticated_endpoint(monkeypatch, instance):
+    response = Mock()
+    response.json.return_value = {"required": True, "interrupted_jobs": []}
+    get = Mock(return_value=response)
+    monkeypatch.setattr(bridge_module.httpx, "get", get)
+
+    recovery = BridgeClient(instance).recovery_status(timeout=1.5)
+
+    assert recovery["required"] is True
+    assert get.call_args.args[0].endswith("/v1/recovery")
+    assert get.call_args.kwargs == {
+        "headers": {"Authorization": "Bearer secret"},
+        "timeout": 1.5,
+    }
+
+
+def test_acknowledge_recovery_uses_authenticated_endpoint_without_body(
+    monkeypatch, instance
+):
+    response = Mock()
+    response.json.return_value = {"required": False, "acknowledged": True}
+    post = Mock(return_value=response)
+    monkeypatch.setattr(bridge_module.httpx, "post", post)
+
+    acknowledged = BridgeClient(instance).acknowledge_recovery(timeout=2.5)
+
+    assert acknowledged["acknowledged"] is True
+    assert post.call_args.args[0].endswith("/v1/recovery/acknowledge")
+    assert post.call_args.kwargs == {
+        "headers": {"Authorization": "Bearer secret"},
+        "timeout": 2.5,
+    }
+
+
 def test_submit_and_get_job_contract(monkeypatch, instance):
     submitted = Mock()
     submitted.json.return_value = {"job_id": "job-1"}
@@ -275,6 +309,7 @@ def test_cancel_job_uses_authenticated_control_endpoint(monkeypatch, instance):
     [
         ("cancelled", "job_cancelled", False),
         ("timed_out", "job_timed_out", True),
+        ("interrupted", "job_interrupted", True),
     ],
 )
 def test_wait_for_job_surfaces_cancel_and_deadline_terminal_states(

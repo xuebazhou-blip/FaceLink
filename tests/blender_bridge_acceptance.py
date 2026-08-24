@@ -15,7 +15,9 @@ import bpy
 PROJECT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT / "blender_extension"))
 instance_root = PROJECT / ".cache" / "bridge-instances" / str(os.getpid())
+state_root = PROJECT / ".cache" / "bridge-state" / str(os.getpid())
 os.environ["FACELINK_INSTANCE_DIR"] = str(instance_root)
+os.environ["FACELINK_STATE_DIR"] = str(state_root)
 
 import facelink as blender_addon  # noqa: E402
 from facelink import bridge  # noqa: E402
@@ -74,7 +76,13 @@ def wait_job(base_url, token, job_id):
     deadline = time.monotonic() + 8
     while time.monotonic() < deadline:
         job = request_json("GET", f"{base_url}/v1/jobs/{job_id}", token)
-        if job["status"] in {"succeeded", "failed", "cancelled", "timed_out"}:
+        if job["status"] in {
+            "succeeded",
+            "failed",
+            "cancelled",
+            "timed_out",
+            "interrupted",
+        }:
             return job
         time.sleep(0.01)
     raise TimeoutError(job_id)
@@ -213,13 +221,21 @@ def client_flow(result_box):
             "stable_error_codes",
             "job_deadlines",
             "safe_job_cancellation",
+            "persistent_job_journal",
+            "startup_recovery",
         } <= set(health["capabilities"])
-        assert health["protocol_version"] == "1.11"
+        assert health["protocol_version"] == "1.12"
         assert health["job_control"] == {
             "cancel_endpoint": "/v1/jobs/{id}/cancel",
             "max_timeout_ms": 3_600_000,
             "running_cancellation": "cooperative_safe_checkpoints",
         }
+        assert health["recovery_control"] == {
+            "status_endpoint": "/v1/recovery",
+            "acknowledge_endpoint": "/v1/recovery/acknowledge",
+            "automatic_replay": False,
+        }
+        assert health["recovery"]["required"] is False
         assert health["job_runtime"]["pending_capacity"] == 128
         assert health["job_runtime"]["retention_capacity"] == 256
         assert health["job_runtime"]["pending"] == 0
@@ -462,6 +478,39 @@ def checked_scan():
 
 
 bridge.scan_scene = checked_scan
+
+# Seed the on-disk state as if Blender exited after an apply transaction committed but before
+# the terminal HTTP response. Startup must report this ambiguity without replaying the payload.
+seed_workspace_id, seed_persistent = bridge.workspace_identity(bpy.data.filepath, os.getpid())
+seed_journal = bridge.JobJournal(
+    state_root / f"{seed_workspace_id}.json",
+    workspace_id=seed_workspace_id,
+    persistent_workspace=seed_persistent,
+    session_id="acceptance-previous-session",
+)
+seed_journal.start()
+seed_journal.persist(
+    [
+        {
+            "job_id": "job-interrupted-before-response",
+            "type": "apply_patch",
+            "status": "running",
+            "created_at": 1.0,
+            "started_at": 2.0,
+            "checkpoint": "transaction_committed",
+            "checkpoint_at": 3.0,
+            "transaction_committed": True,
+            "checkpoint_metadata": {
+                "revision_id": "rev-interrupted",
+                "operation_count": 1,
+            },
+            "payload": {
+                "prompt": "FACELINK_PRIVATE_RECOVERY_PROMPT",
+                "api_key": "FACELINK_PRIVATE_RECOVERY_KEY",
+            },
+        }
+    ]
+)
 first_info = bridge.start_bridge()
 second_info = bridge.start_bridge()
 assert first_info == second_info
@@ -478,6 +527,29 @@ if bpy.app.timers.is_registered(bridge._process_jobs):
 record = json.loads(instance_file.read_text(encoding="utf-8"))
 probe_base_url = f"http://127.0.0.1:{record['port']}"
 probe_token = record["token"]
+recovery = request_json("GET", f"{probe_base_url}/v1/recovery", probe_token)
+assert recovery["required"] is True
+assert recovery["reason"] == "interrupted_jobs"
+assert recovery["previous_session_id"] == "acceptance-previous-session"
+assert recovery["persistent_workspace"] is False
+assert len(recovery["interrupted_jobs"]) == 1
+assert recovery["interrupted_jobs"][0]["may_have_committed_changes"] is True
+assert recovery["interrupted_jobs"][0]["may_have_partial_changes"] is False
+assert recovery["interrupted_jobs"][0]["guidance_code"] == "inspect_revision_history"
+assert recovery["session_id"] != recovery["previous_session_id"]
+expect_http_error(
+    401,
+    lambda: request_json("GET", f"{probe_base_url}/v1/recovery", "wrong-token"),
+    error_code="authentication_required",
+)
+acknowledged = request_json(
+    "POST", f"{probe_base_url}/v1/recovery/acknowledge", probe_token
+)
+assert acknowledged["required"] is False
+assert acknowledged["acknowledged"] is True
+assert request_json("GET", f"{probe_base_url}/v1/recovery", probe_token)[
+    "required"
+] is False
 status, invalid_size_payload = request_with_declared_size(record["port"], probe_token, 0)
 assert status == 400
 assert invalid_size_payload["error_code"] == "invalid_request_size"
@@ -488,7 +560,19 @@ assert status == 413
 assert oversized_payload["error_code"] == "request_too_large"
 assert oversized_payload["details"]["max_bytes"] == bridge.MAX_REQUEST_BYTES
 bridge.Runtime.job_runtime = bridge.JobRuntime(pending_capacity=2, retention_capacity=2)
-cancel_probe = submit(probe_base_url, probe_token, "scan_scene")
+cancel_probe = submit(
+    probe_base_url,
+    probe_token,
+    "scan_scene",
+    {
+        "prompt": "FACELINK_PRIVATE_LIVE_PROMPT",
+        "api_key": "FACELINK_PRIVATE_LIVE_KEY",
+    },
+)
+live_journal_text = bridge.Runtime.job_journal.path.read_text(encoding="utf-8")
+assert "FACELINK_PRIVATE_LIVE_PROMPT" not in live_journal_text
+assert "FACELINK_PRIVATE_LIVE_KEY" not in live_journal_text
+assert probe_token not in live_journal_text
 cancelled_status, cancelled_probe = request_json_response(
     "POST",
     f"{probe_base_url}/v1/jobs/{cancel_probe}/cancel",
@@ -691,6 +775,13 @@ assert tuple(round(value, 4) for value in actor_after_undo.location) == (0.0, 0.
 bridge.stop_bridge()
 assert not instance_file.exists()
 assert bridge.is_running() is False
+journal_path = state_root / f"{seed_workspace_id}.json"
+assert journal_path.exists()
+stopped_journal = json.loads(journal_path.read_text(encoding="utf-8"))
+assert stopped_journal["clean_shutdown"] is True
+assert stopped_journal["recovery"]["required"] is False
+assert "FACELINK_PRIVATE_RECOVERY_PROMPT" not in journal_path.read_text(encoding="utf-8")
+assert "FACELINK_PRIVATE_RECOVERY_KEY" not in journal_path.read_text(encoding="utf-8")
 result.update(
     suite="blender_bridge_acceptance",
     blender_version=bpy.app.version_string,
@@ -704,6 +795,10 @@ result.update(
     queued_deadline_http=True,
     running_cancellation_rollback=True,
     interrupted_stage_restore=True,
+    startup_recovery_http=True,
+    recovery_acknowledgement_http=True,
+    persistent_journal_privacy=True,
+    clean_shutdown_journal=True,
 )
 report_path = os.environ.get("FACELINK_TEST_REPORT")
 if report_path:

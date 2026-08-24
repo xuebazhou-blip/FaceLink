@@ -1552,7 +1552,7 @@ def _ensure_camera(payload):
     return camera
 
 
-def apply_patch(patch, *, check_interrupted=None):
+def apply_patch(patch, *, check_interrupted=None, record_checkpoint=None):
     def checkpoint():
         if check_interrupted is not None:
             check_interrupted()
@@ -1600,6 +1600,14 @@ def apply_patch(patch, *, check_interrupted=None):
             checkpoint()
         checkpoint()
         _record_revision(revision, operations, warnings)
+        if record_checkpoint is not None:
+            record_checkpoint(
+                "transaction_committed",
+                {
+                    "revision_id": revision["revision_id"],
+                    "operation_count": len(operations),
+                },
+            )
     except Exception:
         _restore_revision(revision, restore_audit=True)
         raise

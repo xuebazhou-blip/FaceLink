@@ -33,6 +33,15 @@ reliable for background or remote bridge jobs. A separate 100-entry audit log is
 the Blender Scene and survives `.blend` save/load. Persisted audit entries are never presented
 as executable snapshots after a restart.
 
+Protocol 1.12 adds a second, external task journal for crash diagnosis. It is bounded to 256
+allowlisted lifecycle records, is written by atomic replacement, and deliberately excludes job
+payloads, results, raw errors, scene snapshots, file paths and credentials. Saved files are
+associated through a one-way workspace hash; unsaved scenes are process-scoped. Startup turns
+unfinished records into a user-visible recovery report but never requeues or replays them.
+The durable `transaction_committed` checkpoint lets the user distinguish “rescan and plan
+again” from “inspect revision history before retrying” without treating the journal as an
+executable rollback snapshot.
+
 Rollback history is linear: selecting an older revision restores every newer FaceLink
 revision first, followed by the selected revision. Manual edits made after a FaceLink patch
 can still be overwritten by its snapshot restore and remain an explicit alpha limitation.

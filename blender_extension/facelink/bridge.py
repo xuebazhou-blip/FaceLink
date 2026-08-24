@@ -21,6 +21,7 @@ from .executor import (
     summarize_patch,
     undo_last_patch,
 )
+from .job_journal import JobJournal, JournalError, workspace_identity
 from .job_runtime import (
     JobAdmissionError,
     JobControlError,
@@ -62,7 +63,13 @@ class Runtime:
     token = None
     instance_id = None
     instance_file = None
+    session_id = None
     job_runtime = JobRuntime()
+    job_journal = None
+    persisted_job_version = None
+    journal_lock = threading.Lock()
+    lifecycle_lock = threading.Lock()
+    stopping = False
     static_health = {}
     staged_patch = None
     staged_summary = None
@@ -75,12 +82,60 @@ def _instance_directory():
     return root
 
 
+def _state_directory():
+    override = os.environ.get("FACELINK_STATE_DIR")
+    if override:
+        root = Path(override)
+    else:
+        root = Path(bpy.utils.user_resource("CONFIG")) / "facelink" / "state"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _persist_job_journal(*, clean_shutdown=False, force=False):
+    with Runtime.journal_lock:
+        journal = Runtime.job_journal
+        if journal is None:
+            return
+        version, records = Runtime.job_runtime.records_with_version()
+        runtime_version = (id(Runtime.job_runtime), version)
+        if not force and not clean_shutdown and runtime_version == Runtime.persisted_job_version:
+            return
+        journal.persist(records, clean_shutdown=clean_shutdown)
+        Runtime.persisted_job_version = runtime_version
+
+
+def _recovery_status():
+    if Runtime.job_journal is None:
+        return None
+    return Runtime.job_journal.status()
+
+
+def _record_job_checkpoint(job_id, checkpoint, metadata=None):
+    Runtime.job_runtime.set_checkpoint(job_id, checkpoint, metadata)
+    _persist_job_journal()
+
+
 def _safe_job(job_id):
-    return Runtime.job_runtime.get(job_id)
+    job = Runtime.job_runtime.get(job_id)
+    _persist_job_journal()
+    return job
 
 
 def _health_payload():
-    return {**Runtime.static_health, "job_runtime": Runtime.job_runtime.snapshot()}
+    job_runtime = Runtime.job_runtime.snapshot()
+    _persist_job_journal()
+    recovery = _recovery_status() or {}
+    return {
+        **Runtime.static_health,
+        "job_runtime": job_runtime,
+        "recovery": {
+            "required": recovery.get("required", False),
+            "reason": recovery.get("reason", "none"),
+            "interrupted_job_count": len(recovery.get("interrupted_jobs", [])),
+            "persistent_workspace": recovery.get("persistent_workspace", False),
+        },
+    }
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -188,18 +243,37 @@ class Handler(BaseHTTPRequestHandler):
         return job_type, payload, timeout_ms
 
     def _cancel_job(self, job_id):
-        try:
-            job = Runtime.job_runtime.cancel(job_id)
-        except JobControlError as exc:
-            self._send_error(409, exc.code, str(exc), details=exc.details)
-            return
-        if job is None:
-            self._send_error(
-                404,
-                "job_not_found",
-                "The Blender job does not exist or its completed record has expired.",
-            )
-            return
+        with Runtime.lifecycle_lock:
+            if Runtime.stopping:
+                self._send_error(
+                    503,
+                    "bridge_stopping",
+                    "The Blender bridge is stopping and cannot accept job control requests.",
+                    retryable=True,
+                )
+                return
+            try:
+                job = Runtime.job_runtime.cancel(job_id)
+            except JobControlError as exc:
+                self._send_error(409, exc.code, str(exc), details=exc.details)
+                return
+            if job is None:
+                self._send_error(
+                    404,
+                    "job_not_found",
+                    "The Blender job does not exist or its completed record has expired.",
+                )
+                return
+            try:
+                _persist_job_journal()
+            except JournalError:
+                self._send_error(
+                    503,
+                    "journal_unavailable",
+                    "The task journal could not be persisted; no job will be executed.",
+                    retryable=True,
+                )
+                return
         self._send(202 if job["status"] == "running" else 200, job)
 
     def do_GET(self):
@@ -211,11 +285,31 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         if self.path == "/v1/health":
-            self._send(200, _health_payload())
+            try:
+                self._send(200, _health_payload())
+            except JournalError:
+                self._send_error(
+                    503,
+                    "journal_unavailable",
+                    "The task journal could not be persisted.",
+                    retryable=True,
+                )
+            return
+        if self.path == "/v1/recovery":
+            self._send(200, _recovery_status())
             return
         if self.path.startswith("/v1/jobs/"):
             job_id = self.path.rsplit("/", 1)[-1]
-            job = _safe_job(job_id)
+            try:
+                job = _safe_job(job_id)
+            except JournalError:
+                self._send_error(
+                    503,
+                    "journal_unavailable",
+                    "The task journal could not be persisted.",
+                    retryable=True,
+                )
+                return
             if job:
                 self._send(200, job)
             else:
@@ -235,6 +329,26 @@ class Handler(BaseHTTPRequestHandler):
                 "A valid FaceLink bridge bearer token is required.",
             )
             return
+        if self.path == "/v1/recovery/acknowledge":
+            with Runtime.lifecycle_lock:
+                if Runtime.stopping:
+                    self._send_error(
+                        503,
+                        "bridge_stopping",
+                        "The Blender bridge is stopping and cannot accept recovery control.",
+                        retryable=True,
+                    )
+                    return
+                try:
+                    self._send(200, Runtime.job_journal.acknowledge())
+                except JournalError:
+                    self._send_error(
+                        503,
+                        "journal_unavailable",
+                        "The recovery acknowledgement could not be persisted.",
+                        retryable=True,
+                    )
+            return
         parts = self.path.split("/")
         if len(parts) == 6 and parts[1:3] == ["v1", "jobs"] and parts[4:] == ["cancel", ""]:
             self._cancel_job(parts[3])
@@ -247,8 +361,28 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             job_type, payload, timeout_ms = self._read_job_request()
-            job_id = "job-" + uuid.uuid4().hex[:16]
-            Runtime.job_runtime.submit(job_id, job_type, payload, timeout_ms=timeout_ms)
+            with Runtime.lifecycle_lock:
+                if Runtime.stopping:
+                    self._send_error(
+                        503,
+                        "bridge_stopping",
+                        "The Blender bridge is stopping and cannot accept new jobs.",
+                        retryable=True,
+                    )
+                    return
+                job_id = "job-" + uuid.uuid4().hex[:16]
+                Runtime.job_runtime.submit(job_id, job_type, payload, timeout_ms=timeout_ms)
+                try:
+                    _persist_job_journal()
+                except JournalError:
+                    Runtime.job_runtime.cancel(job_id)
+                    self._send_error(
+                        503,
+                        "journal_unavailable",
+                        "The task journal could not be persisted; the job was not accepted.",
+                        retryable=True,
+                    )
+                    return
             self._send(202, {"job_id": job_id, "status": "queued"})
         except RequestError as exc:
             self._send_error(exc.status, exc.code, str(exc), details=exc.details)
@@ -267,7 +401,9 @@ def _process_jobs():
             break
         job_id, job_type, payload = pending
         checkpoint = partial(Runtime.job_runtime.raise_if_interrupted, job_id)
+        record_checkpoint = partial(_record_job_checkpoint, job_id)
         try:
+            _persist_job_journal()
             checkpoint()
             if job_type == "scan_scene":
                 result = scan_scene()
@@ -278,11 +414,18 @@ def _process_jobs():
                 result = get_staged_patch()
                 checkpoint()
             elif job_type == "apply_staged_patch":
-                result = apply_staged_patch(check_interrupted=checkpoint)
+                result = apply_staged_patch(
+                    check_interrupted=checkpoint,
+                    record_checkpoint=record_checkpoint,
+                )
             elif job_type == "discard_staged_patch":
                 result = discard_staged_patch()
             elif job_type == "apply_patch":
-                result = apply_patch(payload["patch"], check_interrupted=checkpoint)
+                result = apply_patch(
+                    payload["patch"],
+                    check_interrupted=checkpoint,
+                    record_checkpoint=record_checkpoint,
+                )
             elif job_type == "undo":
                 result = undo_last_patch()
             elif job_type == "list_revisions":
@@ -312,6 +455,24 @@ def _process_jobs():
                 code="job_rejected",
                 message=str(exc),
             )
+        except JournalError:
+            job = Runtime.job_runtime.get(job_id)
+            if job and job.get("transaction_committed") is True:
+                metadata = job.get("checkpoint_metadata", {})
+                Runtime.job_runtime.set_checkpoint(
+                    job_id,
+                    "transaction_rolled_back",
+                    {
+                        "revision_id": metadata.get("revision_id"),
+                        "rolled_back_count": metadata.get("operation_count", 0),
+                    },
+                )
+            Runtime.job_runtime.mark_failed(
+                job_id,
+                code="journal_unavailable",
+                message="The task journal became unavailable; the job stopped safely.",
+                retryable=True,
+            )
         except Exception:
             traceback.print_exc()
             Runtime.job_runtime.mark_failed(
@@ -319,6 +480,10 @@ def _process_jobs():
                 code="internal_error",
                 message="The Blender job failed unexpectedly.",
             )
+        try:
+            _persist_job_journal()
+        except JournalError:
+            traceback.print_exc()
     return 0.05 if Runtime.server else None
 
 
@@ -362,12 +527,16 @@ def get_staged_patch():
     }
 
 
-def apply_staged_patch(*, check_interrupted=None):
+def apply_staged_patch(*, check_interrupted=None, record_checkpoint=None):
     if Runtime.staged_patch is None:
         raise ValueError("No FaceLink patch is staged for review")
     patch = Runtime.staged_patch
     summary = Runtime.staged_summary
-    receipt = apply_patch(patch, check_interrupted=check_interrupted)
+    receipt = apply_patch(
+        patch,
+        check_interrupted=check_interrupted,
+        record_checkpoint=record_checkpoint,
+    )
     clear_staged_patch()
     return {"staged": False, "summary": summary, "receipt": receipt}
 
@@ -400,14 +569,26 @@ def start_bridge():
     if Runtime.server:
         return connection_info()
     Runtime.token = secrets.token_urlsafe(32)
+    Runtime.stopping = False
     Runtime.instance_id = f"blender-{os.getpid()}"
+    Runtime.session_id = "session-" + uuid.uuid4().hex
     Runtime.job_runtime.clear()
+    workspace_id, persistent_workspace = workspace_identity(bpy.data.filepath, os.getpid())
+    Runtime.job_journal = JobJournal(
+        _state_directory() / f"{workspace_id}.json",
+        workspace_id=workspace_id,
+        persistent_workspace=persistent_workspace,
+        session_id=Runtime.session_id,
+    )
+    Runtime.persisted_job_version = None
+    Runtime.job_journal.start()
+    _persist_job_journal(force=True)
     Runtime.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     Runtime.server.daemon_threads = True
     Runtime.static_health = {
         "ok": True,
         "facelink_version": "0.3.9",
-        "protocol_version": "1.11",
+        "protocol_version": "1.12",
         "instance_id": Runtime.instance_id,
         "blender_version": bpy.app.version_string,
         "capabilities": [
@@ -443,11 +624,18 @@ def start_bridge():
             "stable_error_codes",
             "job_deadlines",
             "safe_job_cancellation",
+            "persistent_job_journal",
+            "startup_recovery",
         ],
         "job_control": {
             "cancel_endpoint": "/v1/jobs/{id}/cancel",
             "max_timeout_ms": MAX_JOB_TIMEOUT_MS,
             "running_cancellation": "cooperative_safe_checkpoints",
+        },
+        "recovery_control": {
+            "status_endpoint": "/v1/recovery",
+            "acknowledge_endpoint": "/v1/recovery/acknowledge",
+            "automatic_replay": False,
         },
     }
     Runtime.thread = threading.Thread(
@@ -471,7 +659,14 @@ def start_bridge():
 
 def stop_bridge():
     server = Runtime.server
-    Runtime.server = None
+    with Runtime.lifecycle_lock:
+        Runtime.stopping = True
+        Runtime.server = None
+        Runtime.job_runtime.interrupt_active()
+        try:
+            _persist_job_journal(clean_shutdown=True, force=True)
+        except JournalError:
+            traceback.print_exc()
     if server:
         server.shutdown()
         server.server_close()
@@ -484,4 +679,7 @@ def stop_bridge():
     Runtime.token = None
     Runtime.instance_id = None
     Runtime.job_runtime.clear()
+    Runtime.session_id = None
+    Runtime.job_journal = None
+    Runtime.persisted_job_version = None
     Runtime.static_health = {}

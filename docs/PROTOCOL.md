@@ -1,4 +1,4 @@
-# Local bridge protocol 1.11
+# Local bridge protocol 1.12
 
 The Blender extension writes one JSON discovery record per running Blender process. The
 directory is `${FACELINK_INSTANCE_DIR}` when configured, otherwise
@@ -13,6 +13,9 @@ reading or exposing the discovery token.
 | `GET` | `/v1/health` | Protocol, capability and bounded job-runtime information |
 | `POST` | `/v1/jobs` | Queue one of the jobs below |
 | `GET` | `/v1/jobs/{id}` | Poll a job until succeeded or failed |
+| `POST` | `/v1/jobs/{id}/cancel` | Cancel queued work or request a safe running cancellation |
+| `GET` | `/v1/recovery` | Inspect interrupted work from the previous bridge session |
+| `POST` | `/v1/recovery/acknowledge` | Acknowledge the current recovery report |
 
 Supported jobs are `scan_scene`, `stage_patch`, `get_staged_patch`,
 `apply_staged_patch`, `discard_staged_patch`, `apply_patch` and `undo`.
@@ -43,7 +46,8 @@ health response contains a point-in-time `job_runtime` object:
     "succeeded": 4,
     "failed": 1,
     "cancelled": 1,
-    "timed_out": 1
+    "timed_out": 1,
+    "interrupted": 0
   },
   "cancel_requested": 0,
   "evicted_total": 3
@@ -70,8 +74,8 @@ Every protocol error keeps the legacy human-readable `error` string and adds sta
 HTTP 429 responses also include `Retry-After: 1`. Request-level stable codes are
 `authentication_required`, `route_not_found`, `job_not_found`, `invalid_content_length`,
 `invalid_request_size`, `request_too_large`, `invalid_json`, `invalid_request`,
-`unsupported_job_type`, `invalid_job_payload`, `queue_full` and `job_registry_full`. Request
-bodies are limited to 4 MiB.
+`unsupported_job_type`, `invalid_job_payload`, `queue_full`, `job_registry_full`,
+`journal_unavailable` and `bridge_stopping`. Request bodies are limited to 4 MiB.
 
 A failed job record uses `invalid_job_payload` for missing or type-invalid payload data,
 `job_rejected` for a valid request rejected by scene-aware validation, and `internal_error` for
@@ -122,6 +126,45 @@ separate and does not silently create a server deadline.
 Protocol 1.11 adds request/control errors `invalid_job_timeout` and `job_not_cancellable`, plus
 terminal job errors `job_cancelled` and `job_timed_out`. Deadline terminal errors are retryable;
 explicit cancellation is not.
+
+## Persistent journal and startup recovery
+
+Protocol 1.12 adds `persistent_job_journal` and `startup_recovery`. Before an accepted job is
+returned to a client, the bridge atomically persists a bounded lifecycle record. It records at
+most 256 jobs and only a fixed allowlist of identifiers, job types, timestamps, status,
+deadlines, cancellation state and transaction-checkpoint metadata. It never persists a request
+payload, prompt, patch body, result, scene snapshot, bearer token, provider key, raw exception
+text or `.blend` path.
+
+The journal uses `${FACELINK_STATE_DIR}` when configured, otherwise Blender's user configuration
+directory under `facelink/state`. A saved `.blend` receives a stable SHA-256-derived workspace
+identifier without exposing its path. An unsaved file uses a process-scoped identifier and the
+recovery response explicitly advises saving before cross-process recovery can be expected.
+Writes use a same-directory temporary file, flush and atomic replacement. A malformed journal
+is preserved with a `.corrupt-<timestamp>` suffix and startup reports
+`recovery_journal_corrupt` instead of silently trusting or deleting it.
+
+Lifecycle checkpoints are `accepted`, `main_thread_started`, `transaction_committed` and
+`terminal`. Patch execution persists `transaction_committed` only after the Blender revision
+audit entry has been written. If that durable checkpoint fails, the existing patch transaction
+restores the scene and audit state. Bridge shutdown changes queued or running work to terminal
+`interrupted` records with `bridge_stopped` and persists them before clearing memory.
+
+On startup, prior `queued`, `running` or `interrupted` records appear in `GET /v1/recovery`.
+FaceLink never replays them automatically. Records with a committed-transaction signal return
+`guidance_code: inspect_revision_history`; other records return
+`guidance_code: rescan_and_replan`. A mutating job that reached the Blender main thread but not
+the committed checkpoint reports `may_have_partial_changes: true` and
+`guidance_code: rescan_and_inspect_scene`, because a hard process crash cannot run the in-memory
+rollback handler. An unclean shutdown without an identifiable active job still requires a fresh
+scene scan. `POST /v1/recovery/acknowledge` durably clears the report but does not modify the
+Blender scene. Health exposes only the recovery reason and interrupted-job count; the full
+sanitized report remains behind the authenticated recovery endpoint.
+
+If admission, cancellation or a safe transaction checkpoint cannot be journaled, the bridge
+fails closed with HTTP/job error `journal_unavailable`. Python clients use `recovery_status()`
+and `acknowledge_recovery()`. They also treat `interrupted` as a terminal status, with fallback
+error code `job_interrupted` for compatible servers.
 
 Protocol 1.2 also supports `list_revisions` and `rollback_revision`. The rollback payload is
 `{"revision_id":"rev-..."}`. A rollback restores the selected revision's pre-apply state and

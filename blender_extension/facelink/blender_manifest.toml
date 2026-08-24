@@ -10,4 +10,4 @@ license = ["SPDX:GPL-3.0-or-later"]
 
 [permissions]
 network = "Runs an authenticated bridge bound only to 127.0.0.1"
-files = "Writes one instance-discovery record to a temporary folder"
+files = "Writes discovery metadata and a sanitized recovery journal"

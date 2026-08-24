@@ -2274,6 +2274,49 @@ def test_failed_patch_rolls_back_earlier_operations():
     assert tuple(round(value, 4) for value in restored.location) == (0.0, 0.0, 0.0)
 
 
+def test_transaction_checkpoint_failure_rolls_back_scene_and_audit():
+    actor = cube("Checkpoint Actor")
+    actor_id = ensure_entity_id(actor)
+    patch = operation_patch(
+        {
+            "op": "keyframe_transform",
+            "entity_id": actor_id,
+            "payload": {"frames": [{"frame": 1, "location": [7, 0, 0]}]},
+        },
+        patch_id="checkpoint-rollback",
+    )
+
+    def unavailable_journal(checkpoint, metadata):
+        assert checkpoint == "transaction_committed"
+        assert metadata["operation_count"] == 1
+        assert metadata["revision_id"].startswith("rev-")
+        raise RuntimeError("injected journal failure")
+
+    try:
+        apply_patch(patch, record_checkpoint=unavailable_journal)
+    except RuntimeError as exc:
+        assert "injected journal failure" in str(exc)
+    else:
+        raise AssertionError("A patch survived a failed durable transaction checkpoint")
+    restored = bpy.data.objects.get("Checkpoint Actor")
+    assert restored is not None
+    assert tuple(round(value, 4) for value in restored.location) == (0.0, 0.0, 0.0)
+    assert restored.animation_data is None
+    assert list_revision_history()["entries"] == []
+
+    checkpoints = []
+    receipt = apply_patch(
+        patch,
+        record_checkpoint=lambda name, metadata: checkpoints.append((name, metadata)),
+    )
+    assert checkpoints == [
+        (
+            "transaction_committed",
+            {"revision_id": receipt["revision_id"], "operation_count": 1},
+        )
+    ]
+
+
 def test_internal_timeline_overlap_is_rejected_before_staging():
     actor = cube("Timeline Conflict Actor")
     actor_id = ensure_entity_id(actor)
@@ -3079,6 +3122,10 @@ CASES = [
     ("locked_and_unknown_fail_closed", test_locked_objects_and_unknown_operations_fail_closed),
     ("missing_entity_error", test_missing_entity_fails_with_clear_error),
     ("failed_patch_transaction_rollback", test_failed_patch_rolls_back_earlier_operations),
+    (
+        "transaction_checkpoint_rollback",
+        test_transaction_checkpoint_failure_rolls_back_scene_and_audit,
+    ),
     ("internal_timeline_overlap", test_internal_timeline_overlap_is_rejected_before_staging),
     ("existing_keyframe_warning", test_existing_keyframes_are_reported_as_review_warnings),
     (

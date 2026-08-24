@@ -15,6 +15,10 @@ the public API is experimental.
   cooperative safe-checkpoint cancellation for running Blender jobs.
 - Added client cancellation and deadline controls with explicit cancelled, timed-out and
   completion-wins lifecycle metadata.
+- Added protocol 1.12 atomic, bounded and sanitized job journals with durable lifecycle and
+  transaction checkpoints.
+- Added authenticated startup-recovery status and acknowledgement endpoints. Interrupted work
+  is reported with rescan or revision-history guidance and is never replayed automatically.
 
 ### Security
 
@@ -22,6 +26,8 @@ the public API is experimental.
   implementation details to bridge clients.
 - Running patch cancellation uses the existing revision transaction to restore scene, animation,
   camera and audit state instead of injecting an unsafe asynchronous Blender exception.
+- Persisted job records exclude payloads, prompts, patch bodies, results, scene snapshots, raw
+  errors, file paths and credentials; corrupt journals are quarantined instead of trusted.
 
 ## [0.3.9] - 2026-08-24
 

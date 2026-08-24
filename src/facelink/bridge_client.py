@@ -135,6 +135,22 @@ class BridgeClient:
         )
         return _response_json(response)
 
+    def recovery_status(self, timeout: float = 2.0) -> dict[str, Any]:
+        response = httpx.get(
+            f"{self.instance.base_url}/v1/recovery",
+            headers=self._headers,
+            timeout=timeout,
+        )
+        return _response_json(response)
+
+    def acknowledge_recovery(self, timeout: float = 3.0) -> dict[str, Any]:
+        response = httpx.post(
+            f"{self.instance.base_url}/v1/recovery/acknowledge",
+            headers=self._headers,
+            timeout=timeout,
+        )
+        return _response_json(response)
+
     def submit_job(
         self,
         job_type: str,
@@ -188,11 +204,12 @@ class BridgeClient:
                         code="invalid_response",
                     )
                 return job["result"]
-            if status in {"failed", "cancelled", "timed_out"}:
+            if status in {"failed", "cancelled", "timed_out", "interrupted"}:
                 fallback_codes = {
                     "failed": "job_failed",
                     "cancelled": "job_cancelled",
                     "timed_out": "job_timed_out",
+                    "interrupted": "job_interrupted",
                 }
                 raise BridgeError(
                     str(job.get("error", "Blender job failed")),

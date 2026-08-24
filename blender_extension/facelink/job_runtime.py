@@ -7,7 +7,9 @@ from typing import Any
 
 DEFAULT_PENDING_CAPACITY = 128
 DEFAULT_RETENTION_CAPACITY = 256
-TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled", "timed_out"})
+TERMINAL_STATUSES = frozenset(
+    {"succeeded", "failed", "cancelled", "timed_out", "interrupted"}
+)
 
 
 def error_payload(
@@ -86,6 +88,15 @@ class JobInterruption(RuntimeError):
             retryable=True,
         )
 
+    @classmethod
+    def bridge_stopped(cls) -> JobInterruption:
+        return cls(
+            "interrupted",
+            "bridge_stopped",
+            "The Blender bridge stopped before the job reached a terminal response.",
+            retryable=True,
+        )
+
 
 class JobRuntime:
     """Thread-safe, bounded lifecycle and admission control for Blender bridge jobs."""
@@ -108,6 +119,7 @@ class JobRuntime:
         self._jobs: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
         self._evicted_total = 0
+        self._version = 0
 
     def get(self, job_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -150,6 +162,8 @@ class JobRuntime:
                 "type": job_type,
                 "status": "queued",
                 "created_at": wall_now,
+                "checkpoint": "accepted",
+                "checkpoint_at": wall_now,
             }
             if timeout_ms is not None:
                 record.update(
@@ -160,6 +174,7 @@ class JobRuntime:
             self._jobs[job_id] = record
             self._work_items[job_id] = (job_type, payload)
             self._pending.append(job_id)
+            self._touch_locked()
             return dict(record)
 
     def start_next(self) -> tuple[str, str, dict[str, Any]] | None:
@@ -170,7 +185,14 @@ class JobRuntime:
             job_id = self._pending.popleft()
             job_type, payload = self._work_items.pop(job_id)
             job = self._jobs[job_id]
-            job.update(status="running", started_at=time.time())
+            started_at = time.time()
+            job.update(
+                status="running",
+                started_at=started_at,
+                checkpoint="main_thread_started",
+                checkpoint_at=started_at,
+            )
+            self._touch_locked()
             return job_id, job_type, payload
 
     def cancel(self, job_id: str) -> dict[str, Any] | None:
@@ -186,6 +208,7 @@ class JobRuntime:
             elif status == "running":
                 if not job.get("cancel_requested"):
                     job.update(cancel_requested=True, cancel_requested_at=time.time())
+                    self._touch_locked()
             elif status in {"cancelled", "timed_out"}:
                 pass
             else:
@@ -222,7 +245,9 @@ class JobRuntime:
                 result=result,
                 finished_at=time.time(),
             )
+            self._mark_terminal_checkpoint_locked(job)
             self._deadlines.pop(job_id, None)
+            self._touch_locked()
 
     def mark_failed(
         self,
@@ -238,12 +263,51 @@ class JobRuntime:
             changes = error_payload(code, message, retryable=retryable, details=details)
             changes.update(status="failed", finished_at=time.time())
             job.update(changes)
+            self._mark_terminal_checkpoint_locked(job)
             self._deadlines.pop(job_id, None)
+            self._touch_locked()
 
     def mark_interrupted(self, job_id: str, interruption: JobInterruption) -> None:
         with self._lock:
             self._require_running_locked(job_id)
             self._finish_interrupted_locked(job_id, interruption)
+
+    def set_checkpoint(
+        self,
+        job_id: str,
+        checkpoint: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        with self._lock:
+            job = self._require_running_locked(job_id)
+            job.update(checkpoint=checkpoint, checkpoint_at=time.time())
+            if checkpoint == "transaction_committed":
+                job["transaction_committed"] = True
+            elif checkpoint == "transaction_rolled_back":
+                job["transaction_committed"] = False
+            if metadata:
+                job["checkpoint_metadata"] = dict(metadata)
+            else:
+                job.pop("checkpoint_metadata", None)
+            self._touch_locked()
+
+    def interrupt_active(self) -> list[dict[str, Any]]:
+        with self._lock:
+            interrupted = []
+            for job_id, job in self._jobs.items():
+                if job["status"] not in {"queued", "running"}:
+                    continue
+                interrupted_from = job["status"]
+                self._finish_interrupted_locked(job_id, JobInterruption.bridge_stopped())
+                job["interrupted_from"] = interrupted_from
+                interrupted.append(dict(job))
+            self._pending.clear()
+            return interrupted
+
+    def records_with_version(self) -> tuple[int, list[dict[str, Any]]]:
+        with self._lock:
+            self._expire_queued_locked(time.monotonic())
+            return self._version, [dict(job) for job in self._jobs.values()]
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -257,6 +321,7 @@ class JobRuntime:
                     "failed",
                     "cancelled",
                     "timed_out",
+                    "interrupted",
                 )
             }
             return {
@@ -279,6 +344,7 @@ class JobRuntime:
             self._work_items.clear()
             self._deadlines.clear()
             self._evicted_total = 0
+            self._touch_locked()
 
     def _require_running_locked(self, job_id: str) -> dict[str, Any]:
         job = self._jobs.get(job_id)
@@ -319,10 +385,14 @@ class JobRuntime:
         job.update(status=interruption.status, finished_at=finished_at)
         if interruption.status == "cancelled":
             job["cancelled_at"] = finished_at
-        else:
+        elif interruption.status == "timed_out":
             job["timed_out_at"] = finished_at
+        else:
+            job["interrupted_at"] = finished_at
+        self._mark_terminal_checkpoint_locked(job)
         self._work_items.pop(job_id, None)
         self._deadlines.pop(job_id, None)
+        self._touch_locked()
 
     def _prune_terminal_jobs_locked(self, *, required_slots: int) -> None:
         target_size = self.retention_capacity - required_slots
@@ -334,8 +404,16 @@ class JobRuntime:
                 self._work_items.pop(job_id, None)
                 self._deadlines.pop(job_id, None)
                 self._evicted_total += 1
+                self._touch_locked()
                 if len(self._jobs) <= target_size:
                     return
+
+    @staticmethod
+    def _mark_terminal_checkpoint_locked(job: dict[str, Any]) -> None:
+        job.update(checkpoint="terminal", checkpoint_at=job["finished_at"])
+
+    def _touch_locked(self) -> None:
+        self._version += 1
 
     def _capacity_details_locked(self) -> dict[str, int]:
         return {

@@ -96,7 +96,9 @@ human-readable summary.
   composition diagnostics, protocol 1.5 rig/action capabilities, protocol 1.6 rest-geometry
   guards, protocol 1.7 sampled-pose-bake, protocol 1.8 evaluated-pose-bake, protocol 1.9
   object-motion-bake capability, protocol 1.10 bounded jobs and stable errors, protocol 1.11
-  deadlines and safe cancellation, and
+  deadlines and safe cancellation, protocol 1.12 atomic bounded journals, corrupt-journal
+  quarantine, startup recovery, explicit acknowledgement, no automatic replay, checkpoint
+  rollback and persisted-record privacy, and
   preview diagnostics, Undo and discovery
   cleanup.
 - The built ZIP must install, enable and load from each Blender version's isolated portable

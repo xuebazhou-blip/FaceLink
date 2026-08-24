@@ -65,6 +65,8 @@ def test_submit_take_and_success_transition_preserve_contract(monkeypatch):
         "type": "scan_scene",
         "status": "queued",
         "created_at": 10.0,
+        "checkpoint": "accepted",
+        "checkpoint_at": 10.0,
     }
     assert runtime.start_next() == ("job-1", "scan_scene", {"frame": 1})
     runtime.mark_succeeded("job-1", {"entities": []})
@@ -74,6 +76,8 @@ def test_submit_take_and_success_transition_preserve_contract(monkeypatch):
         "status": "succeeded",
         "started_at": 20.0,
         "finished_at": 30.0,
+        "checkpoint": "terminal",
+        "checkpoint_at": 30.0,
         "result": {"entities": []},
     }
     assert runtime.start_next() is None
@@ -164,6 +168,7 @@ def test_new_admission_prunes_only_the_oldest_terminal_record():
             "failed": 0,
             "cancelled": 0,
             "timed_out": 0,
+            "interrupted": 0,
         },
         "cancel_requested": 0,
         "evicted_total": 1,
@@ -206,6 +211,7 @@ def test_clear_removes_records_pending_work_and_eviction_metrics():
             "failed": 0,
             "cancelled": 0,
             "timed_out": 0,
+            "interrupted": 0,
         },
         "cancel_requested": 0,
         "evicted_total": 0,
@@ -382,3 +388,101 @@ def test_cancel_start_race_has_one_safe_terminal_outcome():
                 runtime.raise_if_interrupted(job_id)
             runtime.mark_interrupted(job_id, captured.value)
         assert runtime.get(job_id)["status"] == "cancelled"
+
+
+def test_lifecycle_checkpoints_and_versioned_export_are_atomic(monkeypatch):
+    clock = iter([20.0, 30.0, 40.0])
+    monkeypatch.setattr(job_runtime.time, "time", lambda: next(clock))
+    runtime = job_runtime.JobRuntime()
+    initial_version, initial_records = runtime.records_with_version()
+    assert (initial_version, initial_records) == (0, [])
+
+    runtime.submit("job-1", "apply_patch", {}, created_at=10.0)
+    queued_version, queued_records = runtime.records_with_version()
+    assert queued_version > initial_version
+    assert queued_records[0]["checkpoint"] == "accepted"
+
+    runtime.start_next()
+    runtime.set_checkpoint(
+        "job-1",
+        "transaction_committed",
+        {"revision_id": "rev-1", "operation_count": 2},
+    )
+    committed_version, committed_records = runtime.records_with_version()
+    committed = committed_records[0]
+    assert committed_version > queued_version
+    assert committed["checkpoint"] == "transaction_committed"
+    assert committed["transaction_committed"] is True
+    assert committed["checkpoint_metadata"] == {
+        "revision_id": "rev-1",
+        "operation_count": 2,
+    }
+
+    runtime.mark_succeeded("job-1", {"ok": True})
+    terminal_version, terminal_records = runtime.records_with_version()
+    assert terminal_version > committed_version
+    assert terminal_records[0]["checkpoint"] == "terminal"
+    assert terminal_records[0]["transaction_committed"] is True
+
+
+def test_transaction_rollback_checkpoint_clears_commit_signal():
+    runtime = job_runtime.JobRuntime()
+    runtime.submit("job-1", "apply_patch", {})
+    runtime.start_next()
+    runtime.set_checkpoint("job-1", "transaction_committed", {"revision_id": "rev-1"})
+    runtime.set_checkpoint(
+        "job-1",
+        "transaction_rolled_back",
+        {"revision_id": "rev-1", "rolled_back_count": 1},
+    )
+    job = runtime.get("job-1")
+    assert job["transaction_committed"] is False
+    assert job["checkpoint"] == "transaction_rolled_back"
+    assert job["checkpoint_metadata"] == {
+        "revision_id": "rev-1",
+        "rolled_back_count": 1,
+    }
+
+
+def test_checkpoint_requires_running_job_and_copies_metadata():
+    runtime = job_runtime.JobRuntime()
+    runtime.submit("job-1", "apply_patch", {})
+    metadata = {"revision_id": "rev-1"}
+    with pytest.raises(RuntimeError, match="expected running"):
+        runtime.set_checkpoint("job-1", "transaction_committed", metadata)
+    runtime.start_next()
+    runtime.set_checkpoint("job-1", "transaction_committed", metadata)
+    metadata["revision_id"] = "changed"
+    assert runtime.get("job-1")["checkpoint_metadata"] == {"revision_id": "rev-1"}
+
+
+def test_stop_interrupts_all_active_jobs_and_preserves_commit_signal():
+    runtime = job_runtime.JobRuntime(pending_capacity=3, retention_capacity=4)
+    runtime.submit("running", "apply_patch", {})
+    runtime.submit("queued", "scan_scene", {})
+    runtime.start_next()
+    runtime.set_checkpoint("running", "transaction_committed", {"revision_id": "rev-1"})
+
+    interrupted = runtime.interrupt_active()
+
+    assert {job["job_id"] for job in interrupted} == {"running", "queued"}
+    running = runtime.get("running")
+    assert running["status"] == "interrupted"
+    assert running["error_code"] == "bridge_stopped"
+    assert running["retryable"] is True
+    assert running["interrupted_from"] == "running"
+    assert running["transaction_committed"] is True
+    assert running["checkpoint"] == "terminal"
+    assert runtime.get("queued")["status"] == "interrupted"
+    assert runtime.get("queued")["interrupted_from"] == "queued"
+    assert runtime.start_next() is None
+    assert runtime.snapshot()["status_counts"]["interrupted"] == 2
+
+
+def test_interrupted_records_are_terminal_and_prunable():
+    runtime = job_runtime.JobRuntime(pending_capacity=2, retention_capacity=1)
+    runtime.submit("old", "scan_scene", {})
+    runtime.interrupt_active()
+    runtime.submit("new", "scan_scene", {})
+    assert runtime.get("old") is None
+    assert runtime.get("new")["status"] == "queued"
