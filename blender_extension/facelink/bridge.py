@@ -2,11 +2,9 @@ import copy
 import hmac
 import json
 import os
-import queue
 import secrets
 import tempfile
 import threading
-import time
 import traceback
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -22,7 +20,32 @@ from .executor import (
     summarize_patch,
     undo_last_patch,
 )
+from .job_runtime import JobAdmissionError, JobRuntime, error_payload
 from .snapshot import scan_scene
+
+MAX_REQUEST_BYTES = 4 * 1024 * 1024
+JOBS_PER_TICK = 8
+SUPPORTED_JOB_TYPES = frozenset(
+    {
+        "scan_scene",
+        "stage_patch",
+        "get_staged_patch",
+        "apply_staged_patch",
+        "discard_staged_patch",
+        "apply_patch",
+        "undo",
+        "list_revisions",
+        "rollback_revision",
+    }
+)
+
+
+class RequestError(ValueError):
+    def __init__(self, status: int, code: str, message: str, **details):
+        super().__init__(message)
+        self.status = status
+        self.code = code
+        self.details = details
 
 
 class Runtime:
@@ -31,9 +54,7 @@ class Runtime:
     token = None
     instance_id = None
     instance_file = None
-    jobs = {}
-    lock = threading.Lock()
-    pending = queue.Queue()
+    job_runtime = JobRuntime()
     static_health = {}
     staged_patch = None
     staged_summary = None
@@ -47,9 +68,11 @@ def _instance_directory():
 
 
 def _safe_job(job_id):
-    with Runtime.lock:
-        job = Runtime.jobs.get(job_id)
-        return dict(job) if job else None
+    return Runtime.job_runtime.get(job_id)
+
+
+def _health_payload():
+    return {**Runtime.static_health, "job_runtime": Runtime.job_runtime.snapshot()}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -63,75 +86,144 @@ class Handler(BaseHTTPRequestHandler):
         expected = f"Bearer {Runtime.token}"
         return hmac.compare_digest(supplied, expected)
 
-    def _send(self, status, payload):
+    def _send(self, status, payload, *, headers=None):
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(data)
 
+    def _send_error(
+        self,
+        status,
+        code,
+        message,
+        *,
+        retryable=False,
+        details=None,
+        retry_after_ms=None,
+    ):
+        headers = {"Retry-After": "1"} if retry_after_ms is not None else None
+        self._send(
+            status,
+            error_payload(
+                code,
+                message,
+                retryable=retryable,
+                details=details,
+                retry_after_ms=retry_after_ms,
+            ),
+            headers=headers,
+        )
+
+    def _read_job_request(self):
+        raw_length = self.headers.get("Content-Length")
+        try:
+            length = int(raw_length) if raw_length is not None else 0
+        except ValueError as exc:
+            raise RequestError(
+                400,
+                "invalid_content_length",
+                "Content-Length must be a positive integer.",
+            ) from exc
+        if length <= 0:
+            raise RequestError(
+                400,
+                "invalid_request_size",
+                "The request body must not be empty.",
+            )
+        if length > MAX_REQUEST_BYTES:
+            raise RequestError(
+                413,
+                "request_too_large",
+                "The request body exceeds the 4 MiB limit.",
+                max_bytes=MAX_REQUEST_BYTES,
+            )
+        try:
+            request = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RequestError(400, "invalid_json", "The request body is not valid JSON.") from exc
+        if not isinstance(request, dict):
+            raise RequestError(400, "invalid_request", "The request body must be a JSON object.")
+        job_type = request.get("type")
+        if not isinstance(job_type, str) or job_type not in SUPPORTED_JOB_TYPES:
+            raise RequestError(
+                400,
+                "unsupported_job_type",
+                "The requested Blender job type is not supported.",
+                supported_types=sorted(SUPPORTED_JOB_TYPES),
+            )
+        payload = request.get("payload", {})
+        if not isinstance(payload, dict):
+            raise RequestError(
+                400,
+                "invalid_job_payload",
+                "The job payload must be a JSON object.",
+            )
+        return job_type, payload
+
     def do_GET(self):
         if not self._authorized():
-            self._send(401, {"error": "unauthorized"})
+            self._send_error(
+                401,
+                "authentication_required",
+                "A valid FaceLink bridge bearer token is required.",
+            )
             return
         if self.path == "/v1/health":
-            self._send(200, Runtime.static_health)
+            self._send(200, _health_payload())
             return
         if self.path.startswith("/v1/jobs/"):
             job_id = self.path.rsplit("/", 1)[-1]
             job = _safe_job(job_id)
-            self._send(200 if job else 404, job or {"error": "job_not_found"})
+            if job:
+                self._send(200, job)
+            else:
+                self._send_error(
+                    404,
+                    "job_not_found",
+                    "The Blender job does not exist or its completed record has expired.",
+                )
             return
-        self._send(404, {"error": "not_found"})
+        self._send_error(404, "route_not_found", "The requested bridge route does not exist.")
 
     def do_POST(self):
         if not self._authorized():
-            self._send(401, {"error": "unauthorized"})
+            self._send_error(
+                401,
+                "authentication_required",
+                "A valid FaceLink bridge bearer token is required.",
+            )
             return
         if self.path != "/v1/jobs":
-            self._send(404, {"error": "not_found"})
+            self._send_error(404, "route_not_found", "The requested bridge route does not exist.")
             return
         try:
-            length = int(self.headers.get("Content-Length", "0"))
-            if length <= 0 or length > 4 * 1024 * 1024:
-                raise ValueError("invalid request size")
-            request = json.loads(self.rfile.read(length).decode("utf-8"))
-            job_type = request.get("type")
-            if job_type not in {
-                "scan_scene",
-                "stage_patch",
-                "get_staged_patch",
-                "apply_staged_patch",
-                "discard_staged_patch",
-                "apply_patch",
-                "undo",
-                "list_revisions",
-                "rollback_revision",
-            }:
-                raise ValueError("unsupported job type")
+            job_type, payload = self._read_job_request()
             job_id = "job-" + uuid.uuid4().hex[:16]
-            with Runtime.lock:
-                Runtime.jobs[job_id] = {
-                    "job_id": job_id,
-                    "type": job_type,
-                    "status": "queued",
-                    "created_at": time.time(),
-                }
-            Runtime.pending.put((job_id, job_type, request.get("payload", {})))
+            Runtime.job_runtime.submit(job_id, job_type, payload)
             self._send(202, {"job_id": job_id, "status": "queued"})
-        except (ValueError, TypeError, json.JSONDecodeError) as exc:
-            self._send(400, {"error": str(exc)})
+        except RequestError as exc:
+            self._send_error(exc.status, exc.code, str(exc), details=exc.details)
+        except JobAdmissionError as exc:
+            self._send(
+                429,
+                exc.as_payload(),
+                headers={"Retry-After": "1"},
+            )
 
 
 def _process_jobs():
-    for _ in range(8):
-        try:
-            job_id, job_type, payload = Runtime.pending.get_nowait()
-        except queue.Empty:
+    for _ in range(JOBS_PER_TICK):
+        pending = Runtime.job_runtime.take_nowait()
+        if pending is None:
             break
-        with Runtime.lock:
-            Runtime.jobs[job_id]["status"] = "running"
+        job_id, job_type, payload = pending
+        Runtime.job_runtime.mark_running(job_id)
         try:
             if job_type == "scan_scene":
                 result = scan_scene()
@@ -151,15 +243,33 @@ def _process_jobs():
                 result = list_revision_history()
             elif job_type == "rollback_revision":
                 result = rollback_to_revision(payload["revision_id"])
-            with Runtime.lock:
-                Runtime.jobs[job_id].update(status="succeeded", result=result)
-        except (KeyError, TypeError, ValueError) as exc:
-            with Runtime.lock:
-                Runtime.jobs[job_id].update(status="failed", error=str(exc))
-        except Exception as exc:
+            Runtime.job_runtime.mark_succeeded(job_id, result)
+        except KeyError as exc:
+            field = exc.args[0] if exc.args else "unknown"
+            Runtime.job_runtime.mark_failed(
+                job_id,
+                code="invalid_job_payload",
+                message=f"The job payload is missing the required field: {field}.",
+            )
+        except TypeError as exc:
+            Runtime.job_runtime.mark_failed(
+                job_id,
+                code="invalid_job_payload",
+                message=str(exc),
+            )
+        except ValueError as exc:
+            Runtime.job_runtime.mark_failed(
+                job_id,
+                code="job_rejected",
+                message=str(exc),
+            )
+        except Exception:
             traceback.print_exc()
-            with Runtime.lock:
-                Runtime.jobs[job_id].update(status="failed", error=str(exc))
+            Runtime.job_runtime.mark_failed(
+                job_id,
+                code="internal_error",
+                message="The Blender job failed unexpectedly.",
+            )
     return 0.05 if Runtime.server else None
 
 
@@ -227,12 +337,13 @@ def start_bridge():
         return connection_info()
     Runtime.token = secrets.token_urlsafe(32)
     Runtime.instance_id = f"blender-{os.getpid()}"
+    Runtime.job_runtime.clear()
     Runtime.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     Runtime.server.daemon_threads = True
     Runtime.static_health = {
         "ok": True,
         "facelink_version": "0.3.9",
-        "protocol_version": "1.9",
+        "protocol_version": "1.10",
         "instance_id": Runtime.instance_id,
         "blender_version": bpy.app.version_string,
         "capabilities": [
@@ -264,6 +375,8 @@ def start_bridge():
             "play_clip",
             "ensure_camera",
             "undo",
+            "bounded_job_queue",
+            "stable_error_codes",
         ],
     }
     Runtime.thread = threading.Thread(
@@ -299,5 +412,5 @@ def stop_bridge():
     Runtime.instance_file = None
     Runtime.token = None
     Runtime.instance_id = None
-    with Runtime.lock:
-        Runtime.jobs.clear()
+    Runtime.job_runtime.clear()
+    Runtime.static_health = {}

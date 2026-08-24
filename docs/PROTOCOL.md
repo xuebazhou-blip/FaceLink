@@ -1,4 +1,4 @@
-# Local bridge protocol 1.9
+# Local bridge protocol 1.10
 
 The Blender extension writes one JSON discovery record per running Blender process. The
 directory is `${FACELINK_INSTANCE_DIR}` when configured, otherwise
@@ -10,12 +10,66 @@ reading or exposing the discovery token.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/v1/health` | Static protocol and capability information |
+| `GET` | `/v1/health` | Protocol, capability and bounded job-runtime information |
 | `POST` | `/v1/jobs` | Queue one of the jobs below |
 | `GET` | `/v1/jobs/{id}` | Poll a job until succeeded or failed |
 
 Supported jobs are `scan_scene`, `stage_patch`, `get_staged_patch`,
 `apply_staged_patch`, `discard_staged_patch`, `apply_patch` and `undo`.
+
+## Bounded jobs and stable errors
+
+Protocol 1.10 adds the `bounded_job_queue` and `stable_error_codes` capabilities. Each Blender
+process accepts at most 128 pending jobs and retains at most 256 total job records, including
+queued, running and completed records. Admission uses a non-blocking queue operation. When the
+pending queue is full, the bridge returns HTTP 429 with `queue_full` instead of blocking an HTTP
+worker or growing memory without a limit. If all retained records are still active, it returns
+HTTP 429 with `job_registry_full`.
+
+Before a new job is admitted, the oldest succeeded or failed records are removed as needed.
+Queued and running records are never removed. Clients should therefore poll accepted jobs
+promptly and treat `job_not_found` as either an unknown ID or an expired completed record. The
+health response contains a point-in-time `job_runtime` object:
+
+```json
+{
+  "pending": 2,
+  "pending_capacity": 128,
+  "retained": 7,
+  "retention_capacity": 256,
+  "status_counts": {"queued": 2, "running": 0, "succeeded": 4, "failed": 1},
+  "evicted_total": 3
+}
+```
+
+Every protocol error keeps the legacy human-readable `error` string and adds stable fields:
+
+```json
+{
+  "error": "The Blender job queue is full; retry after pending work completes.",
+  "error_code": "queue_full",
+  "retryable": true,
+  "retry_after_ms": 100,
+  "details": {
+    "pending": 128,
+    "pending_capacity": 128,
+    "retained": 256,
+    "retention_capacity": 256
+  }
+}
+```
+
+HTTP 429 responses also include `Retry-After: 1`. Request-level stable codes are
+`authentication_required`, `route_not_found`, `job_not_found`, `invalid_content_length`,
+`invalid_request_size`, `request_too_large`, `invalid_json`, `invalid_request`,
+`unsupported_job_type`, `invalid_job_payload`, `queue_full` and `job_registry_full`. Request
+bodies are limited to 4 MiB.
+
+A failed job record uses `invalid_job_payload` for missing or type-invalid payload data,
+`job_rejected` for a valid request rejected by scene-aware validation, and `internal_error` for
+an unexpected implementation failure. Unexpected exception text is not returned to the client.
+The Python bridge client exposes these fields through `BridgeError`, which remains a
+`RuntimeError` subclass for compatibility with existing callers.
 
 Protocol 1.2 also supports `list_revisions` and `rollback_revision`. The rollback payload is
 `{"revision_id":"rev-..."}`. A rollback restores the selected revision's pre-apply state and

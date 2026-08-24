@@ -9,6 +9,7 @@ import facelink.bridge_client as bridge_module
 from facelink.bridge_client import (
     BlenderInstance,
     BridgeClient,
+    BridgeError,
     discover_instances,
     instance_directory,
     select_instance,
@@ -145,3 +146,92 @@ def test_wait_for_job_handles_success_failure_and_timeout(monkeypatch, instance)
         client.wait_for_job("job-2", timeout=1)
     with pytest.raises(TimeoutError, match="job-3"):
         client.wait_for_job("job-3", timeout=0)
+
+
+def test_submit_surfaces_structured_overload_error(monkeypatch, instance):
+    request = httpx.Request("POST", f"{instance.base_url}/v1/jobs")
+    response = httpx.Response(
+        429,
+        request=request,
+        json={
+            "error": "The queue is full.",
+            "error_code": "queue_full",
+            "retryable": True,
+            "retry_after_ms": 100,
+            "details": {"pending": 128, "pending_capacity": 128},
+        },
+    )
+    monkeypatch.setattr(bridge_module.httpx, "post", Mock(return_value=response))
+
+    with pytest.raises(BridgeError, match="queue is full") as captured:
+        BridgeClient(instance).submit_job("scan_scene")
+
+    error = captured.value
+    assert error.code == "queue_full"
+    assert error.retryable is True
+    assert error.status_code == 429
+    assert error.retry_after_ms == 100
+    assert error.details == {"pending": 128, "pending_capacity": 128}
+
+
+def test_http_error_falls_back_for_legacy_or_non_json_bridge(monkeypatch, instance):
+    request = httpx.Request("GET", f"{instance.base_url}/v1/health")
+    legacy = httpx.Response(401, request=request, json={"error": "unauthorized"})
+    monkeypatch.setattr(bridge_module.httpx, "get", Mock(return_value=legacy))
+    with pytest.raises(BridgeError, match="unauthorized") as captured:
+        BridgeClient(instance).health()
+    assert captured.value.code == "http_error"
+    assert captured.value.status_code == 401
+    assert captured.value.retryable is False
+
+    non_json = httpx.Response(502, request=request, content=b"bad gateway")
+    monkeypatch.setattr(bridge_module.httpx, "get", Mock(return_value=non_json))
+    with pytest.raises(BridgeError, match="HTTP 502") as captured:
+        BridgeClient(instance).health()
+    assert captured.value.code == "http_error"
+
+
+def test_wait_for_job_surfaces_structured_execution_error(monkeypatch, instance):
+    client = BridgeClient(instance)
+    monkeypatch.setattr(
+        client,
+        "get_job",
+        lambda _job_id: {
+            "status": "failed",
+            "error": "Patch no longer matches the scene.",
+            "error_code": "job_rejected",
+            "retryable": False,
+            "details": {"entity_id": "missing"},
+        },
+    )
+
+    with pytest.raises(BridgeError, match="no longer matches") as captured:
+        client.wait_for_job("job-1")
+    assert captured.value.code == "job_rejected"
+    assert captured.value.retryable is False
+    assert captured.value.details == {"entity_id": "missing"}
+
+
+@pytest.mark.parametrize(
+    "job",
+    [
+        {"status": "succeeded"},
+        {"status": "mystery", "result": {}},
+        {},
+    ],
+)
+def test_wait_for_job_rejects_invalid_success_or_status(monkeypatch, instance, job):
+    client = BridgeClient(instance)
+    monkeypatch.setattr(client, "get_job", lambda _job_id: job)
+    with pytest.raises(BridgeError) as captured:
+        client.wait_for_job("job-1")
+    assert captured.value.code == "invalid_response"
+
+
+def test_submit_rejects_success_response_without_job_id(monkeypatch, instance):
+    response = Mock()
+    response.json.return_value = {"status": "queued"}
+    monkeypatch.setattr(bridge_module.httpx, "post", Mock(return_value=response))
+    with pytest.raises(BridgeError, match="without returning a job ID") as captured:
+        BridgeClient(instance).submit_job("scan_scene")
+    assert captured.value.code == "invalid_response"

@@ -1,4 +1,5 @@
 import hashlib
+import http.client
 import json
 import os
 import sys
@@ -37,13 +38,31 @@ def request_json(method, url, token, payload=None, raw_data=None):
         return json.loads(response.read().decode("utf-8"))
 
 
-def expect_http_error(status, function):
+def expect_http_error(status, function, *, error_code=None):
     try:
         function()
     except urllib.error.HTTPError as exc:
         assert exc.code == status, f"Expected HTTP {status}, got {exc.code}"
+        payload = json.loads(exc.read().decode("utf-8"))
+        if error_code is not None:
+            assert payload["error_code"] == error_code, payload
+        return payload, exc.headers
     else:
         raise AssertionError(f"Expected HTTP {status}")
+
+
+def request_with_declared_size(port, token, declared_size):
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+    try:
+        connection.putrequest("POST", "/v1/jobs")
+        connection.putheader("Authorization", f"Bearer {token}")
+        connection.putheader("Content-Type", "application/json")
+        connection.putheader("Content-Length", str(declared_size))
+        connection.endheaders()
+        response = connection.getresponse()
+        return response.status, json.loads(response.read().decode("utf-8"))
+    finally:
+        connection.close()
 
 
 def wait_job(base_url, token, job_id):
@@ -110,10 +129,12 @@ def client_flow(result_box):
         expect_http_error(
             401,
             lambda: request_json("GET", f"{base_url}/v1/health", "wrong-token"),
+            error_code="authentication_required",
         )
         expect_http_error(
             404,
             lambda: request_json("GET", f"{base_url}/v1/jobs/not-found", token),
+            error_code="job_not_found",
         )
         expect_http_error(
             400,
@@ -123,10 +144,37 @@ def client_flow(result_box):
                 token,
                 {"type": "run_python", "payload": {}},
             ),
+            error_code="unsupported_job_type",
         )
         expect_http_error(
             400,
             lambda: request_json("POST", f"{base_url}/v1/jobs", token, raw_data=b"not-json"),
+            error_code="invalid_json",
+        )
+        expect_http_error(
+            400,
+            lambda: request_json("POST", f"{base_url}/v1/jobs", token, payload=[]),
+            error_code="invalid_request",
+        )
+        expect_http_error(
+            400,
+            lambda: request_json(
+                "POST",
+                f"{base_url}/v1/jobs",
+                token,
+                {"type": "scan_scene", "payload": []},
+            ),
+            error_code="invalid_job_payload",
+        )
+        expect_http_error(
+            400,
+            lambda: request_json(
+                "POST",
+                f"{base_url}/v1/jobs",
+                token,
+                {"type": [], "payload": {}},
+            ),
+            error_code="unsupported_job_type",
         )
 
         health = request_json("GET", f"{base_url}/v1/health", token)
@@ -146,7 +194,11 @@ def client_flow(result_box):
             "rig_fingerprint",
         } <= set(health["capabilities"])
         assert health["facelink_version"] == "0.3.9"
-        assert health["protocol_version"] == "1.9"
+        assert {"bounded_job_queue", "stable_error_codes"} <= set(health["capabilities"])
+        assert health["protocol_version"] == "1.10"
+        assert health["job_runtime"]["pending_capacity"] == 128
+        assert health["job_runtime"]["retention_capacity"] == 256
+        assert health["job_runtime"]["pending"] == 0
         scan_ids = [submit(base_url, token, "scan_scene") for _ in range(3)]
         assert len(set(scan_ids)) == 3
         scans = [wait_job(base_url, token, job_id) for job_id in scan_ids]
@@ -288,6 +340,8 @@ def client_flow(result_box):
         )
         assert failed_job["status"] == "failed"
         assert "no longer exists" in failed_job["error"]
+        assert failed_job["error_code"] == "job_rejected"
+        assert failed_job["retryable"] is False
 
         second_patch = patch | {
             "patch_id": "bridge-second",
@@ -352,6 +406,7 @@ def client_flow(result_box):
             persistent_history_entries=len(final_history["entries"]),
             rollback_via_bridge=True,
             failed_job_error=failed_job["error"],
+            failed_job_error_code=failed_job["error_code"],
         )
     except Exception as exc:
         result_box.update(status="failed", error=str(exc), traceback=traceback.format_exc())
@@ -390,6 +445,58 @@ instance_file = Path(bridge.Runtime.instance_file)
 assert instance_file.exists()
 assert len(bridge.Runtime.token) >= 32
 
+# Exercise real HTTP admission and eviction deterministically before the main client flow.
+# Blender timers are restored after this bounded-capacity probe; subsequent jobs are manually
+# dispatched by the main-thread loop below as in the rest of this acceptance suite.
+if bpy.app.timers.is_registered(bridge._process_jobs):
+    bpy.app.timers.unregister(bridge._process_jobs)
+record = json.loads(instance_file.read_text(encoding="utf-8"))
+probe_base_url = f"http://127.0.0.1:{record['port']}"
+probe_token = record["token"]
+status, invalid_size_payload = request_with_declared_size(record["port"], probe_token, 0)
+assert status == 400
+assert invalid_size_payload["error_code"] == "invalid_request_size"
+status, oversized_payload = request_with_declared_size(
+    record["port"], probe_token, bridge.MAX_REQUEST_BYTES + 1
+)
+assert status == 413
+assert oversized_payload["error_code"] == "request_too_large"
+assert oversized_payload["details"]["max_bytes"] == bridge.MAX_REQUEST_BYTES
+bridge.Runtime.job_runtime = bridge.JobRuntime(pending_capacity=2, retention_capacity=2)
+probe_ids = [submit(probe_base_url, probe_token, "scan_scene") for _ in range(2)]
+overload_payload, overload_headers = expect_http_error(
+    429,
+    lambda: submit(probe_base_url, probe_token, "scan_scene"),
+    error_code="queue_full",
+)
+assert overload_payload["retryable"] is True
+assert overload_payload["retry_after_ms"] == 100
+assert overload_payload["details"]["pending"] == 2
+assert overload_payload["details"]["pending_capacity"] == 2
+assert overload_headers["Retry-After"] == "1"
+probe_health = request_json("GET", f"{probe_base_url}/v1/health", probe_token)
+assert probe_health["job_runtime"]["pending"] == 2
+assert probe_health["job_runtime"]["retained"] == 2
+bridge._process_jobs()
+assert all(
+    request_json("GET", f"{probe_base_url}/v1/jobs/{job_id}", probe_token)["status"]
+    == "succeeded"
+    for job_id in probe_ids
+)
+submit(probe_base_url, probe_token, "scan_scene")
+expired_payload, _expired_headers = expect_http_error(
+    404,
+    lambda: request_json("GET", f"{probe_base_url}/v1/jobs/{probe_ids[0]}", probe_token),
+    error_code="job_not_found",
+)
+assert "expired" in expired_payload["error"]
+probe_health = request_json("GET", f"{probe_base_url}/v1/health", probe_token)
+assert probe_health["job_runtime"]["retained"] == 2
+assert probe_health["job_runtime"]["evicted_total"] == 1
+bridge.Runtime.job_runtime = bridge.JobRuntime()
+if not bpy.app.timers.is_registered(bridge._process_jobs):
+    bpy.app.timers.register(bridge._process_jobs, first_interval=0.05, persistent=True)
+
 result = {}
 client_thread = threading.Thread(target=client_flow, args=(result,), daemon=True)
 client_thread.start()
@@ -415,6 +522,9 @@ result.update(
     main_thread_dispatch=True,
     undo_restored_location=True,
     discovery_record_cleaned=True,
+    bounded_queue_http=True,
+    stable_error_codes_http=True,
+    completed_job_eviction_http=True,
 )
 report_path = os.environ.get("FACELINK_TEST_REPORT")
 if report_path:

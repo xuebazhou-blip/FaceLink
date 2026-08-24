@@ -5,6 +5,18 @@ the public API is experimental.
 
 ## [Unreleased]
 
+### Added
+
+- Added a non-blocking 128-job Blender queue and a 256-record retention bound with
+  terminal-record eviction and live capacity metrics.
+- Added protocol 1.10 stable request and job error codes, retry metadata and a structured
+  `BridgeError` client exception while preserving the legacy error string.
+
+### Security
+
+- Unexpected Blender exceptions now return a generic internal error instead of exposing raw
+  implementation details to bridge clients.
+
 ## [0.3.9] - 2026-08-24
 
 ### Changed

@@ -11,6 +11,66 @@ from typing import Any
 import httpx
 
 
+class BridgeError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str,
+        retryable: bool = False,
+        status_code: int | None = None,
+        details: dict[str, Any] | None = None,
+        retry_after_ms: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.retryable = retryable
+        self.status_code = status_code
+        self.details = dict(details or {})
+        self.retry_after_ms = retry_after_ms
+
+
+def _response_json(response: httpx.Response) -> dict[str, Any]:
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        status_code = response.status_code
+        message = payload.get("error") or f"FaceLink bridge returned HTTP {status_code}."
+        raise BridgeError(
+            str(message),
+            code=str(payload.get("error_code") or "http_error"),
+            retryable=payload.get("retryable") is True,
+            status_code=status_code,
+            details=payload.get("details") if isinstance(payload.get("details"), dict) else None,
+            retry_after_ms=(
+                payload.get("retry_after_ms")
+                if isinstance(payload.get("retry_after_ms"), int)
+                else None
+            ),
+        ) from exc
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise BridgeError(
+            "FaceLink bridge returned a non-JSON response.",
+            code="invalid_response",
+            status_code=getattr(response, "status_code", None),
+        ) from exc
+    if not isinstance(payload, dict):
+        raise BridgeError(
+            "FaceLink bridge returned a JSON value that is not an object.",
+            code="invalid_response",
+            status_code=getattr(response, "status_code", None),
+        )
+    return payload
+
+
 def instance_directory() -> Path:
     override = os.environ.get("FACELINK_INSTANCE_DIR")
     if override:
@@ -49,7 +109,14 @@ def discover_instances(*, verify: bool = True) -> list[BlenderInstance]:
             if verify:
                 BridgeClient(instance).health(timeout=0.6)
             instances.append(instance)
-        except (OSError, ValueError, TypeError, json.JSONDecodeError, httpx.HTTPError):
+        except (
+            OSError,
+            ValueError,
+            TypeError,
+            json.JSONDecodeError,
+            httpx.HTTPError,
+            BridgeError,
+        ):
             continue
     return sorted(instances, key=lambda item: item.instance_id)
 
@@ -66,8 +133,7 @@ class BridgeClient:
         response = httpx.get(
             f"{self.instance.base_url}/v1/health", headers=self._headers, timeout=timeout
         )
-        response.raise_for_status()
-        return response.json()
+        return _response_json(response)
 
     def submit_job(self, job_type: str, payload: dict[str, Any] | None = None) -> str:
         response = httpx.post(
@@ -76,8 +142,14 @@ class BridgeClient:
             json={"type": job_type, "payload": payload or {}},
             timeout=3.0,
         )
-        response.raise_for_status()
-        return str(response.json()["job_id"])
+        result = _response_json(response)
+        job_id = result.get("job_id")
+        if not isinstance(job_id, str) or not job_id:
+            raise BridgeError(
+                "FaceLink bridge accepted a job without returning a job ID.",
+                code="invalid_response",
+            )
+        return job_id
 
     def get_job(self, job_id: str) -> dict[str, Any]:
         response = httpx.get(
@@ -85,17 +157,38 @@ class BridgeClient:
             headers=self._headers,
             timeout=3.0,
         )
-        response.raise_for_status()
-        return response.json()
+        return _response_json(response)
 
     def wait_for_job(self, job_id: str, timeout: float = 30.0) -> dict[str, Any]:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             job = self.get_job(job_id)
-            if job["status"] == "succeeded":
+            status = job.get("status")
+            if status == "succeeded":
+                if "result" not in job:
+                    raise BridgeError(
+                        "A succeeded Blender job did not include a result.",
+                        code="invalid_response",
+                    )
                 return job["result"]
-            if job["status"] == "failed":
-                raise RuntimeError(job.get("error", "Blender job failed"))
+            if status == "failed":
+                raise BridgeError(
+                    str(job.get("error", "Blender job failed")),
+                    code=str(job.get("error_code") or "job_failed"),
+                    retryable=job.get("retryable") is True,
+                    details=job.get("details") if isinstance(job.get("details"), dict) else None,
+                    retry_after_ms=(
+                        job.get("retry_after_ms")
+                        if isinstance(job.get("retry_after_ms"), int)
+                        else None
+                    ),
+                )
+            if status not in {"queued", "running"}:
+                raise BridgeError(
+                    "FaceLink bridge returned an unknown job status.",
+                    code="invalid_response",
+                    details={"job_id": job_id, "status": status},
+                )
             time.sleep(0.08)
         raise TimeoutError(f"Blender job {job_id} did not finish within {timeout:g}s")
 
