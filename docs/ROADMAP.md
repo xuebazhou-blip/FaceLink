@@ -1,424 +1,427 @@
-# FaceLink Roadmap to 1.0
+# FaceLink 1.0 中文路线图
 
-- **Current release:** v0.3.9 Alpha
-- **Roadmap status:** proposed for maintainer review
-- **Last reviewed:** 2026-08-24
+- **当前版本：** v0.3.9 早期测试版
+- **路线图状态：** 等待维护者审核
+- **最后更新：** 2026-08-24
 
-This roadmap turns FaceLink from a technically capable alpha into a stable, attractive and
-supportable Blender product. It is intentionally gate-driven: a version is complete only when
-its acceptance criteria pass. A date or a feature count is not a substitute for evidence.
+这份路线图的目标，是把 FaceLink 从一个技术能力已经比较完整的早期测试项目，逐步做成
+稳定、好看、容易安装并且能够长期维护的 Blender 产品。
 
-## Product promise
+本路线图以验收结果为准，而不是以日期或者完成了多少功能为准。一个版本只有在对应的
+测试、性能和产品验收条件全部通过以后，才能视为完成。
 
-FaceLink turns a natural-language shot request into an editable Blender previs scene. Objects,
-cameras, Actions, NLA strips and keyframes remain ordinary Blender data. Every write is typed,
-bounded, previewable and explicitly approved by the artist.
+## 一、FaceLink 最终要成为怎样的产品
 
-The 1.0 product must let a first-time user install FaceLink, connect a supported AI client,
-describe a shot, review the proposed change, apply it, edit the result in Blender and recover
-from a mistake without using a terminal.
+FaceLink 的核心作用，是把用户用自然语言描述的镜头要求，转换成 Blender 中可以继续编辑
+的预演场景和动画。
 
-## Decisions that remain true through 1.0
+FaceLink 生成的物体、摄像机、动作、NLA 片段和关键帧，都必须是普通的 Blender 数据。
+用户可以继续拖动、修改、重新计时或者删除，不能生成一个无法继续编辑的黑盒结果。
 
-- **Hybrid product, not MCP alone.** The Blender extension owns scene access, the viewport UI
-  and transactional execution. The sidecar owns model/MCP integration and orchestration. MCP is
-  an integration surface, not the complete product.
-- **Blender is not bundled.** FaceLink detects a supported official Blender installation. This
-  keeps downloads small, avoids repackaging another project's binaries and lets studios choose
-  their LTS version.
-- **Local-first and private by default.** Local MCP and deterministic execution require no
-  FaceLink account. Telemetry is off unless the user explicitly opts in. Diagnostic bundles are
-  redacted before export.
-- **Model-independent core.** The compiler and executor accept typed FaceLink schemas, not a
-  provider-specific prompt. An MCP client can use its existing model entitlement; BYOK is a
-  separate adapter path.
-- **No unrestricted generated Python.** Models may propose only versioned, whitelisted schema
-  operations. Unsupported scene structures fail with a useful explanation.
-- **Human approval stays mandatory by default.** Scan, preview, stage and apply remain separate
-  steps. A power-user bypass must be explicit and visibly labelled.
-- **Editability beats visual fakery.** FaceLink 1.0 is a previs and animation control product,
-  not a text-to-video generator or a promise of final cinematic motion.
+FaceLink 1.0 至少要让第一次使用的用户完成下面这条流程：
 
-## Baseline delivered in v0.3.9
+1. 安装 FaceLink，并自动找到电脑中的 Blender。
+2. 连接一个受支持的 AI 客户端，或者填写自己的 API 密钥。
+3. 用自然语言描述一个镜头。
+4. 在 Blender 中查看 FaceLink 准备做出的修改。
+5. 确认修改并生成可编辑动画。
+6. 在 Blender 中继续手工修改结果。
+7. 如果结果有问题，可以撤销、恢复或者回到之前的版本。
 
-The alpha already provides a serious technical foundation:
+完成这条流程时，普通用户不应该必须打开终端或者手工修改配置文件。
 
-- stable scene identities, typed ShotSpec compilation and guarded Scene Patches;
-- world-space object/camera transforms, editable keys, cameras, constraints and NLA clips;
-- stage/review/apply/discard, persistent audit metadata and same-session rollback;
-- navmesh paths, collision warnings and geometric camera-composition preflight;
-- rig/Action inventory, rename-only retargeting and sampled/evaluated pose baking;
-- Armature object-motion baking with deterministic output and rollback cleanup;
-- authenticated localhost Blender bridge, CLI, BYOK OpenAI planning and local MCP stdio;
-- Blender 4.2/4.5/5.2 acceptance coverage, Windows installer and privacy regression gates.
+## 二、1.0 之前不会改变的产品原则
 
-These capabilities prove the execution model. They do not yet prove product reliability,
-usability or production-scale performance.
+- **FaceLink 不是只有 MCP。** Blender 扩展负责读取场景、显示界面和安全执行修改；
+  本地配套程序负责连接 AI、MCP 和任务调度。MCP 是接入方式，不是完整产品。
+- **安装包不捆绑 Blender。** FaceLink 自动检测用户已经安装的官方 Blender。这样可以
+  减小安装包体积，也允许用户或工作室自己选择 Blender 长期支持版本。
+- **默认本地运行并保护隐私。** 使用本地 MCP 不需要注册 FaceLink 账号。遥测功能默认
+  关闭，只有用户主动同意以后才能开启。导出的诊断信息必须先清除敏感内容。
+- **核心执行逻辑不绑定某个模型。** 编译器和 Blender 执行器只接收 FaceLink 自己的
+  结构化格式，不直接依赖某个模型的提示词。
+- **不允许 AI 生成任意 Python 并直接执行。** AI 只能提交 FaceLink 明确支持、经过版本
+  管理和严格校验的操作。
+- **默认必须由用户确认。** 扫描、预览、暂存和执行保持分离。任何跳过确认的高级选项，
+  都必须由用户主动开启，并清楚标记风险。
+- **可编辑性优先。** FaceLink 1.0 是白模预演和可编辑动画控制工具，不是假装能够直接
+  生成最终影视级动画的文本生成视频工具。
 
-## Largest gaps before 1.0
+## 三、v0.3.9 已经具备的基础
 
-| Area | Alpha state | 1.0 requirement |
+当前测试版本已经完成了以下技术基础：
+
+- 稳定的场景对象身份、结构化镜头描述和确定性场景修改编译；
+- 世界坐标物体与摄像机变换、可编辑关键帧、约束和 NLA 动作片段；
+- 暂存、检查、应用、丢弃、审计记录和同一运行会话中的安全回滚；
+- 导航网格寻路、障碍物碰撞警告和摄像机构图预检；
+- 骨骼和动作扫描、仅改名重定向、采样姿态烘焙和求值姿态烘焙；
+- 骨架对象运动烘焙、确定性输出和回滚清理；
+- 带身份验证的本地 Blender 通信桥、命令行工具、自带密钥规划和本地 MCP；
+- Blender 4.2、4.5、5.2 真实运行测试、Windows 安装程序和隐私回归测试。
+
+这些功能证明 FaceLink 的核心执行方案可以成立，但是还不能证明它已经具备产品级稳定性、
+易用性和大型场景性能。
+
+## 四、距离 1.0 还缺少的主要能力
+
+| 方向 | 当前状态 | 1.0 需要达到的状态 |
 |---|---|---|
-| Recovery | executable rollback is session-only | durable apply journal, restart recovery and tested interrupted-write handling |
-| Runtime safety | concurrent bridge behavior is tested functionally | bounded queues, cancellation, deadlines, backpressure, isolation and soak tests |
-| Performance | no published workload or latency budget | repeatable benchmark scenes, p50/p95 results and regression budgets |
-| Product UI | one dense Blender sidebar and a basic installer | guided workflow, job progress, visual review, useful errors, settings and polished states |
-| Project workflow | one staged patch per Blender instance | persistent projects, reusable shot templates, multi-shot sequencing and version comparison |
-| Scene adaptability | explicit roles and bounded retarget profiles | adapter SDK, assisted mapping, full-matrix object transforms and a certified fixture corpus |
-| Distribution | unsigned Windows alpha | signed artifacts, repair/update/uninstall, macOS/Linux packages, SBOM and provenance |
-| Integrations | local stdio MCP and one BYOK provider | stable client setup, provider boundary and optional self-hosted Streamable HTTP gateway |
-| Operations | local logs and acceptance artifacts | privacy-safe diagnostics, health metrics, compatibility reports and release rollback |
-| Adoption | demo and technical docs | first-run sample, user guide, contributor path, issue triage and transparent support policy |
+| 故障恢复 | 真正可执行的回滚主要保存在当前会话 | 持久化执行日志、重启恢复和中断写入测试 |
+| 运行安全 | 已测试基本并发通信 | 有界队列、取消、超时、限流、隔离和长时间稳定性测试 |
+| 性能 | 没有公开的标准场景和延迟指标 | 可重复的基准场景、P50/P95 数据和性能退化门槛 |
+| 产品界面 | Blender 侧边栏信息较密集，安装器较基础 | 引导式操作、任务进度、可视化检查、清晰错误和美化界面 |
+| 项目工作流 | 每个 Blender 实例只能暂存一个修改 | 项目保存、镜头模板、多镜头编排和版本对比 |
+| 场景适配 | 依赖显式标记和有限的骨骼配置 | 适配器体系、辅助映射、完整矩阵变换和公开测试场景库 |
+| 安装分发 | Windows 早期测试安装包尚未签名 | 签名、修复、升级、卸载、跨平台包和软件物料清单 |
+| AI 接入 | 本地标准输入输出 MCP 和一种自带密钥方式 | 稳定客户端配置、模型适配边界和可选远程 MCP 网关 |
+| 运行维护 | 本地日志和测试报告 | 隐私安全诊断、健康指标、兼容性报告和版本回退 |
+| 开源推广 | 已有演示和技术文档 | 新手示例、用户手册、贡献流程、问题管理和支持政策 |
 
-## What “three highs” means for FaceLink
+## 五、“三高”在 FaceLink 中的具体含义
 
-For this roadmap, “三高” means **high reliability, high performance and high
-concurrency/scalability**. Because Blender's Python API must execute scene writes on Blender's
-main thread, FaceLink will not claim unsafe parallel writes inside one `.blend` file. It will
-serialize writes per Blender instance and scale safely across clients and Blender instances.
+本路线图中的“三高”指：
 
-### Reference workload
+1. **高可靠性。** 不能破坏用户场景，失败后可以恢复，长时间运行不会随机出错。
+2. **高性能。** 面对正常制作规模的场景，扫描、预检和执行必须有明确的时间预算。
+3. **高并发与高扩展性。** 多个 AI 客户端和多个 Blender 实例可以安全运行，任务不会
+   串到错误的 Blender 中。
 
-The v0.7 benchmark harness will check in redistributable small, medium and large fixture
-generators. The 1.0 performance gate uses the documented medium workload:
+Blender 的 Python 接口要求场景写入在 Blender 主线程执行。因此 FaceLink 不会虚假宣传
+“在同一个 `.blend` 文件里并行写入”。正确的做法是：同一个 Blender 实例中的写入任务
+按顺序安全执行，不同 Blender 实例之间可以并行工作。
 
-- 2,000 objects, 10 cameras and 8 armatures with up to 256 bones each;
-- 100 Actions and 100,000 existing editable keyframe values;
-- 20,000 navigation triangles and 500 marked obstacles;
-- a patch with up to 100 ordinary operations or a bake with up to 200,000 output values.
+### 5.1 标准测试场景
 
-Results must name the CPU, memory, OS, Blender version and FaceLink commit. Provider/model
-latency is reported separately and is never hidden inside local-engine results.
+v0.7 将提供可以公开分发的小型、中型和大型测试场景生成器。1.0 的主要性能验收使用
+下面的中型场景：
 
-### 1.0 reliability SLO
+- 2,000 个物体、10 台摄像机；
+- 8 套骨架，每套最多 256 根骨骼；
+- 100 个动作和 100,000 个已有的可编辑关键帧数值；
+- 20,000 个导航三角形和 500 个已标记障碍物；
+- 一次最多包含 100 个普通操作的修改，或者最多产生 200,000 个数值的姿态烘焙。
 
-- 100% pass rate on the supported OS × Blender acceptance matrix.
-- Zero partial scene mutations in the transaction and injected-failure suite.
-- 100% successful rollback/recovery in supported recovery scenarios.
-- At least 99.9% successful terminal outcomes across 10,000 valid jobs in a 24-hour soak; an
-  intentionally cancelled job counts as successful only when it leaves no unintended change.
-- No deadlocks, cross-instance data leaks or stale-token acceptance in the soak suite.
-- No open P0 or P1 defects at release; every accepted lower-severity limitation is documented.
+每次公开性能报告都必须写明处理器、内存、操作系统、Blender 版本和 FaceLink 代码提交编号。
+模型生成内容需要的时间单独统计，不能混入 FaceLink 本地执行时间来掩盖性能问题。
 
-### 1.0 performance SLO
+### 5.2 1.0 高可靠性指标
 
-On the published reference machine and medium workload, using Blender 5.2 LTS:
+- 支持的操作系统与 Blender 版本组合必须 100% 通过验收测试。
+- 在事务测试和主动注入故障的测试中，不能出现一次不完整的场景修改。
+- 所有明确声明支持的回滚和恢复场景必须 100% 成功。
+- 在 24 小时、10,000 个合法任务的稳定性测试中，成功到达正确最终状态的比例不低于
+  99.9%。用户主动取消的任务只有在没有留下意外修改时才算成功。
+- 稳定性测试中不能出现死锁、不同 Blender 实例之间的数据泄漏或失效令牌仍然可用。
+- 发布 1.0 时不能存在仍未解决的 P0 或 P1 问题。继续保留的低等级限制必须公开说明。
 
-- instance discovery and health p95 at or below 200 ms;
-- scene scan p95 at or below 2.5 seconds;
-- patch preflight/stage p95 at or below 1.5 seconds;
-- apply of 100 ordinary transform/camera operations p95 at or below 2.0 seconds;
-- cancellation acknowledgement at or below 500 ms when the current Blender operation exposes
-  a safe cancellation point;
-- Blender UI event handling never performs network/model waits on the main thread.
+### 5.3 1.0 高性能指标
 
-Pose baking and navigation are size-dependent. Their throughput is published per fixture and
-must not regress by more than 10% from the approved v0.8 baseline without an explicit review.
+在公开说明的参考电脑、中型测试场景和 Blender 5.2 LTS 上：
 
-### 1.0 concurrency/scalability SLO
+- 查找 Blender 实例和健康检查的 P95 不超过 200 毫秒；
+- 场景扫描的 P95 不超过 2.5 秒；
+- 修改预检和暂存的 P95 不超过 1.5 秒；
+- 执行 100 个普通物体或摄像机操作的 P95 不超过 2 秒；
+- 当当前操作存在安全取消点时，取消确认不超过 500 毫秒；
+- Blender 界面主线程不能等待网络请求或者 AI 模型返回。
 
-- 32 concurrent MCP client sessions across 8 Blender instances for a two-hour stress run.
-- At least 100 submitted jobs per instance are either accepted within documented bounds or
-  rejected immediately with retry guidance; queues may not grow without limit.
-- Strict per-instance write serialization, parallel work across independent instances and zero
-  job misrouting.
-- Fair scheduling, job deadlines, cancellation, retention limits and cleanup after client or
-  Blender disconnects.
-- Optional remote deployments enforce per-user quotas, OAuth scopes and tenant isolation; the
-  local-only product remains fully usable without that deployment.
+姿态烘焙和导航计算的耗时会随着数据规模变化，因此按照每个测试场景公布处理速度。
+如果没有单独审核和说明，性能不能比 v0.8 确认的基线下降超过 10%。
 
-These are release gates, not marketing estimates. v0.7 establishes the reproducible baseline;
-v0.8 must meet the load targets; v0.9 proves them in a release candidate.
+### 5.4 1.0 高并发与扩展性指标
 
-## Compatibility policy for 1.0
+- 使用 32 个同时工作的 MCP 客户端会话和 8 个 Blender 实例，连续压力测试两小时。
+- 每个 Blender 实例同时提交至少 100 个任务。系统必须在容量范围内接收，或者立即
+  拒绝并给出重试说明，不能让队列无限增长。
+- 同一个 Blender 实例的写入严格按顺序执行；独立 Blender 实例可以并行；不能出现
+  一次任务被发送到错误实例的情况。
+- 必须具备公平调度、任务超时、取消、结果保留上限，以及客户端或 Blender 断开后的清理。
+- 如果用户选择远程部署，必须增加用户限额、OAuth 权限和不同用户之间的数据隔离。
+  本地版本不能因此被强制要求注册账号或者依赖云服务。
 
-### Blender
+这些数字是 1.0 的发布门槛，不是宣传用的估算。v0.7 建立可以复现的性能基线，v0.8
+达到性能和并发指标，v0.9 用完整候选版本再次证明这些指标。
 
-- Primary development target: the latest maintained Blender LTS at release time, currently
-  Blender 5.2 LTS.
-- Supported compatibility target: the immediately previous still-maintained LTS, currently
-  Blender 4.5 LTS.
-- Blender 4.2 remains in the regression matrix while it stays green, but it is a legacy target
-  rather than a 1.0 support promise because it is no longer in Blender's maintained-LTS list.
-- New non-LTS Blender versions receive best-effort CI before being promoted to supported.
-- Schema and protocol capabilities are negotiated; version skew produces an actionable message,
-  never a best-guess scene mutation.
+## 六、1.0 兼容性政策
 
-### Operating systems
+### 6.1 Blender 版本
 
-- Windows is the primary product and installer target.
-- v0.9 adds signed/notarized packages and acceptance runners for supported Windows, macOS on
-  Apple Silicon and a documented x86-64 Linux distribution.
-- A platform is not called supported until install, upgrade, uninstall, bridge, UI and real
-  Blender mutation acceptance all pass on that platform.
+- 主要开发目标是发布时仍受官方维护的最新 Blender LTS，目前是 Blender 5.2 LTS。
+- 同时支持仍受官方维护的上一代 LTS，目前是 Blender 4.5 LTS。
+- Blender 4.2 只要测试仍然通过，就继续保留在回归测试中。但是它已经不在官方当前维护
+  的 LTS 列表中，因此不作为 FaceLink 1.0 的正式支持承诺。
+- 新的非 LTS Blender 版本先进行尽力兼容测试，通过完整测试后才能升级为正式支持。
+- FaceLink 协议和数据格式必须能够判断双方能力。版本不兼容时要给出明确提示，不能猜测
+  场景结构并继续执行。
 
-### AI clients and providers
+### 6.2 操作系统
 
-- **Subscription path:** local MCP clients use their own available model; FaceLink stores no
-  model API key.
-- **BYOK path:** the OpenAI adapter remains the supported reference provider and credentials stay
-  in the host environment or OS credential store, never in `.blend` files.
-- **Provider extension path:** a documented planner interface allows additional providers
-  without changing the compiler/executor trust boundary.
-- **Remote path:** a self-hosted Streamable HTTP gateway may be offered for compatible clients.
-  Public ChatGPT plugin publication also requires a stable HTTPS service, OAuth and a secure
-  cloud-to-local Blender pairing design, so it is an optional deployment track rather than a
-  dependency of the local open-source 1.0 release.
+- Windows 是主要产品和安装器目标。
+- v0.9 增加 Windows、Apple Silicon macOS 和一个明确说明版本的 x86-64 Linux 发行版
+  的安装包与真实验收环境。
+- 只有安装、升级、卸载、本地通信、界面和真实 Blender 修改全部通过，才能把一个平台
+  标记为正式支持。
 
-## Version sequence
+### 6.3 AI 客户端和模型提供商
 
-| Version | Theme | Exit result |
+- **会员或客户端模型方式：** 本地 MCP 客户端使用自己已经能够使用的模型，FaceLink
+  不保存模型 API 密钥。
+- **用户自带密钥方式：** OpenAI 适配器继续作为官方参考实现。密钥放在宿主环境或者
+  操作系统凭据存储中，不能写入 `.blend` 文件。
+- **其他模型扩展方式：** 提供清楚的规划器接口，使其他模型提供商可以接入，同时不改变
+  编译器和 Blender 执行器的安全边界。
+- **远程方式：** 可以提供一个用户自行部署的流式 HTTP MCP 网关。公开发布 ChatGPT
+  网页插件还需要稳定的 HTTPS 服务、OAuth，以及云端到本地 Blender 的安全配对方案。
+  因此它是一条可选产品路线，不作为本地开源 1.0 的前置条件。
+
+## 七、版本推进顺序
+
+| 版本 | 核心目标 | 完成后的结果 |
 |---|---|---|
-| v0.4.0 | Durable reliability core | interrupted work is bounded, inspectable and recoverable |
-| v0.5.0 | Product UI foundation | a new user completes the safe workflow without a terminal |
-| v0.6.0 | Projects and multi-shot workflow | real previs sequences can be created, revised and reused |
-| v0.7.0 | Scene adaptability and benchmark contract | supported complexity is broader and measured honestly |
-| v0.8.0 | High-performance multi-instance runtime | published performance and concurrency targets pass |
-| v0.9.0 | Cross-platform product beta | distributable, secure release candidate survives field use |
-| v1.0.0 | Stable general availability | all GA gates below pass with no release-critical defects |
+| v0.4.0 | 持久化与可靠性基础 | 被中断的任务有边界、能检查并且能恢复 |
+| v0.5.0 | 产品界面基础 | 新用户不打开终端也能完成安全工作流 |
+| v0.6.0 | 项目与多镜头工作流 | 可以制作、修改和复用真实白模预演序列 |
+| v0.7.0 | 场景适配与基准体系 | 支持更复杂的场景，并且能够如实测量能力边界 |
+| v0.8.0 | 高性能多实例运行 | 通过公开的性能和并发指标 |
+| v0.9.0 | 跨平台公开测试版 | 可分发的安全候选版本经过真实用户验证 |
+| v1.0.0 | 稳定正式版 | 所有正式发布条件通过，不存在阻塞发布的问题 |
 
-No version begins feature development until the previous version's exit gate is accepted.
-Patch releases (`0.x.1`, `0.x.2`) contain compatible fixes and documentation only; unfinished
-features stay behind disabled experimental flags and are not advertised.
+前一个版本的退出条件没有通过以前，不开始下一个版本的功能开发。
 
-## v0.4.0 — durable reliability core
+修订版本，例如 `0.4.1`、`0.4.2`，只包含兼容性修复和文档更新。没有做完的功能必须
+放在默认关闭的实验选项后面，不能当作正式功能宣传。
 
-**Goal:** make the execution engine safe under restarts, overload and version skew before the
-workflow grows.
+## 八、v0.4.0：持久化与可靠性基础
 
-Scope:
+**目标：** 在增加复杂工作流以前，先保证执行引擎面对重启、过载和版本差异时足够安全。
 
-- define protocol/schema compatibility, migration and deprecation policy;
-- add bounded job queues, terminal-state retention, deadlines, cancellation and cleanup;
-- introduce a durable apply journal with operation checkpoints and startup recovery guidance;
-- persist staged-patch metadata safely while requiring a fresh stale-scene check after reload;
-- make apply/rollback idempotency explicit across sidecar reconnects;
-- add structured error codes, correlation IDs and redacted diagnostic export;
-- add fault injection for exceptions, timeouts, disconnects and malformed persisted state;
-- publish a threat model covering local discovery files, bearer tokens, MCP tools and updates.
+需要完成：
 
-Exit gate:
+- 定义协议和数据格式的兼容、迁移和停止支持政策；
+- 增加有容量上限的任务队列、结果保留上限、超时、取消和清理；
+- 增加持久化执行日志、操作检查点和启动后的恢复指导；
+- 安全保存暂存修改的元数据，重新打开文件后必须重新检查场景是否发生变化；
+- 保证重新连接本地配套程序后，重复执行和重复回滚仍然安全；
+- 增加稳定的错误编号、关联编号和已经清除敏感信息的诊断导出；
+- 主动测试异常、超时、连接断开和损坏的持久化数据；
+- 发布安全威胁模型，覆盖本地发现文件、身份令牌、MCP 工具和版本更新。
 
-- 1,000-job/two-hour reliability run passes on Blender 4.5 and 5.2;
-- queue/resource limits are documented and tested at every boundary;
-- every injected failure ends in applied, rolled back, cancelled or safely recoverable state;
-- protocol N-1 compatibility and unsupported-version behavior are covered by tests;
-- no regression in the existing Python and real-Blender acceptance suite.
+版本退出条件：
 
-Not in this version: UI redesign, new scene-generation operations or remote hosting.
+- Blender 4.5 和 5.2 上通过 1,000 个任务、连续两小时的可靠性测试；
+- 所有队列和资源上限都有文档并且测试边界值；
+- 每个主动制造的故障最终都必须进入已执行、已回滚、已取消或可安全恢复状态；
+- 测试上一协议版本的兼容性，以及不支持版本的明确拒绝行为；
+- 现有 Python 和真实 Blender 验收测试不能退化。
 
-## v0.5.0 — product UI foundation
+本版本不做：界面重新设计、新的场景生成操作和远程托管。
 
-**Goal:** replace the alpha control panel with a coherent Blender-native product flow.
+## 九、v0.5.0：产品界面基础
 
-Scope:
+**目标：** 把当前测试版侧边栏改造成一套清楚、连贯的 Blender 原生产品工作流。
 
-- redesign the Blender sidebar around Connect, Describe, Preview, Apply and History states;
-- add connection/instance status, job progress, safe cancellation and recovery banners;
-- show a structured change list with affected objects, frames, warnings and blocking errors;
-- make viewport paths, camera framing and before/after selection easy to inspect;
-- add editable shot parameters so small corrections do not require rewriting the prompt;
-- build useful empty, loading, success, error, offline and version-skew states;
-- add settings for privacy, provider/MCP setup, Blender target and diagnostics;
-- upgrade the installer with guided detection, repair, upgrade and uninstall flows;
-- establish reusable visual tokens, icon rules, keyboard navigation and localization plumbing;
-- add deterministic UI-state tests plus maintained product screenshots.
+需要完成：
 
-Exit gate:
+- 围绕“连接、描述、预览、应用、历史记录”重新设计 Blender 侧边栏；
+- 显示连接状态、当前 Blender 实例、任务进度、安全取消和恢复提示；
+- 用结构化列表显示将要修改的对象、帧范围、警告和阻塞错误；
+- 让用户容易查看运动路径、摄像机构图和修改前后对象；
+- 提供可编辑的镜头参数，小修改不需要重新写一遍自然语言要求；
+- 完成空白、加载、成功、错误、离线和版本不兼容等界面状态；
+- 增加隐私、模型或 MCP 设置、Blender 目标和诊断设置；
+- 安装器增加引导检测、修复、升级和卸载功能；
+- 建立统一颜色、间距、图标、键盘操作和多语言基础规范；
+- 增加可重复的界面状态测试和产品截图回归检查。
 
-- a clean-machine install-to-demo acceptance test requires no terminal;
-- at least five representative first-time users are observed; at least four complete the demo
-  workflow without maintainer intervention, and all blocking usability findings are resolved;
-- every mutating action has an unambiguous review/confirmation state;
-- all documented UI states have automated or screenshot-assisted regression coverage.
+版本退出条件：
 
-Not in this version: a separate Electron/web desktop application. Blender remains the primary
-creative UI unless evidence shows a Blender-native workflow cannot meet the usability gate.
+- 在一台干净电脑上，从安装到完成演示不需要终端；
+- 至少观察 5 名第一次使用的代表性用户，其中至少 4 名在没有维护者帮助的情况下
+  完成演示；所有阻塞使用的问题必须解决；
+- 每一个会修改场景的操作都有明确的检查或确认状态；
+- 所有正式说明的界面状态都有自动测试或者截图回归测试。
 
-## v0.6.0 — projects and multi-shot workflow
+本版本不做独立桌面应用或者网页应用。只要 Blender 原生界面能够满足易用性要求，
+就不额外增加一套复杂桌面应用。
 
-**Goal:** move from a single patch demo to a repeatable previs production workflow.
+## 十、v0.6.0：项目与多镜头工作流
 
-Scope:
+**目标：** 从单个修改演示升级到可以重复使用的白模预演制作流程。
 
-- add a versioned FaceLink project/sequence/shot model with stable IDs;
-- create, duplicate, reorder, rename, archive and restore shots;
-- save reusable typed shot templates with exposed parameters and validation;
-- compare shot revisions and restore an earlier approved version;
-- support multi-shot compile/stage queues while preserving per-shot human approval;
-- add marker, camera and frame-range coordination without destructive timeline overlap;
-- import/export portable project metadata without embedding credentials or machine paths;
-- make missing assets, linked libraries and renamed scene objects repairable through mapping UI;
-- provide two complete redistributable sample projects and a first real workflow tutorial.
+需要完成：
 
-Exit gate:
+- 增加带版本的 FaceLink 项目、序列和镜头数据模型，并使用稳定 ID；
+- 支持新建、复制、排序、重命名、归档和恢复镜头；
+- 保存可以复用的结构化镜头模板，并开放可调参数；
+- 对比不同镜头版本，并恢复以前确认过的版本；
+- 支持多镜头编译和暂存队列，但每个镜头仍然需要单独确认；
+- 协调时间线标记、摄像机和帧范围，避免破坏性重叠；
+- 导入导出可移植的项目元数据，不能写入密钥和电脑私人路径；
+- 通过映射界面修复丢失资源、链接库和被重命名的场景对象；
+- 提供两个可以公开分发的完整示例项目和真实工作流教程。
 
-- a 20-shot project survives save/reload, reorder, duplication and schema migration;
-- deterministic project round trips and conflict recovery pass on supported Blender versions;
-- batch planning cannot bypass per-shot review or cross-contaminate revisions;
-- sample projects can be completed from a clean install using only the product UI.
+版本退出条件：
 
-## v0.7.0 — scene adaptability and benchmark contract
+- 一个包含 20 个镜头的项目，可以安全保存、重新打开、排序、复制和迁移格式；
+- 项目重复导入导出的结果确定一致，冲突恢复在所有支持版本上通过；
+- 批量规划不能跳过每个镜头的人工确认，也不能串改其他镜头的版本记录；
+- 用户从干净安装开始，只使用产品界面就可以完成示例项目。
 
-**Goal:** support more real Blender scenes without pretending arbitrary rigs and dependency
-graphs can be solved safely.
+## 十一、v0.7.0：场景适配与基准体系
 
-Scope:
+**目标：** 支持更多真实 Blender 场景，同时诚实说明不能安全解决的复杂情况。
 
-- implement full-matrix object/camera conversion for supported parent chains;
-- add a versioned adapter SDK with capability discovery and explainable compatibility reports;
-- provide assisted controller/deform-bone mapping and explicit IK/FK mode review;
-- ship certified adapters/fixtures for at least two redistributable rig families;
-- visualize unsupported constraints, drivers, parents and dependency edges before execution;
-- extend navigation toward multi-level static geometry and declared moving-obstacle windows;
-- extend camera preflight for animated bounds and explicitly supported projection/lens cases;
-- add asset normalization checks for units, axes, scale, naming and Action ownership;
-- create public synthetic fixture generators and the small/medium/large benchmark suite;
-- publish compatibility and performance reports from CI artifacts.
+需要完成：
 
-Exit gate:
+- 对支持的父子层级实现完整矩阵的物体和摄像机坐标转换；
+- 增加有版本管理的适配器开发接口、能力发现和可解释兼容报告；
+- 辅助发现控制骨与变形骨映射，并让用户明确检查 IK/FK 模式；
+- 至少为两类可以公开测试的骨骼系统提供经过认证的适配器和测试场景；
+- 在执行前可视化不支持的约束、驱动、父子关系和依赖连接；
+- 将导航扩展到多层静态场景和明确声明时间范围的移动障碍物；
+- 摄像机预检支持动画边界，以及明确列出的投影和镜头参数；
+- 检查导入资源的单位、坐标轴、缩放、命名和动作所有权；
+- 建立公开的合成测试场景生成器和小型、中型、大型性能基准；
+- 在持续集成报告中公开兼容性与性能结果。
 
-- at least 25 redistributable scene fixtures cover parents, cameras, navigation and rig variants;
-- every fixture either succeeds with editable output or fails with a stable actionable code—no
-  silent approximation is accepted;
-- certified rig adapters pass pose, root-motion, rollback and visual sanity fixtures;
-- benchmark results are reproducible within documented variance on the reference machine;
-- the medium workload establishes the approved latency and memory baseline for v0.8.
+版本退出条件：
 
-General automatic control-rig solving, arbitrary external driver graphs and final-quality motion
-generation remain explicitly out of scope for 1.0.
+- 至少 25 个可公开分发的测试场景覆盖父子层级、摄像机、导航和不同骨架；
+- 每个测试场景要么生成可编辑的正确结果，要么以稳定错误编号明确拒绝，不能静默近似；
+- 认证骨骼适配器通过姿态、根运动、回滚和视觉正确性测试；
+- 在参考电脑上重复运行基准，结果必须处于公开说明的误差范围；
+- 中型场景形成 v0.8 使用的正式延迟和内存基线。
 
-## v0.8.0 — high-performance multi-instance runtime
+1.0 不承诺自动解决任意控制骨架、任意外部驱动关系或者生成最终质量角色动作。
 
-**Goal:** meet the three-high runtime targets without violating Blender's main-thread rules.
+## 十二、v0.8.0：高性能多实例运行
 
-Scope:
+**目标：** 在不违反 Blender 主线程规则的情况下达到三高运行指标。
 
-- add incremental snapshots and fingerprints so unchanged scene data is not repeatedly encoded;
-- separate parallel read-only planning from per-instance serialized Blender writes;
-- add a fair bounded scheduler with priority, deadlines, cancellation and backpressure;
-- expose progress and cancellation through stable MCP tools; negotiate experimental MCP task
-  support only when both client and server advertise it;
-- harden multi-instance discovery, explicit targeting, reconnect and stale-record cleanup;
-- add local metrics for latency, queue depth, failures and resource use with privacy-safe export;
-- profile and optimize snapshot, fingerprint, navigation, preflight and bake hot paths;
-- add Streamable HTTP self-hosting as an optional, separately secured transport;
-- document OAuth 2.1, rate-limit and tenant-isolation requirements for any remote deployment.
+需要完成：
 
-Exit gate:
+- 增加增量场景快照和指纹，未变化的数据不重复编码；
+- 将可以并行的只读规划，与每个 Blender 实例中按顺序执行的写入分开；
+- 增加公平、有容量上限的调度器，并支持优先级、超时、取消和过载保护；
+- 通过稳定 MCP 工具报告进度和取消状态；只有客户端与服务端都声明支持时，才试验
+  MCP 的任务机制；
+- 加强多 Blender 实例查找、明确选择目标、重新连接和过期记录清理；
+- 在本地统计延迟、队列深度、失败和资源占用，并安全导出；
+- 分析并优化场景快照、指纹、导航、预检和姿态烘焙的性能热点；
+- 提供可选、单独进行安全配置的流式 HTTP MCP 自部署方式；
+- 为所有远程部署说明 OAuth 2.1、限流和用户数据隔离要求。
 
-- every 1.0 performance and concurrency SLO passes on the reference workload;
-- two-hour 32-session/8-instance stress testing has zero deadlocks, misroutes or leaked jobs;
-- overload is bounded and returns deterministic retry/capacity errors;
-- performance regression checks run in a controlled scheduled workflow and publish history;
-- stdio remains fully supported and does not require a remote service or FaceLink account.
+版本退出条件：
 
-## v0.9.0 — cross-platform product beta
+- 通过本路线图中所有 1.0 性能与并发指标；
+- 32 个会话、8 个 Blender 实例连续两小时压力测试中，不能出现死锁、任务串发或泄漏；
+- 过载必须受到限制，并返回稳定的重试或容量错误；
+- 在受控的定期工作流中运行性能回归测试并保留历史结果；
+- 本地标准输入输出 MCP 继续完整可用，不需要远程服务或 FaceLink 账号。
 
-**Goal:** freeze features and prove the complete product outside the development machine.
+## 十三、v0.9.0：跨平台公开测试版
 
-Scope:
+**目标：** 停止增加大功能，在开发电脑以外验证完整产品。
 
-- deliver Windows, macOS Apple Silicon and Linux install/upgrade/repair/uninstall paths;
-- code-sign Windows releases and sign/notarize macOS artifacts;
-- generate checksums, SBOM, dependency/license report and build provenance;
-- add safe update checks, release-channel selection and rollback to the previous FaceLink build;
-- publish a Blender extension repository/install path in addition to local ZIP installation;
-- finalize privacy policy, security response, support matrix and data-flow documentation;
-- add opt-in crash/usage reporting or a fully local redacted support-bundle alternative;
-- run provider contract tests, MCP Inspector tests and clean-account client onboarding tests;
-- complete user, administrator, troubleshooting and contributor documentation;
-- run a public beta with a published feedback/defect triage process.
+需要完成：
 
-Exit gate:
+- 提供 Windows、Apple Silicon macOS 和 Linux 的安装、升级、修复与卸载方式；
+- 为 Windows 版本做代码签名，为 macOS 版本做签名和公证；
+- 生成校验和、软件物料清单、依赖与许可证报告和构建来源证明；
+- 增加安全更新检查、发布渠道选择和退回上一 FaceLink 版本的能力；
+- 除本地 ZIP 安装外，提供 Blender 扩展仓库安装方式；
+- 完成隐私政策、安全响应、支持范围和数据流说明；
+- 提供用户主动同意的崩溃与使用情况报告，或者完全本地的脱敏支持包；
+- 运行模型接口契约测试、MCP 检查器测试和干净账号连接测试；
+- 完成用户、管理员、故障排查和贡献者文档；
+- 运行公开测试，并建立公开的问题反馈和缺陷分级流程。
 
-- clean install, upgrade from v0.8, repair and uninstall pass on every supported platform;
-- artifacts verify, signatures validate and the release can be reproduced from a clean tag;
-- a minimum 30-day beta has no unresolved P0/P1 defect and all accepted P2 defects are listed;
-- at least ten external beta users complete the core workflow on real projects, with consented
-  issue reports and no known data-loss event;
-- the full 24-hour reliability soak and release-candidate security review pass.
+版本退出条件：
 
-Only fixes, documentation and performance work may enter after v0.9 feature freeze.
+- 每个平台都通过干净安装、从 v0.8 升级、修复和卸载测试；
+- 发布文件可以验证，签名有效，并能从一个干净标签复现构建；
+- 至少运行 30 天公开测试，不能有未解决的 P0/P1 问题；保留的 P2 问题必须公开；
+- 至少 10 名外部测试用户在真实项目中完成核心流程，并经过同意提交问题报告；
+- 不能有已知数据丢失事件，并通过完整 24 小时稳定性测试和候选版本安全审核。
 
-## v1.0.0 — stable general availability
+v0.9 功能冻结以后，只能继续加入修复、文档和性能优化。
 
-FaceLink 1.0 ships only when all of the following are true.
+## 十四、v1.0.0：稳定正式版
 
-### Functional
+FaceLink 只有满足下面所有条件以后才能发布 1.0。
 
-- install, connect, describe, preview, stage, apply, edit, save, reopen and recover work through
-  the product UI on every supported platform;
-- direct transforms, cameras, navigation, Action use and certified retarget/bake paths produce
-  ordinary editable Blender data;
-- multi-shot projects and templates migrate safely from every supported pre-1.0 format;
-- unsupported scene structures fail before mutation with a documented recovery path.
+### 14.1 功能条件
 
-### Three-high
+- 在每个支持平台上，通过产品界面完成安装、连接、描述、预览、暂存、执行、编辑、
+  保存、重新打开和恢复；
+- 物体变换、摄像机、导航、动作使用和经过认证的重定向或烘焙路径，全部生成普通可编辑
+  Blender 数据；
+- 多镜头项目和模板可以从所有声明支持的 1.0 以前格式安全迁移；
+- 不支持的场景结构在修改场景以前明确失败，并提供恢复或解决说明。
 
-- every reliability, performance and concurrency/scalability SLO in this document passes on the
-  final release commit;
-- benchmark and soak evidence is published with the GitHub release;
-- there is no unpublished exception to the SLOs.
+### 14.2 三高条件
 
-### UI and product quality
+- 本文档中的可靠性、性能、并发和扩展性指标，必须在最终发布代码提交上全部通过；
+- GitHub Release 必须同时公开基准测试和长时间稳定性测试证据；
+- 不能存在没有公开说明的三高指标例外。
 
-- the Blender UI has polished responsive states, consistent terminology and accessible keyboard
-  operation for the core workflow;
-- first-run demo, contextual help, diagnostics and recovery require no terminal;
-- installer/updater/repair/uninstaller are productized and signed where the OS supports it;
-- release notes state supported versions, breaking changes, known limitations and rollback steps.
+### 14.3 界面与产品质量条件
 
-### Security, privacy and supply chain
+- Blender 界面状态完整、响应及时、术语一致，核心工作流可以使用键盘操作；
+- 第一次运行演示、上下文帮助、诊断和恢复不需要终端；
+- 安装、更新、修复和卸载功能完整，在操作系统支持时必须经过签名；
+- 发布说明必须列出支持版本、破坏性变化、已知限制和回退步骤。
 
-- the threat model and an independent release security review have no unresolved critical/high
-  finding;
-- secrets, machine paths and private scene contents are absent from repository/release artifacts;
-- network behavior is explicit, local-only mode is complete and telemetry remains opt-in;
-- dependencies, licenses, SBOM, checksums, signatures and provenance are published;
-- vulnerability reporting and supported-version security patch policy are active.
+### 14.4 安全、隐私与供应链条件
 
-### Field readiness
+- 安全威胁模型和独立发布安全审核不能存在未解决的严重或高危问题；
+- 仓库和发布文件不能包含密钥、私人电脑路径或者用户场景私密内容；
+- 所有联网行为必须明确说明，本地离线模式完整可用，遥测保持主动同意；
+- 发布依赖、许可证、软件物料清单、校验和、签名和构建来源证明；
+- 漏洞报告流程和受支持版本的安全更新政策正式生效。
 
-- at least ten external beta users and two non-trivial redistributable reference projects have
-  exercised the release candidate;
-- no open P0/P1 issue and no known data-loss bug;
-- documentation, contribution guide, issue templates and support boundaries match the product;
-- an older supported release can be restored if the 1.0 update fails.
+### 14.5 真实使用条件
 
-## Explicitly after 1.0
+- 至少 10 名外部测试用户和两个不简单的可公开参考项目使用过候选版本；
+- 没有未解决的 P0/P1 问题，也没有已知数据丢失问题；
+- 用户文档、贡献指南、问题模板和支持边界与实际产品一致；
+- 1.0 更新失败时，用户能够恢复到上一个受支持版本。
 
-The following may become 1.x/2.x projects, but they must not delay a safe local 1.0:
+## 十五、明确放到 1.0 之后的内容
 
-- an operated public ChatGPT plugin and cloud-to-local Blender pairing service;
-- real-time multi-user scene collaboration and hosted project synchronization;
-- an asset/adapter marketplace and proprietary DCC integrations;
-- learned final-quality motion generation or autonomous cinematic judgment;
-- general automatic solving of arbitrary rigs, constraints and driver graphs;
-- bundling or redistributing Blender itself.
+下面这些内容可以在 1.x 或 2.x 继续研究，但是不能拖延一个安全可用的本地 1.0：
 
-## Commit and review discipline
+- 官方运营的公开 ChatGPT 插件，以及云端到本地 Blender 的配对服务；
+- 多人实时场景协作和云端项目同步；
+- 资源或适配器市场，以及其他商业数字内容创作软件接入；
+- 学习型最终质量动作生成和完全自动的影视审美判断；
+- 自动解决任意骨架、任意约束和任意驱动关系；
+- 将 Blender 本体捆绑进 FaceLink 安装包。
 
-Implementation follows small vertical slices, not one large version dump:
+## 十六、代码提交与审核规则
 
-1. One commit contains one coherent behavior, its tests and its documentation.
-2. The commit must pass the proportionate local gate before it is offered for review.
-3. After every implementation commit, work stops for maintainer review unless the maintainer
-   explicitly asks for a batch.
-4. Review feedback is resolved before the next roadmap slice starts.
-5. A version is tagged only after every exit criterion is evidenced in its release report.
-6. Refactors, generated artifacts and product behavior are not mixed without a clear reason.
+开发按照小而完整的功能切片推进，不能等到一个版本全部完成后再一次提交：
 
-After this roadmap is accepted, each version will be converted into a GitHub milestone and
-small ordered issues. The first implementation slice should be v0.4.0's bounded job queue and
-stable error model because later UI, cancellation and load testing depend on them.
+1. 一次代码提交只包含一个完整、明确的功能，以及对应测试和文档。
+2. 提交审核以前，必须通过与改动风险相匹配的本地测试。
+3. 每完成一次功能代码提交就停止继续开发，等待维护者审核；只有维护者明确要求批量推进时
+   才能例外。
+4. 上一次代码提交的审核意见没有处理完以前，不开始下一个路线图功能。
+5. 一个版本的所有退出条件都有证据以后，才能建立版本标签。
+6. 没有明确理由时，重构、自动生成文件和产品功能不能混在一次代码提交中。
 
-## Official inputs
+这份路线图通过审核以后，再将每个版本转换成 GitHub 里程碑和一组小而有顺序的问题。
 
-- [Blender maintained LTS releases](https://www.blender.org/download/lts/)
-- [Blender extension add-on and dependency guidance](https://docs.blender.org/manual/en/4.2/advanced/extensions/addons.html)
-- [OpenAI MCP setup for ChatGPT and Codex](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)
-- [OpenAI production MCP/plugin endpoint guidance](https://developers.openai.com/plugins/build/mcp-server)
-- [OpenAI plugin authentication guidance](https://developers.openai.com/plugins/build/auth)
-- [MCP 2025-11-25 authorization specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization)
-- [MCP experimental task lifecycle](https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/tasks)
+第一次功能代码提交应该从 v0.4.0 的“有容量上限的任务队列与稳定错误模型”开始，
+因为后续的界面进度、取消功能和压力测试都依赖这一层。
+
+## 十七、官方参考资料
+
+- [Blender 当前维护的 LTS 版本](https://www.blender.org/download/lts/)
+- [Blender 扩展、依赖和本地数据使用说明](https://docs.blender.org/manual/en/4.2/advanced/extensions/addons.html)
+- [OpenAI 关于 ChatGPT 和 Codex 使用 MCP 的说明](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)
+- [OpenAI 关于生产环境 MCP 与插件端点的要求](https://developers.openai.com/plugins/build/mcp-server)
+- [OpenAI 插件身份认证说明](https://developers.openai.com/plugins/build/auth)
+- [MCP 2025-11-25 身份认证规范](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization)
+- [MCP 实验性任务生命周期](https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/tasks)
